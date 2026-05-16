@@ -23,72 +23,25 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from .canvas import CellInfo, compute_cell_infos, is_border_cell
-from .cellpose_runner import load_cached_masks, load_image
-from .duplicates import detect_duplicates
 from .grouping import ImageGroupInfo
-from .persistence import ReviewState
+from .image_state import compute_image_state
 from .profile import ProfileData
-from .canvas import COLOR_INACTIVE  # noqa: F401  (used elsewhere; keeps barrel stable)
-
-import numpy as np
-from skimage.draw import disk as sk_disk
 
 
 # ─────────────────────────────────────────────
-# Per-image active counts per type
+# Per-image active counts per type — thin wrapper around compute_image_state
 # ─────────────────────────────────────────────
 def per_image_counts(
     folder: Path, image_info: ImageGroupInfo, profile: ProfileData,
 ) -> dict | None:
-    """For one image, returns {'rbc': total_active, 'by_type': {type_key: n_active}}.
+    """For one image, returns {'rbc': n_active, 'by_type': {type_key: n_active}}.
     Returns None if no cellpose mask is cached for that image."""
-    masks = load_cached_masks(folder, image_info.path)
-    if masks is None:
+    state = compute_image_state(folder, image_info, profile)
+    if state is None:
         return None
-
-    review = ReviewState.load(folder, image_info.path.stem)
-
-    # Materialize manual cells into a working masks copy
-    masks_work = masks.astype(np.int32).copy()
-    manual_ids: set[int] = set()
-    max_id = int(masks_work.max())
-    for mc in review.manual_cells:
-        rr, cc = sk_disk((int(mc.y), int(mc.x)), int(mc.radius), shape=masks_work.shape)
-        masks_work[rr, cc] = mc.cell_id
-        manual_ids.add(mc.cell_id)
-        max_id = max(max_id, mc.cell_id)
-
-    cell_infos = compute_cell_infos(masks_work, manual_ids)
-    h, w = masks_work.shape
-    border_ids = {
-        cid for cid, info in cell_infos.items()
-        if is_border_cell(info, h, w, profile.margin_n)
-    }
-    duplicate_ids = detect_duplicates(cell_infos, profile.duplicate_detection)
-
-    excluded = set(review.force_excluded)
-    included = set(review.force_included)
-    default_key = profile.default_type_key()
-
-    by_type: dict[str, int] = {t.key: 0 for t in profile.cell_types}
-    n_active = 0
-    for cid in cell_infos:
-        auto_inactive = (cid in border_ids) or (cid in duplicate_ids)
-        is_active = (cid not in excluded) and (not auto_inactive or cid in included)
-        if not is_active:
-            continue
-        n_active += 1
-        type_key = review.types.get(str(cid), default_key)
-        if type_key in by_type:
-            by_type[type_key] += 1
-        else:
-            # Type was deleted from profile after labeling — fall back to default
-            by_type[default_key] = by_type.get(default_key, 0) + 1
-
     return {
-        "rbc": n_active,
-        "by_type": by_type,
+        "rbc": state.n_active,
+        "by_type": state.by_type,
         "image_num": image_info.image_num,
         "filename": image_info.path.name,
     }

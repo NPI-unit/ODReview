@@ -64,6 +64,12 @@ class EryApp:
         # Group-counter cache: (timepoint, subject) -> n_active
         self._group_active_cache: dict[tuple[str, str], int] = {}
 
+        # Profile-save debounce: per-keystroke saves on type/dropdown changes
+        # would mean dozens of disk writes per minute. We coalesce them with a
+        # 200 ms after-last-change schedule, flushed on app close.
+        self._profile_save_after_id: str | None = None
+        self._profile_save_debounce_ms = 200
+
         # State
         self.folder: Path | None = None
         self.images: list[Path] = []          # flat ordered list (drives idx)
@@ -503,9 +509,27 @@ class EryApp:
         for t in self.profile.cell_types:
             if self._type_display_name(t.key) == selected:
                 self.profile.active_type_key = t.key
-                save_profile(self.profile)
+                self._schedule_profile_save()
                 self._refresh_tool_indicator()
                 return
+
+    def _schedule_profile_save(self) -> None:
+        """Coalesce rapid-succession mutations into one disk write."""
+        if self._profile_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._profile_save_after_id)
+            except tk.TclError:
+                pass
+        self._profile_save_after_id = self.root.after(
+            self._profile_save_debounce_ms, self._flush_profile_save,
+        )
+
+    def _flush_profile_save(self) -> None:
+        self._profile_save_after_id = None
+        try:
+            save_profile(self.profile)
+        except Exception:
+            pass
 
     def _refresh_tool_indicator(self) -> None:
         """Renders 'Tool: <name> · Typ: <type>' permanently in the status bar
@@ -862,7 +886,7 @@ class EryApp:
             self.tree.item(iid, text=f"{label_base}  ·  {full}")
         if iid not in self.profile.sidebar_open_groups:
             self.profile.sidebar_open_groups.append(iid)
-            save_profile(self.profile)
+            self._schedule_profile_save()
 
     def _on_tree_close(self, _evt=None) -> None:
         iid = self.tree.focus()
@@ -873,7 +897,7 @@ class EryApp:
             self.tree.item(iid, text=f"{label_base}  ({counts['n_done']}/{counts['n_total']})")
         if iid in self.profile.sidebar_open_groups:
             self.profile.sidebar_open_groups.remove(iid)
-            save_profile(self.profile)
+            self._schedule_profile_save()
 
     # ─────────────────────────────────────────
     # Handlers
@@ -1108,6 +1132,13 @@ class EryApp:
         except tk.TclError:
             pass
         self.settings.save()
+        # Cancel any pending debounced save; then save synchronously once.
+        if self._profile_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._profile_save_after_id)
+            except tk.TclError:
+                pass
+            self._profile_save_after_id = None
         save_profile(self.profile)
         self.root.destroy()
 

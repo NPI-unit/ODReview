@@ -27,18 +27,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from . import __version__
-from .canvas import (
-    CellInfo, build_overlay_rgba, compute_cell_infos,
-    is_border_cell, normalize_image_for_display,
-)
-from .cellpose_runner import load_cached_masks, load_image
-from .duplicates import detect_duplicates
+from .canvas import build_overlay_rgba, normalize_image_for_display
+from .cellpose_runner import load_image
 from .grouping import GroupedFolder, ImageGroupInfo, UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT
-from .persistence import ReviewState
+from .image_state import compute_image_state
 from .profile import ProfileData
 from .summary import write_proband_zeitpunkt_summary
-
-from skimage.draw import disk as sk_disk
 
 
 def outputs_root(folder: Path) -> Path:
@@ -58,48 +52,31 @@ def _group_folder(root: Path, tp: str, sub: str) -> Path:
 
 def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData,
                   dest: Path) -> bool:
-    """Export one image's derived files into `dest`. Returns True if mask was cached."""
-    masks = load_cached_masks(folder, image_info.path)
-    if masks is None:
+    """Export one image's derived files into `dest`. Returns True if mask was cached.
+
+    Pulls everything from one compute_image_state() call so the exported numbers
+    are guaranteed identical to what the app's status bar + detail panel show.
+    """
+    state = compute_image_state(folder, image_info, profile)
+    if state is None:
         return False
 
-    review = ReviewState.load(folder, image_info.path.stem)
     image = load_image(image_info.path)
-
-    # Materialize manual cells
-    masks_export = masks.astype(np.int32).copy()
-    manual_ids: set[int] = set()
-    max_id = int(masks_export.max())
-    for mc in review.manual_cells:
-        rr, cc = sk_disk((int(mc.y), int(mc.x)), int(mc.radius), shape=masks_export.shape)
-        masks_export[rr, cc] = mc.cell_id
-        manual_ids.add(mc.cell_id)
-        max_id = max(max_id, mc.cell_id)
-
-    cell_infos = compute_cell_infos(masks_export, manual_ids)
-    h, w = masks_export.shape
-    border_ids = {
-        cid for cid, info in cell_infos.items()
-        if is_border_cell(info, h, w, profile.margin_n)
-    }
-    duplicate_ids = detect_duplicates(cell_infos, profile.duplicate_detection)
-
-    excluded = set(review.force_excluded)
-    included = set(review.force_included)
     default_type = profile.default_type_key()
 
     rows = []
-    for cid, info in cell_infos.items():
-        type_key = review.types.get(str(cid), default_type)
-        is_border = cid in border_ids
-        is_dup = cid in duplicate_ids
-        auto_inactive = is_border or is_dup
-        is_active = (cid not in excluded) and (not auto_inactive or cid in included)
+    for cid, info in state.cell_infos.items():
+        type_key = state.review.types.get(str(cid), default_type)
+        is_border = cid in state.border_ids
+        is_dup = cid in state.duplicate_ids
+        is_active = cid in state.active_ids
         rows.append({
             "cell_id": cid, "type": type_key,
             "is_active": is_active, "is_border": is_border,
-            "is_duplicate": is_dup, "is_force_included": cid in included,
-            "is_force_excluded": cid in excluded, "is_manual": info.is_manual,
+            "is_duplicate": is_dup,
+            "is_force_included": cid in state.included,
+            "is_force_excluded": cid in state.excluded,
+            "is_manual": info.is_manual,
             "area": info.area,
             "centroid_x": round(info.cx, 2), "centroid_y": round(info.cy, 2),
         })
@@ -114,16 +91,16 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
         pass
 
     df.to_csv(dest / f"{stem}_stats.csv", index=False)
-    np.save(dest / f"{stem}_masks.npy", masks_export)
+    np.save(dest / f"{stem}_masks.npy", state.masks)
 
     fig = plt.figure(figsize=(14, 9))
     ax = fig.add_subplot(111)
     ax.imshow(normalize_image_for_display(image), interpolation="nearest")
-    rgba = build_overlay_rgba(masks_export, cell_infos, review, profile,
-                              border_ids, duplicate_ids)
+    rgba = build_overlay_rgba(state.masks, state.cell_infos, state.review, profile,
+                              state.border_ids, state.duplicate_ids)
     ax.imshow(rgba, interpolation="nearest")
     ax.axis("off")
-    fig.suptitle(f"{image_info.path.name}  -  {int(df['is_active'].sum())} active erys",
+    fig.suptitle(f"{image_info.path.name}  -  {state.n_active} active erys",
                  fontsize=11)
     fig.tight_layout()
     fig.savefig(dest / f"{stem}_overlay.png", dpi=150, bbox_inches="tight")
