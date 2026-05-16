@@ -2,7 +2,7 @@
 
 A desktop reviewer for **automated erythrocyte (red-blood-cell) segmentation** of light-microscopy images, built on top of [Cellpose](https://github.com/MouseLand/cellpose). Loads a folder of TIFs, runs Cellpose lazily per image, lets you visually correct each segmentation (add / remove / re-classify cells), and exports a clean, lab-friendly summary CSV per subject and timepoint.
 
-Designed for hematology / parasitology studies where you need to classify **2000 erythrocytes per subject and timepoint** across many images per condition.
+Designed for hematology / parasitology studies where you need to classify erythrocytes across many images.
 
 > Note: this project is unaffiliated with the Cellpose authors. It is a UI wrapper that calls the Cellpose Python package locally on your machine. All segmentation credit goes to the Cellpose project.
 
