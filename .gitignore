@@ -1,0 +1,53 @@
+# ─── Python ───────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.Python
+build/
+dist/
+.coverage
+.pytest_cache/
+.mypy_cache/
+
+# ─── Virtual environments ─────────────────────────
+.venv/
+.venv*/
+venv/
+env/
+
+# ─── macOS ────────────────────────────────────────
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+
+# ─── IDE / editor ─────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*~
+
+# ─── Erys runtime data ────────────────────────────
+# Cellpose mask cache + per-image review state
+.erys_cache/
+# Exported reports / per-image stats
+outputs/
+
+# ─── Study data ───────────────────────────────────
+# Microscope images are not part of the codebase
+images/
+*.tif
+*.tiff
+*.npy
+*.png
+*.jpg
+*.jpeg
+*.bmp
+
+# ─── PDFs / reports / supplementary documents ─────
+BM-*.pdf
+*.pdf
+
+# ─── Allow specific things back in ────────────────
+!docs/**/*.png
