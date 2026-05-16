@@ -1,25 +1,22 @@
-"""Main Tk application — profile-aware.
+"""Main Tk application — orchestrator.
 
-Lifecycle:
-  1. AppSettings.load() (globals only: language, window, sidebar, last_profile_name)
-  2. If last_profile_name resolves to a profile, auto-load it.
-     Else open the Profile Manager dialog (force-check) until a profile is chosen.
-  3. Load the profile's import_folder if set; build hierarchical sidebar via grouping.
-  4. UI runs.
+Layout is composed of three components that own their own UI + state:
+    * Toolbar (`toolbar.py`) — tool palette, action buttons, type combo
+    * Sidebar (`sidebar.py`) — hierarchical Treeview, filter, DetailPanel
+    * EryCanvas (`canvas.py`) — matplotlib canvas with click handlers
 
-Sidebar is a hierarchical Treeview:  Zeitpunkt > Proband > Bild.
-Open groups show '<n_active>/<target> erys · <n_done>/<n_total> images done'.
+EryApp wires them together via callbacks and holds the canonical app-level
+state: folder, images, idx, profile, settings, current ReviewState.
 """
 
 from __future__ import annotations
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog
 
 from . import __version__
 from .canvas import EryCanvas
-from .detail_panel import DetailPanel
 from .cellpose_runner import (
     has_cache, list_images, load_cached_masks, load_image,
     params_match, run_for_image, discard_cache,
@@ -29,30 +26,24 @@ from .dialogs import (
     profile_editor_dialog, profile_manager_dialog, settings_dialog,
 )
 from .export import export_folder_structured
-from .grouping import (
-    GroupedFolder, ImageGroupInfo, UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT,
-    group_images,
-)
+from .grouping import group_images
 from .i18n import get_strings
 from .persistence import (
     AppSettings, FolderState, ReviewState,
     TOOL_ADD, TOOL_REMOVE, TOOL_TYPE, TOOLS_ORDER,
 )
 from .profile import ProfileData, ensure_default_profile, load_profile, save_profile
-from .theme import STATUS_ICONS_3, STATUS_TO_COLOR, palette
-
-
-# Status icons collapsed to 3 visual states (Frage answer C)
-STATUS_ICONS = STATUS_ICONS_3
+from .sidebar import Sidebar
+from .theme import palette
+from .toolbar import Toolbar
 
 
 class EryApp:
     def __init__(self):
         self.settings = AppSettings.load()
         self.S = get_strings(self.settings.language)
-        self.P = palette(self.settings.theme)  # active color palette
+        self.P = palette(self.settings.theme)
 
-        # Load profile (force-check)
         self.profile: ProfileData = self._initial_profile_load()
 
         self.root = tk.Tk()
@@ -61,23 +52,17 @@ class EryApp:
         self.root.minsize(900, 600)
         self.root.configure(bg=self.P["bg"])
 
-        # Group-counter cache: (timepoint, subject) -> n_active
-        self._group_active_cache: dict[tuple[str, str], int] = {}
-
-        # Profile-save debounce: per-keystroke saves on type/dropdown changes
-        # would mean dozens of disk writes per minute. We coalesce them with a
-        # 200 ms after-last-change schedule, flushed on app close.
-        self._profile_save_after_id: str | None = None
-        self._profile_save_debounce_ms = 200
-
-        # State
+        # App-level state (canonical)
         self.folder: Path | None = None
-        self.images: list[Path] = []          # flat ordered list (drives idx)
-        self.grouped: GroupedFolder | None = None
-        self.image_to_idx: dict[str, int] = {}
+        self.images: list[Path] = []
+        self.grouped = None
         self.idx: int = 0
         self.folder_state: FolderState = FolderState()
         self.review: ReviewState = ReviewState()
+
+        # Debounce bookkeeping for profile.save() calls on hot paths.
+        self._profile_save_after_id: str | None = None
+        self._profile_save_debounce_ms = 200
 
         if self.profile.type_by_key(self.profile.active_type_key) is None:
             self.profile.active_type_key = self.profile.default_type_key()
@@ -85,11 +70,10 @@ class EryApp:
         self._build_menu()
         self._build_layout()
         self._bind_hotkeys()
-        self._refresh_tool_indicator()  # show tool state in status bar from the start
+        self._refresh_tool_indicator()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Auto-load profile's import folder
         if self.profile.import_folder:
             p = Path(self.profile.import_folder)
             if p.is_dir():
@@ -99,7 +83,6 @@ class EryApp:
     # Startup helpers
     # ─────────────────────────────────────────
     def _initial_profile_load(self) -> ProfileData:
-        # Temporarily-hidden root for the dialog (Tk requires one)
         bootstrap = tk.Tk()
         bootstrap.withdraw()
         try:
@@ -109,7 +92,6 @@ class EryApp:
             if chosen is None:
                 chosen = profile_manager_dialog(bootstrap, self.S)
             if chosen is None:
-                # User cancelled — fall back to default
                 chosen = ensure_default_profile()
             self.settings.last_profile_name = chosen.name
             self.settings.save()
@@ -151,8 +133,23 @@ class EryApp:
 
     def _build_layout(self) -> None:
         P = self.P
-        self._build_toolbar(self.root)
 
+        # ─── Toolbar (component) ───
+        self.toolbar = Toolbar(
+            self.root, P, self.S, self.settings, self.profile,
+            on_tool_change=self._set_active_tool,
+            on_type_change=self._on_type_changed,
+            on_resegment=self._on_resegment,
+            on_toggle_overlay=self._on_toggle_overlay,
+            on_reset_zoom=lambda: self.canvas.reset_zoom(),
+            on_undo=self._on_undo,
+            on_info=self._show_current_image_info,
+            on_export=self._on_export,
+        )
+        self.toolbar.pack(fill="x", side="top")
+        tk.Frame(self.root, bg=P["border"], height=1).pack(fill="x", side="top")
+
+        # ─── Status bar (bottom) ───
         self.status = tk.Frame(self.root, bg=P["status_bg"], height=26)
         self.status.pack(fill="x", side="bottom")
         self.status.pack_propagate(False)
@@ -162,7 +159,6 @@ class EryApp:
             font=("TkDefaultFont", 10),
         )
         self.status_label.pack(side="left", fill="both", expand=True)
-        # Tool-state indicator (right of counters, before saved indicator)
         self.tool_label = tk.Label(
             self.status, text="", fg=P["accent_primary"], bg=P["status_bg"],
             padx=10, font=("TkDefaultFont", 10, "bold"),
@@ -174,16 +170,24 @@ class EryApp:
         )
         self.saved_label.pack(side="right")
 
+        # ─── Paned: sidebar | center ───
         self.paned = tk.PanedWindow(
             self.root, orient="horizontal", sashwidth=5,
             sashrelief="raised", bg=P["sash"], bd=0,
         )
         self.paned.pack(fill="both", expand=True)
 
-        self.sidebar = tk.Frame(self.paned, bg=P["sidebar_bg"])
-        self._build_sidebar()
-        self.paned.add(self.sidebar, minsize=180, width=self.settings.sidebar_width)
+        # ─── Sidebar (component) ───
+        self.sidebar = Sidebar(
+            self.paned, P, self.S, self.profile,
+            on_open_folder=self._on_open_folder,
+            on_image_select=self._show_image_at,
+            on_subject_select=self._show_subject_info,
+            on_open_changed=self._schedule_profile_save,
+        )
+        self.paned.add(self.sidebar, minsize=200, width=self.settings.sidebar_width)
 
+        # ─── Center: canvas + empty state ───
         center = tk.Frame(self.paned, bg=P["bg"])
         self.canvas = EryCanvas(
             center, self.settings, self.profile,
@@ -201,260 +205,6 @@ class EryApp:
         self._show_empty_state(True)
 
         self.paned.add(center, minsize=400)
-
-    def _build_sidebar(self) -> None:
-        S = self.S
-        P = self.P
-
-        top = tk.Frame(self.sidebar, bg=P["sidebar_bg"])
-        top.pack(fill="x", padx=8, pady=(8, 4))
-        tk.Button(top, text=S["btn_open_folder"], command=self._on_open_folder).pack(fill="x")
-
-        filt = tk.Frame(self.sidebar, bg=P["sidebar_bg"])
-        filt.pack(fill="x", padx=8, pady=(6, 4))
-        tk.Label(filt, text=S["filter_label"], bg=P["sidebar_bg"], fg=P["fg_secondary"],
-                 font=("TkDefaultFont", 9)).pack(anchor="w")
-        self.filter_var = tk.StringVar(value="all")
-        for value, label_key in [
-            ("all", "filter_all"),
-            ("unsegmented", "filter_unsegmented"),
-            ("unfinished", "filter_unfinished"),
-            ("finished", "filter_finished"),
-        ]:
-            tk.Radiobutton(
-                filt, text=S[label_key], value=value, variable=self.filter_var,
-                bg=P["sidebar_bg"], fg=P["fg"], selectcolor=P["toolbar_bg"],
-                activebackground=P["sidebar_bg"], activeforeground=P["fg"],
-                font=("TkDefaultFont", 9),
-                command=self._refresh_sidebar,
-            ).pack(anchor="w")
-
-        list_frame = tk.Frame(self.sidebar, bg=P["sidebar_bg"])
-        list_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Erys.Treeview",
-                        background=P["tree_bg"], foreground=P["fg"],
-                        fieldbackground=P["tree_bg"], borderwidth=0, rowheight=22)
-        style.map("Erys.Treeview",
-                  background=[("selected", P["accent_primary"])],
-                  foreground=[("selected", P["fg_inverse"])])
-        style.layout("Erys.Treeview", style.layout("Treeview"))
-
-        self.tree = ttk.Treeview(list_frame, show="tree", selectmode="browse",
-                                 style="Erys.Treeview")
-        # Per-status tags for colored status icons (Frage answer C)
-        self.tree.tag_configure("status_unsegmented", foreground=P[STATUS_TO_COLOR["unsegmented"]])
-        self.tree.tag_configure("status_in_progress", foreground=P[STATUS_TO_COLOR["in_progress"]])
-        self.tree.tag_configure("status_finished",    foreground=P[STATUS_TO_COLOR["finished"]])
-        self.tree.tag_configure("group_header", foreground=P["fg"])
-        sb = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        self.tree.bind("<<TreeviewOpen>>",  self._on_tree_open)
-        self.tree.bind("<<TreeviewClose>>", self._on_tree_close)
-
-        self.folder_label = tk.Label(
-            self.sidebar, text=S["no_folder"], bg=P["sidebar_bg"], fg=P["fg_muted"],
-            font=("TkDefaultFont", 9), wraplength=250, justify="left",
-            padx=8, pady=4,
-        )
-        self.folder_label.pack(fill="x", side="bottom")
-
-        # Cockpit detail panel (Frage 1b option i: lives below the tree).
-        self.details = DetailPanel(self.sidebar, P, S)
-        self.details.pack(fill="x", side="bottom", padx=8, pady=(4, 4),
-                          ipady=2)
-
-    def _configure_ttk_styles(self) -> None:
-        """Custom ttk styles for cleaner buttons. Uses 'clam' theme as base so
-        we can actually paint backgrounds/foregrounds (macOS 'aqua' ignores them)."""
-        P = self.P
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        # Tool palette button — base state
-        style.configure(
-            "ErysTool.TButton",
-            background=P["panel_bg"],
-            foreground=P["fg"],
-            bordercolor=P["border"],
-            lightcolor=P["panel_bg"],
-            darkcolor=P["panel_bg"],
-            focuscolor=P["accent_primary"],
-            padding=(12, 6),
-            relief="flat",
-            font=("TkDefaultFont", 11),
-        )
-        style.map(
-            "ErysTool.TButton",
-            background=[("active", P["sidebar_alt_bg"]), ("pressed", P["sidebar_alt_bg"])],
-            foreground=[("active", P["fg"])],
-            relief=[("pressed", "flat"), ("!pressed", "flat")],
-        )
-        # Tool palette — ACTIVE (selected) state
-        style.configure(
-            "ErysToolActive.TButton",
-            background=P["accent_primary"],
-            foreground=P["fg_inverse"],
-            bordercolor=P["accent_primary"],
-            lightcolor=P["accent_primary"],
-            darkcolor=P["accent_primary"],
-            padding=(12, 6),
-            relief="flat",
-            font=("TkDefaultFont", 11, "bold"),
-        )
-        style.map(
-            "ErysToolActive.TButton",
-            background=[("active", P["accent_primary_hover"]),
-                        ("pressed", P["accent_primary_press"])],
-            foreground=[("active", P["fg_inverse"])],
-        )
-        # Action buttons (Cellpose, Overlay, Reset, Undo, Export)
-        style.configure(
-            "ErysAction.TButton",
-            background=P["panel_bg"],
-            foreground=P["fg"],
-            bordercolor=P["border"],
-            lightcolor=P["panel_bg"],
-            darkcolor=P["panel_bg"],
-            padding=(10, 6),
-            relief="flat",
-            font=("TkDefaultFont", 11),
-        )
-        style.map(
-            "ErysAction.TButton",
-            background=[("active", P["sidebar_alt_bg"]),
-                        ("pressed", P["sidebar_alt_bg"])],
-            foreground=[("active", P["fg"])],
-        )
-        # Primary CTA (Export) — accent-colored
-        style.configure(
-            "ErysPrimary.TButton",
-            background=P["accent_primary"],
-            foreground=P["fg_inverse"],
-            bordercolor=P["accent_primary"],
-            lightcolor=P["accent_primary"],
-            darkcolor=P["accent_primary"],
-            padding=(12, 6),
-            relief="flat",
-            font=("TkDefaultFont", 11, "bold"),
-        )
-        style.map(
-            "ErysPrimary.TButton",
-            background=[("active", P["accent_primary_hover"]),
-                        ("pressed", P["accent_primary_press"])],
-        )
-        # Combobox
-        style.configure(
-            "Erys.TCombobox",
-            fieldbackground=P["panel_bg"],
-            background=P["panel_bg"],
-            foreground=P["fg"],
-            bordercolor=P["border"],
-            arrowcolor=P["fg_secondary"],
-            padding=(6, 4),
-        )
-
-    def _build_toolbar(self, parent: tk.Widget) -> None:
-        S = self.S
-        P = self.P
-        self._configure_ttk_styles()
-
-        bar = tk.Frame(parent, bg=P["toolbar_bg"], height=52)
-        bar.pack(fill="x", side="top")
-        bar.pack_propagate(False)
-        # 1-pixel bottom border for visual separation
-        sep = tk.Frame(parent, bg=P["border"], height=1)
-        sep.pack(fill="x", side="top")
-
-        # ─── Tool palette (left) ───
-        self.tool_buttons: dict[str, ttk.Button] = {}
-        for i, (key, label_key) in enumerate([
-            (TOOL_ADD, "tool_add"),
-            (TOOL_REMOVE, "tool_remove"),
-            (TOOL_TYPE, "tool_type"),
-        ], start=1):
-            b = ttk.Button(
-                bar, text=f"{i}   {S[label_key]}",
-                style="ErysTool.TButton",
-                command=lambda k=key: self._set_active_tool(k),
-            )
-            b.pack(side="left", padx=(6 if i == 1 else 3, 3), pady=8)
-            self.tool_buttons[key] = b
-
-        # Type dropdown (only relevant in TOOL_TYPE mode)
-        self.type_var = tk.StringVar(value=self._type_display_name(self.profile.active_type_key))
-        self.type_combo = ttk.Combobox(
-            bar, textvariable=self.type_var, state="readonly", width=22,
-            values=self._type_display_values(), style="Erys.TCombobox",
-        )
-        self.type_combo.pack(side="left", padx=(8, 14), pady=10)
-        self.type_combo.bind("<<ComboboxSelected>>", self._on_type_combo)
-
-        # Vertical separator
-        tk.Frame(bar, bg=P["border"], width=1, height=28).pack(
-            side="left", padx=6, pady=12,
-        )
-
-        # ─── Action buttons (middle) ───
-        self.btn_resegment = ttk.Button(
-            bar, text="⟳   " + S["tool_resegment"],
-            style="ErysAction.TButton", command=self._on_resegment,
-        )
-        self.btn_resegment.pack(side="left", padx=3, pady=8)
-
-        self.btn_overlay = ttk.Button(
-            bar, text="⊙   " + S["tool_overlay"],
-            style="ErysAction.TButton", command=self._on_toggle_overlay,
-        )
-        self.btn_overlay.pack(side="left", padx=3, pady=8)
-
-        self.btn_reset = ttk.Button(
-            bar, text="⌂   " + S["tool_reset_zoom"],
-            style="ErysAction.TButton", command=lambda: self.canvas.reset_zoom(),
-        )
-        self.btn_reset.pack(side="left", padx=3, pady=8)
-
-        self.btn_undo = ttk.Button(
-            bar, text="↶   " + S["tool_undo"],
-            style="ErysAction.TButton", command=self._on_undo,
-        )
-        self.btn_undo.pack(side="left", padx=3, pady=8)
-
-        # ⓘ Info — opens the detail panel for the CURRENT image.
-        self.btn_info = ttk.Button(
-            bar, text="ⓘ   " + S["tool_info"],
-            style="ErysAction.TButton", command=self._show_current_image_info,
-        )
-        self.btn_info.pack(side="left", padx=3, pady=8)
-
-        # Spacer pushes the primary CTA + banner to the right
-        spacer = tk.Frame(bar, bg=P["toolbar_bg"])
-        spacer.pack(side="left", fill="x", expand=True)
-
-        # ─── Primary CTA (right) ───
-        self.btn_export = ttk.Button(
-            bar, text="↓   " + S["tool_export"],
-            style="ErysPrimary.TButton", command=self._on_export,
-        )
-        self.btn_export.pack(side="right", padx=(3, 10), pady=8)
-
-        # Parameter-mismatch banner (only visible when caches use different params)
-        self.param_banner = tk.Label(
-            bar, text="", bg=P["toolbar_bg"], fg=P["accent_warn"],
-            font=("TkDefaultFont", 10, "italic"), cursor="hand2",
-        )
-        self.param_banner.pack(side="right", padx=8)
-        self.param_banner.bind("<Button-1>", lambda e: self._on_resegment())
-
-        self._highlight_active_tool()
 
     def _bind_hotkeys(self) -> None:
         for i, tool in enumerate(TOOLS_ORDER, start=1):
@@ -474,47 +224,28 @@ class EryApp:
         self.root.bind("<Key-0>", lambda e: self.canvas.reset_zoom())
 
     # ─────────────────────────────────────────
-    # Tool palette
+    # Tool / type plumbing
     # ─────────────────────────────────────────
     def _set_active_tool(self, key: str) -> None:
         if key not in TOOLS_ORDER:
             return
         self.settings.active_tool = key
         self.settings.save()
-        self._highlight_active_tool()
+        self.toolbar.set_active_tool(key)
+        self._refresh_tool_indicator()
         cursors = {TOOL_ADD: "crosshair", TOOL_REMOVE: "X_cursor", TOOL_TYPE: "hand2"}
         try:
             self.canvas.canvas.get_tk_widget().configure(cursor=cursors.get(key, "arrow"))
         except tk.TclError:
             pass
 
-    def _highlight_active_tool(self) -> None:
-        """Swap ttk styles between ErysTool.TButton (idle) and ErysToolActive.TButton (active)."""
-        for key, btn in self.tool_buttons.items():
-            if key == self.settings.active_tool:
-                btn.configure(style="ErysToolActive.TButton")
-            else:
-                btn.configure(style="ErysTool.TButton")
+    def _on_type_changed(self, type_key: str) -> None:
+        """Called from Toolbar combobox when user picks a different type."""
+        self.profile.active_type_key = type_key
+        self._schedule_profile_save()
         self._refresh_tool_indicator()
 
-    def _type_display_name(self, key: str) -> str:
-        td = self.profile.type_by_key(key)
-        return (td.name or td.key) if td else key
-
-    def _type_display_values(self) -> list[str]:
-        return [self._type_display_name(t.key) for t in self.profile.cell_types]
-
-    def _on_type_combo(self, _evt=None) -> None:
-        selected = self.type_var.get()
-        for t in self.profile.cell_types:
-            if self._type_display_name(t.key) == selected:
-                self.profile.active_type_key = t.key
-                self._schedule_profile_save()
-                self._refresh_tool_indicator()
-                return
-
     def _schedule_profile_save(self) -> None:
-        """Coalesce rapid-succession mutations into one disk write."""
         if self._profile_save_after_id is not None:
             try:
                 self.root.after_cancel(self._profile_save_after_id)
@@ -532,8 +263,6 @@ class EryApp:
             pass
 
     def _refresh_tool_indicator(self) -> None:
-        """Renders 'Tool: <name> · Typ: <type>' permanently in the status bar
-        so the user always sees the current click-routing."""
         tool_key = self.settings.active_tool
         tool_label = {
             TOOL_ADD: self.S["tool_add"],
@@ -542,18 +271,13 @@ class EryApp:
         }.get(tool_key, tool_key)
         text = f"{self.S['status_tool']}: {tool_label}"
         if tool_key == TOOL_TYPE:
-            type_disp = self._type_display_name(self.profile.active_type_key)
-            text += f"  ·  {self.S['status_tool_type']}: {type_disp}"
+            td = self.profile.type_by_key(self.profile.active_type_key)
+            disp = (td.name or td.key) if td else self.profile.active_type_key
+            text += f"  ·  {self.S['status_tool_type']}: {disp}"
         try:
             self.tool_label.config(text=text)
         except (AttributeError, tk.TclError):
             pass
-
-    def _refresh_type_combo(self) -> None:
-        self.type_combo["values"] = self._type_display_values()
-        if self.profile.type_by_key(self.profile.active_type_key) is None:
-            self.profile.active_type_key = self.profile.default_type_key()
-        self.type_var.set(self._type_display_name(self.profile.active_type_key))
 
     # ─────────────────────────────────────────
     # Folder + image lifecycle
@@ -575,10 +299,11 @@ class EryApp:
         self.images = images
         self.grouped = group_images(images, self.profile)
         self.folder_state = FolderState.load(path)
-        self.folder_label.config(text=f"{path.name}\n{len(images)} Bilder")
         self._show_empty_state(False)
-        self._refresh_sidebar()
-        start = self.folder_state.last_index if (restore_index and 0 <= self.folder_state.last_index < len(images)) else 0
+        self.sidebar.populate(path, images, self.grouped)
+        start = self.folder_state.last_index if (
+            restore_index and 0 <= self.folder_state.last_index < len(images)
+        ) else 0
         self._show_image_at(start)
 
     def _show_image_at(self, idx: int) -> None:
@@ -589,12 +314,7 @@ class EryApp:
         self.folder_state.last_index = idx
         self.folder_state.save(self.folder)
         path = self.images[idx]
-
-        try:
-            self.tree.selection_set(path.name)
-            self.tree.see(path.name)
-        except tk.TclError:
-            pass
+        self.sidebar.set_idx(idx)
 
         try:
             img = load_image(path)
@@ -624,9 +344,11 @@ class EryApp:
         review = ReviewState.load(self.folder, path.stem)
         self.review = review
 
-        self.param_banner.config(text=self.S["status_param_mismatch"] if mismatch else "")
+        self.toolbar.set_param_mismatch(
+            self.S["status_param_mismatch"] if mismatch else None
+        )
         self.canvas.set_image(img, masks, review)
-        # Detect duplicates for this image
+        # Per-image duplicate detection on the freshly loaded mask
         try:
             from .duplicates import detect_duplicates
             self.canvas.duplicate_ids = detect_duplicates(
@@ -639,14 +361,11 @@ class EryApp:
             pass
         self.canvas.reset_zoom()
         self._update_status()
-        self._refresh_sidebar_status()
-        # Image switch / fresh cellpose run → refresh the group counter
-        self._invalidate_group_cache()
-        self._refresh_current_group_counter()
+        self.sidebar.refresh_statuses()
+        self.sidebar.invalidate_group_cache()
+        self.sidebar.refresh_current_group_counter()
         self._refresh_tool_indicator()
-        # If the panel was showing the *previously* selected image, swap it to the
-        # newly loaded one so the cockpit always reflects what's on screen.
-        if self.details.mode == "image":
+        if self.sidebar.details.mode == "image":
             self._show_current_image_info()
         else:
             self._refresh_details()
@@ -656,248 +375,27 @@ class EryApp:
             self._show_image_at(self.idx + delta)
 
     # ─────────────────────────────────────────
-    # Sidebar (hierarchical)
+    # DetailPanel routes
     # ─────────────────────────────────────────
-    def _image_status(self, image_path: Path) -> str:
-        """Collapsed to 3 states (Frage answer C): unsegmented / in_progress / finished."""
-        if self.folder is None or not has_cache(self.folder, image_path):
-            return "unsegmented"
-        review = ReviewState.load(self.folder, image_path.stem)
-        if review.is_finished:
-            return "finished"
-        # Any image with a cached mask is "in progress" — whether edited or not.
-        return "in_progress"
-
-    def _passes_filter(self, status: str) -> bool:
-        f = self.filter_var.get()
-        if f == "all":
-            return True
-        if f == "unsegmented":
-            return status == "unsegmented"
-        if f == "unfinished":
-            return status != "finished"
-        if f == "finished":
-            return status == "finished"
-        return True
-
-    def _refresh_sidebar(self) -> None:
-        for iid in self.tree.get_children():
-            self.tree.delete(iid)
-        if not self.images or self.grouped is None:
-            return
-
-        open_set = set(self.profile.sidebar_open_groups)
-
-        for tp in self.grouped.timepoints():
-            tp_label = self.S["sb_ungrouped"] if tp == UNGROUPED_TIMEPOINT else tp
-            tp_iid = f"tp::{tp}"
-            tp_inserted = False
-
-            for sub in self.grouped.subjects_in(tp):
-                sub_label = self.S["sb_ungrouped"] if sub == UNGROUPED_SUBJECT else sub
-                sub_iid = f"sub::{tp}::{sub}"
-                sub_inserted = False
-
-                for info in self.grouped.tree[tp][sub]:
-                    status = self._image_status(info.path)
-                    if not self._passes_filter(status):
-                        continue
-                    if not tp_inserted:
-                        self.tree.insert("", "end", iid=tp_iid, text=self._tp_label(tp_label, tp),
-                                         open=(tp_iid in open_set), tags=("group_header",))
-                        tp_inserted = True
-                    if not sub_inserted:
-                        self.tree.insert(tp_iid, "end", iid=sub_iid,
-                                         text=self._sub_label(sub_label, tp, sub),
-                                         open=(sub_iid in open_set), tags=("group_header",))
-                        sub_inserted = True
-                    icon = STATUS_ICONS[status]
-                    self.tree.insert(sub_iid, "end", iid=info.path.name,
-                                     text=f"{icon}  {info.path.name}",
-                                     tags=(f"status_{status}",))
-
-        if 0 <= self.idx < len(self.images):
-            try:
-                self.tree.selection_set(self.images[self.idx].name)
-                self.tree.see(self.images[self.idx].name)
-            except tk.TclError:
-                pass
-
-    def _tp_label(self, label: str, tp_key: str) -> str:
-        return label
-
-    def _sub_label(self, label: str, tp_key: str, sub_key: str) -> str:
-        """Closed subject row: '<name>  <n_active>/<target>  ⓘ'."""
-        counts = self._group_counters(tp_key, sub_key)
-        compact = self.S["sb_group_closed_counter"].format(
-            n_active=counts["n_active"], target=counts["target"],
-        )
-        return f"{label}  ·  {compact}   ⓘ"
-
-    def _group_counters(self, tp_key: str, sub_key: str) -> dict:
-        target = max(1, self.profile.target_cells)
-        images = self.grouped.tree.get(tp_key, {}).get(sub_key, []) if self.grouped else []
-        n_total = len(images)
-        n_done = 0
-        cache_key = (tp_key, sub_key)
-        # Use cached n_active when available; recompute when stale (caller invalidates).
-        n_active = self._group_active_cache.get(cache_key)
-        compute_active = n_active is None
-        if compute_active:
-            from .summary import per_image_counts
-            n_active = 0
-        for info in images:
-            if self.folder is None or not has_cache(self.folder, info.path):
-                continue
-            review = ReviewState.load(self.folder, info.path.stem)
-            if review.is_finished:
-                n_done += 1
-            if compute_active:
-                try:
-                    c = per_image_counts(self.folder, info, self.profile)
-                    if c is not None:
-                        n_active += c["rbc"]
-                except Exception:
-                    pass
-        if compute_active:
-            self._group_active_cache[cache_key] = n_active
-        return {"n_total": n_total, "n_done": n_done, "n_active": n_active, "target": target}
-
-    def _invalidate_group_cache(self, tp_key: str | None = None,
-                                 sub_key: str | None = None) -> None:
-        """Drop the cached n_active for one or all groups so the next read recomputes."""
-        if tp_key is None or sub_key is None:
-            self._group_active_cache.clear()
-        else:
-            self._group_active_cache.pop((tp_key, sub_key), None)
-
-    def _current_group_keys(self) -> tuple[str, str] | None:
-        """Returns (timepoint, subject) of the currently selected image, or None."""
-        if not self.images or self.grouped is None or self.idx >= len(self.images):
-            return None
-        cur_path = self.images[self.idx]
-        for info in self.grouped.flat:
-            if info.path == cur_path:
-                return (info.timepoint, info.subject)
-        return None
-
-    def _refresh_group_node(self, iid: str, recurse: bool = False) -> None:
-        """Update one Treeview node's label (open vs closed counter format)."""
-        if iid.startswith("sub::"):
-            try:
-                _, tp_key, sub_key = iid.split("::", 2)
-            except ValueError:
-                return
-            label_base = self.S["sb_ungrouped"] if sub_key == UNGROUPED_SUBJECT else sub_key
-            is_open = bool(self.tree.item(iid, "open"))
-            counts = self._group_counters(tp_key, sub_key)
-            if is_open:
-                full = self.S["sb_group_open_counter"].format(
-                    n_active=counts["n_active"], target=counts["target"],
-                )
-                self.tree.item(iid, text=f"{label_base}  ·  {full}   ⓘ")
-            else:
-                compact = self.S["sb_group_closed_counter"].format(
-                    n_active=counts["n_active"], target=counts["target"],
-                )
-                self.tree.item(iid, text=f"{label_base}  ·  {compact}   ⓘ")
-        if recurse:
-            for child in self.tree.get_children(iid):
-                self._refresh_group_node(child, recurse=True)
-
-    def _refresh_current_group_counter(self) -> None:
-        """Invalidate + refresh the group node of the currently-active image."""
-        keys = self._current_group_keys()
-        if keys is None:
-            return
-        tp_key, sub_key = keys
-        self._invalidate_group_cache(tp_key, sub_key)
-        sub_iid = f"sub::{tp_key}::{sub_key}"
-        if self.tree.exists(sub_iid):
-            self._refresh_group_node(sub_iid)
-
-    def _refresh_sidebar_status(self) -> None:
-        if self.grouped is None:
-            return
-        for info in self.grouped.flat:
-            if not self.tree.exists(info.path.name):
-                continue
-            status = self._image_status(info.path)
-            icon = STATUS_ICONS[status]
-            self.tree.item(info.path.name, text=f"{icon}  {info.path.name}",
-                           tags=(f"status_{status}",))
-        # Refresh open-group counters now that statuses may have changed
-        for iid in self.tree.get_children():
-            self._refresh_group_node(iid, recurse=True)
-
-    def _on_tree_select(self, _evt=None) -> None:
-        sel = self.tree.selection()
-        if not sel:
-            return
-        name = sel[0]
-        # Subject row → open subject details panel (its row is the "ⓘ" target)
-        if name.startswith("sub::"):
-            try:
-                _, tp_key, sub_key = name.split("::", 2)
-            except ValueError:
-                return
-            self._show_subject_info(tp_key, sub_key)
-            return
-        # Timepoint row → no-op
-        if name.startswith("tp::"):
-            return
-        for i, p in enumerate(self.images):
-            if p.name == name:
-                if i != self.idx:
-                    self._show_image_at(i)
-                break
-
     def _show_current_image_info(self) -> None:
-        """Toolbar ⓘ → render details for the currently-loaded image."""
         if self.folder is None or not self.images:
             return
-        self.details.show_image(self.folder, self.images[self.idx], self.profile)
+        self.sidebar.details.show_image(
+            self.folder, self.images[self.idx], self.profile,
+        )
 
     def _show_subject_info(self, tp_key: str, sub_key: str) -> None:
-        """Sidebar click on subject row → render aggregate details for that group."""
         if self.folder is None or self.grouped is None:
             return
-        self.details.show_subject(self.folder, tp_key, sub_key,
-                                  self.profile, self.grouped)
+        self.sidebar.details.show_subject(
+            self.folder, tp_key, sub_key, self.profile, self.grouped,
+        )
 
     def _refresh_details(self) -> None:
-        """Re-render the detail panel using fresh data (called after edits)."""
         try:
-            self.details.refresh(self.folder, self.profile, self.grouped)
+            self.sidebar.details.refresh(self.folder, self.profile, self.grouped)
         except Exception:
             pass
-
-    def _on_tree_open(self, _evt=None) -> None:
-        iid = self.tree.focus()
-        if iid.startswith("sub::"):
-            # iid = "sub::<tp>::<sub>"
-            _, tp_key, sub_key = iid.split("::", 2)
-            counts = self._group_counters(tp_key, sub_key)
-            label_base = self.S["sb_ungrouped"] if sub_key == UNGROUPED_SUBJECT else sub_key
-            full = self.S["sb_group_open_counter"].format(
-                n_active=counts["n_active"], target=counts["target"],
-                n_done=counts["n_done"], n_total=counts["n_total"],
-            )
-            self.tree.item(iid, text=f"{label_base}  ·  {full}")
-        if iid not in self.profile.sidebar_open_groups:
-            self.profile.sidebar_open_groups.append(iid)
-            self._schedule_profile_save()
-
-    def _on_tree_close(self, _evt=None) -> None:
-        iid = self.tree.focus()
-        if iid.startswith("sub::"):
-            _, tp_key, sub_key = iid.split("::", 2)
-            label_base = self.S["sb_ungrouped"] if sub_key == UNGROUPED_SUBJECT else sub_key
-            counts = self._group_counters(tp_key, sub_key)
-            self.tree.item(iid, text=f"{label_base}  ({counts['n_done']}/{counts['n_total']})")
-        if iid in self.profile.sidebar_open_groups:
-            self.profile.sidebar_open_groups.remove(iid)
-            self._schedule_profile_save()
 
     # ─────────────────────────────────────────
     # Handlers
@@ -916,7 +414,7 @@ class EryApp:
             return
         self.review.is_finished = not self.review.is_finished
         self._save_review()
-        self._refresh_sidebar_status()
+        self.sidebar.refresh_statuses()
         self._update_status()
 
     def _on_resegment(self) -> None:
@@ -946,11 +444,11 @@ class EryApp:
             return
         self.canvas.set_image(img, masks, self.review)
         self.canvas.reset_zoom()
-        self.param_banner.config(text="")
+        self.toolbar.set_param_mismatch(None)
         self._update_status()
-        self._refresh_sidebar_status()
-        self._invalidate_group_cache()
-        self._refresh_current_group_counter()
+        self.sidebar.refresh_statuses()
+        self.sidebar.invalidate_group_cache()
+        self.sidebar.refresh_current_group_counter()
         self._refresh_details()
 
     def _on_batch(self) -> None:
@@ -959,11 +457,12 @@ class EryApp:
         batch_dialog(
             parent=self.root, folder=self.folder, images=self.images,
             profile=self.profile, strings=self.S,
-            image_status_fn=self._image_status, on_done=self._after_batch,
+            image_status_fn=self.sidebar._image_status,
+            on_done=self._after_batch,
         )
 
     def _after_batch(self) -> None:
-        self._refresh_sidebar_status()
+        self.sidebar.refresh_statuses()
         if self.images:
             self._show_image_at(self.idx)
 
@@ -976,8 +475,8 @@ class EryApp:
         self.settings.save()
         self.root.title(self.S["title_with_profile"].format(profile=self.profile.name))
         self.canvas.set_profile(self.profile)
-        self._refresh_type_combo()
-        # If the profile points at a different folder, load it
+        self.sidebar.set_profile(self.profile)
+        self.toolbar.set_profile(self.profile)
         if self.profile.import_folder:
             p = Path(self.profile.import_folder)
             if p.is_dir():
@@ -994,7 +493,8 @@ class EryApp:
             if self.profile.margin_n != old_margin:
                 self.canvas.set_margin_n(self.profile.margin_n)
             self.canvas.set_profile(self.profile)
-        self._refresh_type_combo()
+        self.sidebar.set_profile(self.profile)
+        self.toolbar.set_profile(self.profile)
         self._update_status()
 
     def _on_settings(self) -> None:
@@ -1004,7 +504,8 @@ class EryApp:
         if new_settings is None:
             return
         self.settings = new_settings
-        self.canvas.settings = new_settings  # ← keep canvas in sync; fixes tool-switch bug
+        self.canvas.settings = new_settings
+        self.toolbar.settings = new_settings  # keep toolbar's settings ref live too
         self.settings.save()
         if lang_changed:
             info_dialog(self.root, self.S["language_changed_title"],
@@ -1023,25 +524,21 @@ class EryApp:
         except Exception as e:
             info_dialog(self.root, self.S["title"], f"Export error:\n{e}")
             return
-        # Mark every exported image (= one with cached masks) as finished.
-        # Per user spec: "wenn exportiert -> Status auf fertig".
+        # "Export → fertig" (user spec): mark every exported image as finished.
         if self.grouped is not None:
-            from .cellpose_runner import has_cache as _has_cache
             for info in self.grouped.flat:
-                if not _has_cache(self.folder, info.path):
+                if not has_cache(self.folder, info.path):
                     continue
                 review = ReviewState.load(self.folder, info.path.stem)
                 if not review.is_finished:
                     review.is_finished = True
                     review.save(self.folder, info.path.stem)
-            # Refresh the in-memory current image's review too
             if self.images and 0 <= self.idx < len(self.images):
                 self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
         info_dialog(self.root, self.S["export_done_title"],
                     self.S["export_done_msg"].format(path=out))
-        # Counts may have shifted (force_included propagation, etc.) — refresh.
-        self._invalidate_group_cache()
-        self._refresh_sidebar_status()
+        self.sidebar.invalidate_group_cache()
+        self.sidebar.refresh_statuses()
         self._update_status()
         self._refresh_details()
 
@@ -1052,7 +549,7 @@ class EryApp:
         info_dialog(self.root, self.S["menu_help_about"], f"Erys v{__version__}")
 
     # ─────────────────────────────────────────
-    # Helpers
+    # Save / status / lifecycle
     # ─────────────────────────────────────────
     def _save_review(self) -> None:
         if self.folder is None or not self.images:
@@ -1063,12 +560,9 @@ class EryApp:
             self.root.after(1500, lambda: self.saved_label.config(text=""))
         except Exception as e:
             self.saved_label.config(text=f"! {e}", fg=self.P["accent_error"])
-        # Edit happened → invalidate this group's cached active-count and refresh node.
-        self._refresh_current_group_counter()
-        # Status + sidebar icon for current image may have changed.
-        self._refresh_sidebar_status()
+        self.sidebar.refresh_current_group_counter()
+        self.sidebar.refresh_statuses()
         self._update_status()
-        # Live cockpit update
         self._refresh_details()
 
     def _update_status(self) -> None:
@@ -1083,12 +577,15 @@ class EryApp:
         dup = self.canvas.duplicate_ids
         n_total = len(infos)
         auto_inactive = lambda cid: cid in border or cid in dup
-        n_active = sum(1 for cid in infos
-                       if cid not in excluded and (not auto_inactive(cid) or cid in included))
+        n_active = sum(
+            1 for cid in infos
+            if cid not in excluded and (not auto_inactive(cid) or cid in included)
+        )
         n_excluded = sum(1 for cid in infos if cid in excluded)
-        n_inactive_auto = sum(1 for cid in infos
-                              if auto_inactive(cid) and cid not in included and cid not in excluded)
-        # Verändert = active cells whose type is not "normal"
+        n_inactive_auto = sum(
+            1 for cid in infos
+            if auto_inactive(cid) and cid not in included and cid not in excluded
+        )
         default_key = self.profile.default_type_key()
         types_map = self.review.types
         n_changed = 0
@@ -1132,7 +629,6 @@ class EryApp:
         except tk.TclError:
             pass
         self.settings.save()
-        # Cancel any pending debounced save; then save synchronously once.
         if self._profile_save_after_id is not None:
             try:
                 self.root.after_cancel(self._profile_save_after_id)
