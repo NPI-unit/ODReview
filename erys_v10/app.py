@@ -118,7 +118,9 @@ class EryApp:
         menubar = tk.Menu(self.root)
         m_file = tk.Menu(menubar, tearoff=0)
         m_file.add_command(label=S["menu_open_folder"], command=self._on_open_folder, accelerator="Cmd+O")
+        m_file.add_separator()
         m_file.add_command(label=S["menu_batch"], command=self._on_batch)
+        m_file.add_separator()
         m_file.add_command(label=S["menu_export"], command=self._on_export, accelerator="Cmd+S")
         m_file.add_separator()
         m_file.add_command(label=S["menu_quit"], command=self._on_close, accelerator="Cmd+Q")
@@ -160,7 +162,7 @@ class EryApp:
         )
         self.tool_label.pack(side="right")
         self.saved_label = tk.Label(
-            self.status, text="", fg=P["accent_secondary"], bg=P["status_bg"], padx=10,
+            self.status, text="", fg=P["accent_positive"], bg=P["status_bg"], padx=10,
             font=("TkDefaultFont", 10),
         )
         self.saved_label.pack(side="right")
@@ -203,7 +205,7 @@ class EryApp:
 
         filt = tk.Frame(self.sidebar, bg=P["sidebar_bg"])
         filt.pack(fill="x", padx=8, pady=(6, 4))
-        tk.Label(filt, text=S["filter_label"], bg=P["sidebar_bg"], fg=P["fg_label"],
+        tk.Label(filt, text=S["filter_label"], bg=P["sidebar_bg"], fg=P["fg_secondary"],
                  font=("TkDefaultFont", 9)).pack(anchor="w")
         self.filter_var = tk.StringVar(value="all")
         for value, label_key in [
@@ -229,8 +231,8 @@ class EryApp:
                         background=P["tree_bg"], foreground=P["fg"],
                         fieldbackground=P["tree_bg"], borderwidth=0, rowheight=22)
         style.map("Erys.Treeview",
-                  background=[("selected", P["sel_bg"])],
-                  foreground=[("selected", P["sel_fg"])])
+                  background=[("selected", P["accent_primary"])],
+                  foreground=[("selected", P["fg_inverse"])])
         style.layout("Erys.Treeview", style.layout("Treeview"))
 
         self.tree = ttk.Treeview(list_frame, show="tree", selectmode="browse",
@@ -255,70 +257,182 @@ class EryApp:
         )
         self.folder_label.pack(fill="x", side="bottom")
 
+    def _configure_ttk_styles(self) -> None:
+        """Custom ttk styles for cleaner buttons. Uses 'clam' theme as base so
+        we can actually paint backgrounds/foregrounds (macOS 'aqua' ignores them)."""
+        P = self.P
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        # Tool palette button — base state
+        style.configure(
+            "ErysTool.TButton",
+            background=P["panel_bg"],
+            foreground=P["fg"],
+            bordercolor=P["border"],
+            lightcolor=P["panel_bg"],
+            darkcolor=P["panel_bg"],
+            focuscolor=P["accent_primary"],
+            padding=(12, 6),
+            relief="flat",
+            font=("TkDefaultFont", 11),
+        )
+        style.map(
+            "ErysTool.TButton",
+            background=[("active", P["sidebar_alt_bg"]), ("pressed", P["sidebar_alt_bg"])],
+            foreground=[("active", P["fg"])],
+            relief=[("pressed", "flat"), ("!pressed", "flat")],
+        )
+        # Tool palette — ACTIVE (selected) state
+        style.configure(
+            "ErysToolActive.TButton",
+            background=P["accent_primary"],
+            foreground=P["fg_inverse"],
+            bordercolor=P["accent_primary"],
+            lightcolor=P["accent_primary"],
+            darkcolor=P["accent_primary"],
+            padding=(12, 6),
+            relief="flat",
+            font=("TkDefaultFont", 11, "bold"),
+        )
+        style.map(
+            "ErysToolActive.TButton",
+            background=[("active", P["accent_primary_hover"]),
+                        ("pressed", P["accent_primary_press"])],
+            foreground=[("active", P["fg_inverse"])],
+        )
+        # Action buttons (Cellpose, Overlay, Reset, Undo, Export)
+        style.configure(
+            "ErysAction.TButton",
+            background=P["panel_bg"],
+            foreground=P["fg"],
+            bordercolor=P["border"],
+            lightcolor=P["panel_bg"],
+            darkcolor=P["panel_bg"],
+            padding=(10, 6),
+            relief="flat",
+            font=("TkDefaultFont", 11),
+        )
+        style.map(
+            "ErysAction.TButton",
+            background=[("active", P["sidebar_alt_bg"]),
+                        ("pressed", P["sidebar_alt_bg"])],
+            foreground=[("active", P["fg"])],
+        )
+        # Primary CTA (Export) — accent-colored
+        style.configure(
+            "ErysPrimary.TButton",
+            background=P["accent_primary"],
+            foreground=P["fg_inverse"],
+            bordercolor=P["accent_primary"],
+            lightcolor=P["accent_primary"],
+            darkcolor=P["accent_primary"],
+            padding=(12, 6),
+            relief="flat",
+            font=("TkDefaultFont", 11, "bold"),
+        )
+        style.map(
+            "ErysPrimary.TButton",
+            background=[("active", P["accent_primary_hover"]),
+                        ("pressed", P["accent_primary_press"])],
+        )
+        # Combobox
+        style.configure(
+            "Erys.TCombobox",
+            fieldbackground=P["panel_bg"],
+            background=P["panel_bg"],
+            foreground=P["fg"],
+            bordercolor=P["border"],
+            arrowcolor=P["fg_secondary"],
+            padding=(6, 4),
+        )
+
     def _build_toolbar(self, parent: tk.Widget) -> None:
         S = self.S
         P = self.P
-        bar = tk.Frame(parent, bg=P["toolbar_bg"], height=46)
+        self._configure_ttk_styles()
+
+        bar = tk.Frame(parent, bg=P["toolbar_bg"], height=52)
         bar.pack(fill="x", side="top")
         bar.pack_propagate(False)
+        # 1-pixel bottom border for visual separation
+        sep = tk.Frame(parent, bg=P["border"], height=1)
+        sep.pack(fill="x", side="top")
 
-        self.tool_buttons: dict[str, tk.Button] = {}
+        # ─── Tool palette (left) ───
+        self.tool_buttons: dict[str, ttk.Button] = {}
         for i, (key, label_key) in enumerate([
             (TOOL_ADD, "tool_add"),
             (TOOL_REMOVE, "tool_remove"),
             (TOOL_TYPE, "tool_type"),
         ], start=1):
-            b = tk.Button(
-                bar, text=f"{i}  {S[label_key]}", font=("TkDefaultFont", 11),
-                padx=10, pady=4,
+            b = ttk.Button(
+                bar, text=f"{i}   {S[label_key]}",
+                style="ErysTool.TButton",
                 command=lambda k=key: self._set_active_tool(k),
             )
-            b.pack(side="left", padx=3, pady=4)
+            b.pack(side="left", padx=(6 if i == 1 else 3, 3), pady=8)
             self.tool_buttons[key] = b
 
+        # Type dropdown (only relevant in TOOL_TYPE mode)
         self.type_var = tk.StringVar(value=self._type_display_name(self.profile.active_type_key))
         self.type_combo = ttk.Combobox(
-            bar, textvariable=self.type_var, state="readonly", width=20,
-            values=self._type_display_values(),
+            bar, textvariable=self.type_var, state="readonly", width=22,
+            values=self._type_display_values(), style="Erys.TCombobox",
         )
-        self.type_combo.pack(side="left", padx=(6, 14), pady=4)
+        self.type_combo.pack(side="left", padx=(8, 14), pady=10)
         self.type_combo.bind("<<ComboboxSelected>>", self._on_type_combo)
 
-        tk.Frame(bar, bg=P["border"], width=1, height=28).pack(side="left", padx=4, pady=8)
-
-        def mkaction(text, cmd):
-            b = tk.Button(bar, text=text, command=cmd,
-                          font=("TkDefaultFont", 11), padx=10, pady=4)
-            b.pack(side="left", padx=3, pady=4)
-            return b
-
-        # Cellpose re-run: split-button — main = single, dropdown = batch menu
-        self.btn_resegment = tk.Button(
-            bar, text="⟳  " + S["tool_resegment"], command=self._on_resegment,
-            font=("TkDefaultFont", 11), padx=10, pady=4,
+        # Vertical separator
+        tk.Frame(bar, bg=P["border"], width=1, height=28).pack(
+            side="left", padx=6, pady=12,
         )
-        self.btn_resegment.pack(side="left", padx=(3, 0), pady=4)
-        resegment_menu = tk.Menu(bar, tearoff=0)
-        resegment_menu.add_command(
-            label=S["tool_resegment_more"], command=self._on_batch,
-        )
-        self.btn_resegment_more = tk.Menubutton(
-            bar, text="▾", relief="raised",
-            font=("TkDefaultFont", 11), padx=4, pady=4,
-            menu=resegment_menu,
-        )
-        self.btn_resegment_more.pack(side="left", padx=(0, 3), pady=4)
 
-        self.btn_overlay = mkaction("⊙  " + S["tool_overlay"], self._on_toggle_overlay)
-        self.btn_undo    = mkaction("↶  " + S["tool_undo"], self._on_undo)
-        self.btn_reset   = mkaction("⌂  " + S["tool_reset_zoom"], self.canvas_reset_zoom if False else (lambda: self.canvas.reset_zoom()))
-        self.btn_export  = mkaction("↓  " + S["tool_export"], self._on_export)
+        # ─── Action buttons (middle) ───
+        self.btn_resegment = ttk.Button(
+            bar, text="⟳   " + S["tool_resegment"],
+            style="ErysAction.TButton", command=self._on_resegment,
+        )
+        self.btn_resegment.pack(side="left", padx=3, pady=8)
 
+        self.btn_overlay = ttk.Button(
+            bar, text="⊙   " + S["tool_overlay"],
+            style="ErysAction.TButton", command=self._on_toggle_overlay,
+        )
+        self.btn_overlay.pack(side="left", padx=3, pady=8)
+
+        self.btn_reset = ttk.Button(
+            bar, text="⌂   " + S["tool_reset_zoom"],
+            style="ErysAction.TButton", command=lambda: self.canvas.reset_zoom(),
+        )
+        self.btn_reset.pack(side="left", padx=3, pady=8)
+
+        self.btn_undo = ttk.Button(
+            bar, text="↶   " + S["tool_undo"],
+            style="ErysAction.TButton", command=self._on_undo,
+        )
+        self.btn_undo.pack(side="left", padx=3, pady=8)
+
+        # Spacer pushes the primary CTA + banner to the right
+        spacer = tk.Frame(bar, bg=P["toolbar_bg"])
+        spacer.pack(side="left", fill="x", expand=True)
+
+        # ─── Primary CTA (right) ───
+        self.btn_export = ttk.Button(
+            bar, text="↓   " + S["tool_export"],
+            style="ErysPrimary.TButton", command=self._on_export,
+        )
+        self.btn_export.pack(side="right", padx=(3, 10), pady=8)
+
+        # Parameter-mismatch banner (only visible when caches use different params)
         self.param_banner = tk.Label(
-            bar, text="", bg=P["toolbar_bg"], fg=P["accent_warning"],
+            bar, text="", bg=P["toolbar_bg"], fg=P["accent_warn"],
             font=("TkDefaultFont", 10, "italic"), cursor="hand2",
         )
-        self.param_banner.pack(side="right", padx=12)
+        self.param_banner.pack(side="right", padx=8)
         self.param_banner.bind("<Button-1>", lambda e: self._on_resegment())
 
         self._highlight_active_tool()
@@ -356,22 +470,12 @@ class EryApp:
             pass
 
     def _highlight_active_tool(self) -> None:
-        if not hasattr(self, "_default_btn_bg"):
-            any_btn = next(iter(self.tool_buttons.values()))
-            self._default_btn_bg = any_btn.cget("bg")
-            self._default_btn_fg = any_btn.cget("fg")
-            self._default_btn_abg = any_btn.cget("activebackground")
-            self._default_btn_afg = any_btn.cget("activeforeground")
-        accent = self.P["accent_primary"]
+        """Swap ttk styles between ErysTool.TButton (idle) and ErysToolActive.TButton (active)."""
         for key, btn in self.tool_buttons.items():
             if key == self.settings.active_tool:
-                btn.configure(relief="sunken", bg=accent, fg="#ffffff",
-                              activebackground=accent, activeforeground="#ffffff")
+                btn.configure(style="ErysToolActive.TButton")
             else:
-                btn.configure(relief="raised",
-                              bg=self._default_btn_bg, fg=self._default_btn_fg,
-                              activebackground=self._default_btn_abg,
-                              activeforeground=self._default_btn_afg)
+                btn.configure(style="ErysTool.TButton")
         self._refresh_tool_indicator()
 
     def _type_display_name(self, key: str) -> str:
@@ -844,11 +948,26 @@ class EryApp:
         except Exception as e:
             info_dialog(self.root, self.S["title"], f"Export error:\n{e}")
             return
+        # Mark every exported image (= one with cached masks) as finished.
+        # Per user spec: "wenn exportiert -> Status auf fertig".
+        if self.grouped is not None:
+            from .cellpose_runner import has_cache as _has_cache
+            for info in self.grouped.flat:
+                if not _has_cache(self.folder, info.path):
+                    continue
+                review = ReviewState.load(self.folder, info.path.stem)
+                if not review.is_finished:
+                    review.is_finished = True
+                    review.save(self.folder, info.path.stem)
+            # Refresh the in-memory current image's review too
+            if self.images and 0 <= self.idx < len(self.images):
+                self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
         info_dialog(self.root, self.S["export_done_title"],
                     self.S["export_done_msg"].format(path=out))
         # Counts may have shifted (force_included propagation, etc.) — refresh.
         self._invalidate_group_cache()
         self._refresh_sidebar_status()
+        self._update_status()
 
     def _on_help_hotkeys(self) -> None:
         info_dialog(self.root, self.S["help_hotkeys_title"], self.S["help_hotkeys"])

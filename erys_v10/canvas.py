@@ -38,6 +38,7 @@ from .persistence import (
     TOOL_ADD, TOOL_REMOVE, TOOL_TYPE,
 )
 from .profile import ProfileData
+from .theme import palette as _palette
 
 
 @dataclass
@@ -191,11 +192,13 @@ class EryCanvas(tk.Frame):
         status_callback: Callable[[str], None] | None = None,
         new_circle_radius: int = 17,
     ):
-        super().__init__(parent, bg="#1e1e1e")
+        P = _palette(settings.theme)
+        super().__init__(parent, bg=P["canvas_bg"])
         self.settings = settings
         self.profile = profile
         self.duplicate_ids: set[int] = set()
         self.save_callback = save_callback
+        self._theme_palette = P
         self.status_callback = status_callback or (lambda s: None)
         self.new_circle_radius = new_circle_radius
 
@@ -214,10 +217,10 @@ class EryCanvas(tk.Frame):
         # Pan state
         self._pan_start: tuple[float, float, float, float, float, float] | None = None
 
-        # Figure
-        self.fig = Figure(figsize=(10, 7), facecolor="#1e1e1e")
+        # Figure — theme-aware background
+        self.fig = Figure(figsize=(10, 7), facecolor=P["canvas_bg"])
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor("#1e1e1e")
+        self.ax.set_facecolor(P["canvas_bg"])
         self.ax.axis("off")
         self.fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
@@ -248,7 +251,7 @@ class EryCanvas(tk.Frame):
         self.history.clear()
         self.selected_id = None
         self.ax.cla()
-        self.ax.set_facecolor("#1e1e1e")
+        self.ax.set_facecolor(self._theme_palette["canvas_bg"])
         self.ax.axis("off")
         self._im_handle = self._overlay_handle = self._margin_handle = None
         self._number_artists = []
@@ -286,7 +289,7 @@ class EryCanvas(tk.Frame):
             self._im_handle.set_data(self.image_norm)
         else:
             self.ax.cla()
-            self.ax.set_facecolor("#1e1e1e")
+            self.ax.set_facecolor(self._theme_palette["canvas_bg"])
             self.ax.axis("off")
             self._im_handle = self.ax.imshow(self.image_norm, interpolation="nearest", zorder=0)
             blank_rgba = np.zeros((h, w, 4), dtype=np.float32)
@@ -313,6 +316,13 @@ class EryCanvas(tk.Frame):
     def set_overlay_visible(self, visible: bool) -> None:
         if self._overlay_handle is not None:
             self._overlay_handle.set_visible(visible)
+        # Margin overlay is coupled to the main overlay (per user spec):
+        # one switch controls both. Margin still respects the profile-level
+        # `show_margin_overlay` preference (so user can disable it in profile).
+        if self._margin_handle is not None:
+            self._margin_handle.set_visible(
+                visible and self.profile.show_margin_overlay and self.profile.margin_n > 0
+            )
         self._apply_number_visibility()
         self.canvas.draw_idle()
 
@@ -489,7 +499,9 @@ class EryCanvas(tk.Frame):
         if self.image is None or self._margin_handle is None:
             return
         h, w = self.image.shape[:2]
-        if self.profile.show_margin_overlay and self.profile.margin_n > 0:
+        # Coupled to overlay visibility (single toggle controls both layers).
+        overlay_on = self._overlay_handle is not None and self._overlay_handle.get_visible()
+        if overlay_on and self.profile.show_margin_overlay and self.profile.margin_n > 0:
             rgba = build_margin_rgba(h, w, self.profile.margin_n)
             self._margin_handle.set_data(rgba)
             self._margin_handle.set_visible(True)

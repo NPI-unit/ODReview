@@ -75,8 +75,8 @@ STRINGS = {
         "btn_open_folder":     "Ordner laden …",
         # Tools
         "tool_select":         "Auswahl",
-        "tool_add":            "Hinzufügen",
-        "tool_remove":         "Entfernen",
+        "tool_add":            "Neue Zelle",
+        "tool_remove":         "Zählen ein/aus",
         "tool_type":           "Verändert",
         # Toolbar actions
         "tool_resegment":      "Cellpose neu rechnen",
@@ -257,8 +257,8 @@ STRINGS = {
         "no_folder":           "No folder loaded",
         "btn_open_folder":     "Open folder …",
         "tool_select":         "Select",
-        "tool_add":            "Add",
-        "tool_remove":         "Remove",
+        "tool_add":            "New cell",
+        "tool_remove":         "Count on/off",
         "tool_type":           "Modify",
         "tool_resegment":      "Re-run Cellpose",
         "tool_export":         "Export",
