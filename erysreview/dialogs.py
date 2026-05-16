@@ -361,6 +361,41 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     tk.Button(btns_left, text=S["settings_type_new"], command=on_new).pack(side="left", padx=2)
     tk.Button(btns_left, text=S["settings_type_delete"], command=on_delete).pack(side="left", padx=2)
 
+    # ─── Color scheme picker (overwrites all type colors in current order) ───
+    from .theme import COLOR_SCHEMES, apply_scheme_to_types
+    scheme_frame = tk.Frame(left); scheme_frame.pack(fill="x", pady=(10, 0))
+    tk.Label(scheme_frame, text=S["pe_color_scheme"], anchor="w",
+             font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
+    tk.Label(scheme_frame, text=S["pe_color_scheme_help"], anchor="w",
+             fg="#666", wraplength=440, font=("TkDefaultFont", 9),
+             justify="left").pack(anchor="w", pady=(0, 4))
+    scheme_label_key = "label_de" if S.get("settings_language") == "Sprache" else "label_de"
+    # Build display-name → key mapping
+    scheme_disp_to_key: dict[str, str] = {
+        v[scheme_label_key]: k for k, v in COLOR_SCHEMES.items()
+    }
+    scheme_var = tk.StringVar()
+    scheme_combo = ttk.Combobox(
+        scheme_frame, textvariable=scheme_var, state="readonly",
+        values=list(scheme_disp_to_key.keys()), width=30,
+    )
+    scheme_combo.pack(side="left", padx=(0, 6))
+
+    def apply_color_scheme():
+        sel = scheme_var.get()
+        scheme_key = scheme_disp_to_key.get(sel)
+        if scheme_key is None:
+            return
+        if not confirm_dialog(top, S["confirm_apply_scheme_title"],
+                              S["confirm_apply_scheme_msg"].format(name=sel),
+                              yes_text=S["confirm_yes"], no_text=S["confirm_no"]):
+            return
+        apply_scheme_to_types(type_state["types"], scheme_key)
+        _populate(type_state["selected_idx"])
+
+    tk.Button(scheme_frame, text=S["pe_color_scheme"],
+              command=apply_color_scheme).pack(side="left")
+
     tk.Label(right, text=S["settings_type_name"], anchor="w").pack(fill="x")
     name_var_t = tk.StringVar(); tk.Entry(right, textvariable=name_var_t
                                           ).pack(fill="x", pady=(2, 8))

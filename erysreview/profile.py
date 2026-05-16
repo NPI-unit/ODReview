@@ -64,6 +64,9 @@ class ProfileData:
     duplicate_detection: DuplicateDetection = field(default_factory=DuplicateDetection)
     # Per-profile UI state (persisted)
     sidebar_open_groups: list[str] = field(default_factory=list)  # "timepoint/subject" keys
+    details_collapsed: bool = False
+    # Recently used image folders (most recent first, capped at recent_folders_max)
+    recent_folders: list[str] = field(default_factory=list)
     # Currently-selected type for the "Modify" tool (per-profile so each study keeps its own)
     active_type_key: str = "normal"
     # Metadata
@@ -96,6 +99,8 @@ class ProfileData:
             show_margin_overlay=bool(raw.get("show_margin_overlay", True)),
             duplicate_detection=dup,
             sidebar_open_groups=list(raw.get("sidebar_open_groups", [])),
+            details_collapsed=bool(raw.get("details_collapsed", False)),
+            recent_folders=list(raw.get("recent_folders", [])),
             active_type_key=raw.get("active_type_key", "normal"),
             created_at=raw.get("created_at", ""),
             updated_at=raw.get("updated_at", ""),
@@ -114,6 +119,8 @@ class ProfileData:
             "show_margin_overlay": self.show_margin_overlay,
             "duplicate_detection": asdict(self.duplicate_detection),
             "sidebar_open_groups": self.sidebar_open_groups,
+            "details_collapsed": self.details_collapsed,
+            "recent_folders": self.recent_folders,
             "active_type_key": self.active_type_key,
             "created_at": self.created_at,
             "updated_at": self.updated_at,

@@ -21,32 +21,47 @@ from .profile import ProfileData
 class DetailPanel(tk.Frame):
     """Cockpit panel that shows either an image's or a subject's stats."""
 
-    def __init__(self, parent: tk.Misc, palette: dict, strings: dict):
+    def __init__(self, parent: tk.Misc, palette: dict, strings: dict,
+                 collapsed: bool = False,
+                 on_collapse_changed=None):
         super().__init__(parent, bg=palette["sidebar_alt_bg"])
         self.P = palette
         self.S = strings
         self.mode: str = "empty"           # "empty" | "image" | "subject"
         self.current_image: Path | None = None
         self.current_subject: tuple[str, str] | None = None
+        self.collapsed: bool = collapsed
+        self._on_collapse_changed = on_collapse_changed
         self._build()
 
     # ─── Build ───
     def _build(self) -> None:
         P = self.P
-        # Header bar
-        self.header = tk.Frame(self, bg=P["sidebar_alt_bg"])
+        # Header bar with collapse toggle
+        self.header = tk.Frame(self, bg=P["sidebar_alt_bg"], cursor="hand2")
         self.header.pack(fill="x", padx=8, pady=(6, 0))
+        self._chevron = tk.Label(
+            self.header,
+            text="▸" if self.collapsed else "▾",
+            bg=P["sidebar_alt_bg"], fg=P["fg_secondary"],
+            font=("TkDefaultFont", 10, "bold"),
+            cursor="hand2",
+        )
+        self._chevron.pack(side="left", padx=(0, 6))
         self.header_label = tk.Label(
             self.header, text=self.S["details_title"],
             bg=P["sidebar_alt_bg"], fg=P["fg_secondary"],
             font=("TkDefaultFont", 9, "bold"),
+            cursor="hand2",
         )
         self.header_label.pack(side="left")
+        for w in (self.header, self._chevron, self.header_label):
+            w.bind("<Button-1>", lambda _e: self.toggle_collapsed())
 
-        # Body — scrollable text label region. We keep it as a Frame so we can
-        # add per-row widgets (label + value pairs).
+        # Body — hidden when collapsed
         self.body = tk.Frame(self, bg=P["sidebar_alt_bg"])
-        self.body.pack(fill="both", expand=True, padx=8, pady=4)
+        if not self.collapsed:
+            self.body.pack(fill="both", expand=True, padx=8, pady=4)
 
         self.empty_label = tk.Label(
             self.body, text=self.S["details_empty_hint"],
@@ -55,6 +70,25 @@ class DetailPanel(tk.Frame):
             font=("TkDefaultFont", 9, "italic"),
         )
         self.empty_label.pack(anchor="w", pady=8)
+
+    # ─── Collapse API ───
+    def toggle_collapsed(self) -> None:
+        self.set_collapsed(not self.collapsed)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        if collapsed == self.collapsed:
+            return
+        self.collapsed = collapsed
+        self._chevron.config(text="▸" if collapsed else "▾")
+        if collapsed:
+            self.body.pack_forget()
+        else:
+            self.body.pack(fill="both", expand=True, padx=8, pady=4)
+        if self._on_collapse_changed is not None:
+            try:
+                self._on_collapse_changed(collapsed)
+            except Exception:
+                pass
 
     # ─── State API ───
     def show_empty(self) -> None:

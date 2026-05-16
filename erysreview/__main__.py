@@ -1,4 +1,4 @@
-"""Entry point: ``python -m erys_v10``."""
+"""Entry point: ``python -m erysreview``."""
 
 from .app import main
 

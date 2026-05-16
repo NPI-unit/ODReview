@@ -77,6 +77,9 @@ class EryApp:
         if self.profile.import_folder:
             p = Path(self.profile.import_folder)
             if p.is_dir():
+                # Seed recents with the auto-loaded folder so it shows up in the menu
+                self._push_recent_folder(str(p))
+                self._refresh_recent_menu()
                 self.root.after(100, lambda: self._open_folder(p, restore_index=True))
 
     # ─────────────────────────────────────────
@@ -107,6 +110,10 @@ class EryApp:
         menubar = tk.Menu(self.root)
         m_file = tk.Menu(menubar, tearoff=0)
         m_file.add_command(label=S["menu_open_folder"], command=self._on_open_folder, accelerator="Cmd+O")
+        # Recent folders submenu (rebuilt on demand from profile.recent_folders)
+        self.m_recent = tk.Menu(m_file, tearoff=0)
+        m_file.add_cascade(label=S["menu_recent_folders"], menu=self.m_recent)
+        self._refresh_recent_menu()
         m_file.add_separator()
         m_file.add_command(label=S["menu_batch"], command=self._on_batch)
         m_file.add_separator()
@@ -184,6 +191,7 @@ class EryApp:
             on_image_select=self._show_image_at,
             on_subject_select=self._show_subject_info,
             on_open_changed=self._schedule_profile_save,
+            on_details_collapsed_changed=lambda _b: self._schedule_profile_save(),
         )
         self.paned.add(self.sidebar, minsize=200, width=self.settings.sidebar_width)
 
@@ -286,8 +294,55 @@ class EryApp:
         path = filedialog.askdirectory(title=self.S["menu_open_folder"])
         if path:
             self.profile.import_folder = str(path)
+            self._push_recent_folder(path)
             save_profile(self.profile)
+            self._refresh_recent_menu()
             self._open_folder(Path(path), restore_index=False)
+
+    # ─────────────────────────────────────────
+    # Recent folders
+    # ─────────────────────────────────────────
+    MAX_RECENT_FOLDERS = 5
+
+    def _push_recent_folder(self, path: str) -> None:
+        """Move `path` to the front of profile.recent_folders, dedupe, truncate."""
+        recents = [p for p in self.profile.recent_folders if p != path]
+        recents.insert(0, path)
+        self.profile.recent_folders = recents[: self.MAX_RECENT_FOLDERS]
+
+    def _refresh_recent_menu(self) -> None:
+        try:
+            self.m_recent.delete(0, "end")
+        except (tk.TclError, AttributeError):
+            return
+        recents = list(self.profile.recent_folders or [])
+        if not recents:
+            self.m_recent.add_command(label=self.S["menu_recent_empty"], state="disabled")
+            return
+        for path_str in recents:
+            label = Path(path_str).name or path_str
+            self.m_recent.add_command(
+                label=label,
+                command=lambda p=path_str: self._open_recent(p),
+            )
+
+    def _open_recent(self, path_str: str) -> None:
+        p = Path(path_str)
+        if not p.is_dir():
+            # Stale entry — remove and refresh
+            self.profile.recent_folders = [
+                x for x in self.profile.recent_folders if x != path_str
+            ]
+            save_profile(self.profile)
+            self._refresh_recent_menu()
+            info_dialog(self.root, self.S["title"],
+                        self.S["err_no_images"].format(path=p))
+            return
+        self.profile.import_folder = path_str
+        self._push_recent_folder(path_str)
+        save_profile(self.profile)
+        self._refresh_recent_menu()
+        self._open_folder(p, restore_index=True)
 
     def _open_folder(self, path: Path, restore_index: bool) -> None:
         out_dir = path / "outputs"

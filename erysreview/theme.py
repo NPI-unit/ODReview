@@ -127,3 +127,52 @@ STATUS_ICONS_3 = {
     "in_progress": "◐",
     "finished":    "●",
 }
+
+
+# ─────────────────────────────────────────────
+# Cell-type color schemes (5 strategies, applied by position)
+# ─────────────────────────────────────────────
+COLOR_SCHEMES: dict[str, dict] = {
+    "tribal_classic": {
+        "label_de": "TRIBAL Klassisch",
+        "label_en": "TRIBAL classic",
+        "colors": ["#FFD000", "#FF6B6B", "#4ECDC4", "#9D4EDD", "#F77F00"],
+    },
+    "wavelength": {
+        "label_de": "Wellenlänge (warm → kühl)",
+        "label_en": "Wavelength (warm → cool)",
+        "colors": ["#F5B400", "#F26B3A", "#E04141", "#8B3FBF", "#3A6FE0"],
+    },
+    "colorblind_safe": {
+        "label_de": "Colorblind-Safe (Wong)",
+        "label_en": "Colorblind-safe (Wong)",
+        "colors": ["#E69F00", "#56B4E9", "#009E73", "#F0E442", "#D55E00"],
+    },
+    "status_coded": {
+        "label_de": "Status (grün/rot)",
+        "label_en": "Status (green/red)",
+        "colors": ["#2E8B57", "#E04141", "#D6534C", "#C26464", "#A53737"],
+    },
+    "monochrome_blue": {
+        "label_de": "Monochrom Blau",
+        "label_en": "Monochrome blue",
+        "colors": ["#B3D4F2", "#7AAFE0", "#4D8DDF", "#2961B3", "#143F86"],
+    },
+}
+
+DEFAULT_COLOR_SCHEME = "tribal_classic"
+
+
+def scheme_colors(scheme_key: str) -> list[str]:
+    return list(COLOR_SCHEMES.get(scheme_key, COLOR_SCHEMES[DEFAULT_COLOR_SCHEME])["colors"])
+
+
+def apply_scheme_to_types(types_list, scheme_key: str) -> None:
+    """Mutate the given TypeDef list in place — assign colors by position.
+    Extra types beyond the scheme's color count fall back to the last color."""
+    colors = scheme_colors(scheme_key)
+    if not colors:
+        return
+    last = colors[-1]
+    for i, td in enumerate(types_list):
+        td.color = colors[i] if i < len(colors) else last

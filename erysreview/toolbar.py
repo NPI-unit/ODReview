@@ -117,11 +117,30 @@ class Toolbar(tk.Frame):
             background=[("active", P["accent_primary_hover"]),
                         ("pressed", P["accent_primary_press"])],
         )
+        # Combobox: distinct accent border + focus state so it doesn't blend
+        # into the toolbar background (previous version had low contrast).
         style.configure(
             "Erys.TCombobox",
             fieldbackground=P["panel_bg"], background=P["panel_bg"],
-            foreground=P["fg"], bordercolor=P["border"],
-            arrowcolor=P["fg_secondary"], padding=(6, 4),
+            foreground=P["fg"],
+            bordercolor=P["accent_primary"],
+            lightcolor=P["accent_primary"],
+            darkcolor=P["accent_primary"],
+            arrowcolor=P["accent_primary"],
+            selectbackground=P["accent_primary"],
+            selectforeground=P["fg_inverse"],
+            padding=(8, 5),
+        )
+        style.map(
+            "Erys.TCombobox",
+            fieldbackground=[("readonly", P["panel_bg"]),
+                             ("focus", P["panel_bg"])],
+            foreground=[("readonly", P["fg"]),
+                        ("disabled", P["fg_muted"])],
+            bordercolor=[("focus", P["accent_primary_hover"]),
+                         ("hover", P["accent_primary_hover"])],
+            arrowcolor=[("active", P["accent_primary_hover"]),
+                        ("disabled", P["fg_muted"])],
         )
 
     # ─────────────────────────────────────────

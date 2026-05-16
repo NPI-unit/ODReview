@@ -41,6 +41,7 @@ class Sidebar(tk.Frame):
         on_image_select: Callable[[int], None],
         on_subject_select: Callable[[str, str], None],
         on_open_changed: Callable[[], None],
+        on_details_collapsed_changed: Callable[[bool], None] | None = None,
     ):
         super().__init__(parent, bg=palette["sidebar_bg"])
         self.P = palette
@@ -50,6 +51,7 @@ class Sidebar(tk.Frame):
         self._cb_image_select = on_image_select
         self._cb_subject_select = on_subject_select
         self._cb_open_changed = on_open_changed
+        self._cb_details_collapsed = on_details_collapsed_changed
 
         # Mirror state (filled via populate())
         self.folder: Path | None = None
@@ -128,15 +130,13 @@ class Sidebar(tk.Frame):
         self.tree.bind("<<TreeviewOpen>>",  self._on_tree_open)
         self.tree.bind("<<TreeviewClose>>", self._on_tree_close)
 
-        self.folder_label = tk.Label(
-            self, text=S["no_folder"], bg=P["sidebar_bg"], fg=P["fg_muted"],
-            font=("TkDefaultFont", 9), wraplength=250, justify="left",
-            padx=8, pady=4,
+        # Folder label removed per user spec — sidebar is cleaner without it.
+        # DetailPanel docked at bottom of sidebar, with collapse toggle
+        self.details = DetailPanel(
+            self, P, S,
+            collapsed=self.profile.details_collapsed,
+            on_collapse_changed=self._on_details_collapse,
         )
-        self.folder_label.pack(fill="x", side="bottom")
-
-        # DetailPanel docked at bottom of sidebar
-        self.details = DetailPanel(self, P, S)
         self.details.pack(fill="x", side="bottom", padx=8, pady=(4, 4), ipady=2)
 
     # ─────────────────────────────────────────
@@ -146,9 +146,13 @@ class Sidebar(tk.Frame):
         self.folder = folder
         self.images = images
         self.grouped = grouped
-        self.folder_label.config(text=f"{folder.name}\n{len(images)} Bilder")
         self._invalidate_group_cache()
         self.refresh()
+
+    def _on_details_collapse(self, collapsed: bool) -> None:
+        self.profile.details_collapsed = collapsed
+        if self._cb_details_collapsed is not None:
+            self._cb_details_collapsed(collapsed)
 
     def set_idx(self, idx: int) -> None:
         self.idx = idx

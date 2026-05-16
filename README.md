@@ -73,7 +73,7 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
    ```bash
    git clone https://github.com/finn-dreisigacker/ErysReview.git
    cd ErysReview
-   python -m erys_v10
+   python -m erysreview
    ```
 
 4. (Optional) **Double-click launcher**: create a file `run_erys.command` in the repo root with:
@@ -81,7 +81,7 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
    #!/bin/bash
    cd "$(dirname "$0")"
    source ~/miniforge3/bin/activate erys
-   python -m erys_v10
+   python -m erysreview
    ```
    `chmod +x run_erys.command` once in Terminal, then you can double-click it from Finder.
 
@@ -105,14 +105,14 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
    ```cmd
    git clone https://github.com/finn-dreisigacker/ErysReview.git
    cd ErysReview
-   python -m erys_v10
+   python -m erysreview
    ```
 
 4. (Optional) Create a `run_erys.bat` next to the repo root:
    ```bat
    @echo off
    call "%USERPROFILE%\miniforge3\Scripts\activate.bat" erys
-   python -m erys_v10
+   python -m erysreview
    pause
    ```
    Double-click it to launch the app.
@@ -129,7 +129,7 @@ You should see versions printed and `True` if GPU is available.
 
 ## Quickstart
 
-1. Launch the app (`python -m erys_v10`).
+1. Launch the app (`python -m erysreview`).
 2. **First start** opens the **Profile Manager**. Click **Default laden** — a TRIBAL-style profile is created with sensible defaults.
 3. Menu → **Profil → Aktives Profil bearbeiten …** and set:
    - **Bilder-Ordner** to your folder of TIFs

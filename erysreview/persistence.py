@@ -108,7 +108,7 @@ TOOLS_ORDER  = [TOOL_ADD, TOOL_REMOVE, TOOL_TYPE]
 @dataclass
 class AppSettings:
     """Global app preferences. All study-specific config lives in a ProfileData
-    (see erys_v10.profile), not here."""
+    (see erysreview.profile), not here."""
     language: str = "de"
     theme: str = "dark"               # "dark" or "light"
     window_w: int = 1400
