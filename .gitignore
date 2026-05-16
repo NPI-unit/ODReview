@@ -49,5 +49,16 @@ images/
 BM-*.pdf
 *.pdf
 
+# ─── Legacy sketches kept locally but out of the repo ─
+01_*.py
+02_*.py
+03_*.py
+04_*.py
+ery_app.py
+ery_app_v8.py
+ery_app_v9.py
+erys/
+run_erys.command
+
 # ─── Allow specific things back in ────────────────
 !docs/**/*.png

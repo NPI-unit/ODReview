@@ -1,69 +1,278 @@
-# EryCountUI
+# ErysReview
 
-Single-threaded Tk + matplotlib + Cellpose application for reviewing erythrocyte segmentations on light-microscopy images.
+A desktop reviewer for **automated erythrocyte (red-blood-cell) segmentation** of light-microscopy images, built on top of [Cellpose](https://github.com/MouseLand/cellpose). Loads a folder of TIFs, runs Cellpose lazily per image, lets you visually correct each segmentation (add / remove / re-classify cells), and exports a clean, lab-friendly summary CSV per subject and timepoint.
 
-## Layout
+Designed for hematology / parasitology studies where you need to classify **2000 erythrocytes per subject and timepoint** across many images per condition.
 
-```
-.
-├── erys_v10/                  current app (v11.1 → v12 UI overhaul)
-│   ├── __main__.py            entry point: python -m erys_v10
-│   ├── app.py                 main window, sidebar, toolbar, status bar
-│   ├── canvas.py              matplotlib canvas + click/scroll/drag
-│   ├── cellpose_runner.py     lazy per-image Cellpose with cache
-│   ├── dialogs.py             profile manager, profile editor, settings, batch
-│   ├── duplicates.py          centroid-distance duplicate detection
-│   ├── export.py              structured outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/
-│   ├── grouping.py            regex-based filename grouping
-│   ├── i18n.py                DE/EN strings
-│   ├── persistence.py         AppSettings + FolderState + ReviewState
-│   ├── profile.py             Study profiles (TRIBAL default)
-│   ├── summary.py             per-Proband-Zeitpunkt summary CSV
-│   └── theme.py               dark/light palettes
-└── 03_interactive_review.py   legacy single-image reviewer (kept for reference)
-```
+> Note: this project is unaffiliated with the Cellpose authors. It is a UI wrapper that calls the Cellpose Python package locally on your machine. All segmentation credit goes to the Cellpose project.
 
-Old `ery_app*.py` and `erys/` are pre-v10 sketches retained for history.
+---
 
-## Run
+## Why this exists
 
+Cellpose 4 segments erythrocytes reliably, but a real lab workflow needs more:
+
+- **Curate** every cell as active / not-counted / typed
+- **Aggregate** counts across many images into one summary per subject-timepoint
+- **Track progress** toward a fixed target (e.g. 2000 cells)
+- **Persist** every click, so you can leave and come back days later
+- **Configure** all of this per study without touching code
+
+ErysReview gives you exactly that, in a single Tk window.
+
+---
+
+## Highlights
+
+- **Profiles per study** — regex-based filename grouping into `Zeitpunkt → Proband → Bild`, configurable cell types, Cellpose parameters, target cell count, duplicate-detection rules.
+- **Lazy Cellpose** with on-disk cache and parameter manifest. Open 200 images, only the ones you actually look at trigger compute.
+- **Hierarchical sidebar** with collapsible subject groups and an always-visible counter `n/target Erys` per group.
+- **Cockpit detail panel** that shows live per-image or per-subject statistics — % per cell type, % verändert, % toward target.
+- **3-tool palette**: `Neue Zelle` (add manual cell), `Zählen ein/aus` (toggle active state, also re-include border/duplicate cells), `Verändert` (assign type from dropdown).
+- **Automatic duplicate detection** (centroid distance) with configurable threshold + policy.
+- **Margin / border filter** so partial cells at image edges don't pollute counts. Configurable per profile.
+- **Auto-save** on every click into per-image JSON sidecars. No `Save` button.
+- **Structured export** to `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/` with original TIFs copied alongside masks, overlay PNGs, per-image stats CSV, and a per-subject summary CSV in a 4-block layout matching the standard lab spreadsheet format.
+- **Two themes** — Lab Neutral (light) and Soft Dark (dark) — sharing identical semantic color keys, both targeted at scientific work.
+- **DE / EN** strings.
+
+---
+
+## Screenshots
+
+> _placeholder — drop your screenshots into `docs/screenshots/` and link them here_
+
+---
+
+## Installation
+
+ErysReview is a Python application. If you have never used Python before, follow the section that matches your operating system.
+
+The recommended way is **Miniforge** (a minimal conda installer for scientific Python), because Cellpose depends on PyTorch and a Python virtual environment isolates it from the rest of your system.
+
+### macOS
+
+1. **Install Miniforge** (one-time):  
+   Download the appropriate installer from <https://github.com/conda-forge/miniforge#download> — pick `Miniforge3-MacOSX-arm64.sh` for Apple Silicon (M1/M2/M3) or `Miniforge3-MacOSX-x86_64.sh` for Intel Macs.
+
+   Open Terminal, navigate to the download (`cd ~/Downloads`), then run:
+   ```bash
+   bash Miniforge3-MacOSX-arm64.sh   # or the x86_64 file
+   ```
+   Accept defaults. Close and reopen Terminal afterwards.
+
+2. **Create the environment** and install dependencies:
+   ```bash
+   conda create -n erys python=3.12 -y
+   conda activate erys
+   pip install cellpose==4.1.1 matplotlib pandas scikit-image pillow tifffile
+   ```
+   On Apple Silicon, `pip install cellpose` pulls a PyTorch build with MPS (GPU) support automatically. Segmentation will run on the Mac GPU.
+
+3. **Clone this repo** and run:
+   ```bash
+   git clone https://github.com/finn-dreisigacker/ErysReview.git
+   cd ErysReview
+   python -m erys_v10
+   ```
+
+4. (Optional) **Double-click launcher**: create a file `run_erys.command` in the repo root with:
+   ```bash
+   #!/bin/bash
+   cd "$(dirname "$0")"
+   source ~/miniforge3/bin/activate erys
+   python -m erys_v10
+   ```
+   `chmod +x run_erys.command` once in Terminal, then you can double-click it from Finder.
+
+### Windows
+
+1. **Install Miniforge**: download `Miniforge3-Windows-x86_64.exe` from <https://github.com/conda-forge/miniforge#download> and run it. Accept defaults.
+
+2. From the Start menu, open **Miniforge Prompt**, then:
+   ```cmd
+   conda create -n erys python=3.12 -y
+   conda activate erys
+   pip install cellpose==4.1.1 matplotlib pandas scikit-image pillow tifffile
+   ```
+   If you have an NVIDIA GPU and want GPU acceleration, install the CUDA-enabled PyTorch first:
+   ```cmd
+   pip install torch --index-url https://download.pytorch.org/whl/cu121
+   ```
+   _(Replace `cu121` with the CUDA version matching your driver.)_
+
+3. **Clone this repo** (you need [Git for Windows](https://git-scm.com/download/win) installed first):
+   ```cmd
+   git clone https://github.com/finn-dreisigacker/ErysReview.git
+   cd ErysReview
+   python -m erys_v10
+   ```
+
+4. (Optional) Create a `run_erys.bat` next to the repo root:
+   ```bat
+   @echo off
+   call "%USERPROFILE%\miniforge3\Scripts\activate.bat" erys
+   python -m erys_v10
+   pause
+   ```
+   Double-click it to launch the app.
+
+### Verifying the install
+
+Inside the environment, run:
 ```bash
-.venv312/bin/python -m erys_v10
+python -c "import cellpose, torch; print(cellpose.version, torch.__version__, torch.backends.mps.is_available() or torch.cuda.is_available())"
 ```
+You should see versions printed and `True` if GPU is available.
 
-Requirements (versioned via repo `requirements.txt`):
-- Python 3.12
-- cellpose 4.1.1
-- torch 2.11 (MPS or CUDA for GPU)
-- matplotlib 3.10
-- scikit-image, pandas, numpy
+---
 
-## Profile system
+## Quickstart
 
-Each study lives as a JSON profile in `~/Library/Application Support/Erys/profiles/`.
-A profile defines: filename regex (Zeitpunkt + Proband + Bildnummer), cell types,
-Cellpose parameters, target cell count, duplicate detection rules, and margin width.
+1. Launch the app (`python -m erys_v10`).
+2. **First start** opens the **Profile Manager**. Click **Default laden** — a TRIBAL-style profile is created with sensible defaults.
+3. Menu → **Profil → Aktives Profil bearbeiten …** and set:
+   - **Bilder-Ordner** to your folder of TIFs
+   - **Filename-Regex** if your filenames differ from `STUDY_SUBJECT_TIMEPOINT_DATE_NUM.tif`
+   - **Typen** (delete, add, reorder — `Normal` is protected)
+   - **Ziel-Zellzahl** (default 2000)
+   - **Cellpose-Parameter** (diameter, flow, cellprob, GPU on/off)
+4. Click **Speichern**. The sidebar populates as `Zeitpunkt → Proband → Bild`.
+5. Click any image — Cellpose runs (modal spinner shows progress on first load, instant from cache afterwards).
+6. **Tools** in the toolbar (or press `1`, `2`, `3`):
+   - `1 Neue Zelle` — click empty space to add a manual cell
+   - `2 Zählen ein/aus` — click an active cell to remove it from the count, click a gray (border/duplicate) cell to manually include it
+   - `3 Verändert` — pick a type from the dropdown and click cells to label them
+7. Press `f` to mark the current image as **fertig** (green ●).
+8. Click `↓ Exportieren` (or `Cmd+S`) — writes `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/…` with everything.
 
-## Cache layout
+---
 
-Per-folder, next to the images:
+## Hotkeys
+
+| Key | Action |
+|---|---|
+| `1` / `2` / `3` | switch tool |
+| `Linksklick` | tool action (add / toggle count / assign type) |
+| `Mausrad` | zoom on cursor |
+| `Mittel-Drag` | pan |
+| `Home` / `0` | reset zoom |
+| `←` / `→` | previous / next image |
+| `f` | mark image as finished |
+| `o` | overlay on/off (also toggles margin overlay) |
+| `r` | re-run Cellpose on current image |
+| `z` | undo |
+| `s` / `Cmd+S` | export |
+| `q` | quit |
+
+---
+
+## Folder layout
 
 ```
 <study_folder>/
-  .erys_cache/
-    <stem>_masks.npy        cached Cellpose mask
-    <stem>_masks.json       parameters that produced this mask
-    <stem>_review.json      per-image user edits (auto-saved on every click)
-    folder_state.json       last opened image index
-  outputs/                  structured export (created on Export)
+  *.tif                       your microscope images
+  .erys_cache/                created automatically
+    <stem>_masks.npy          cached Cellpose mask
+    <stem>_masks.json         which parameters produced this mask
+    <stem>_review.json        per-image user edits (auto-saved on every click)
+    folder_state.json         last opened image index
+  outputs/                    created when you export
     <Zeitpunkt>/
       <Zeitpunkt>_<Proband>/
-        *.tif                   original images copied
-        *_stats.csv             per-image cell flags
-        *_masks.npy             final masks (with manual additions)
-        *_overlay.png           rendered overlay
-        <Zeitpunkt>_<Proband>_summary.csv
-    all_stats.csv (when applicable)
-    summary.csv
-    manifest.json
+        *.tif                                copies of the originals
+        *_stats.csv                          per-cell flags + types
+        *_masks.npy                          final mask (with manual additions)
+        *_overlay.png                        rendered overlay
+        <Zeitpunkt>_<Proband>_summary.csv    4-block aggregated CSV
+    manifest.json             profile snapshot + app version + timestamp
 ```
+
+App-wide preferences live in `~/Library/Application Support/Erys/settings.json` (macOS) or `%APPDATA%/Erys/settings.json` (Windows). Profiles live next to it in `profiles/<slug>.json`.
+
+---
+
+## CSV format
+
+The per-subject `<Zeitpunkt>_<Proband>_summary.csv` is a 4-block layout designed for direct copy-paste into Excel:
+
+```
+Block 1 — counts per image
+  Bildnummer; RBC; <Type1>; <Type2>; …; Normal
+
+Block 2 — percent per image (immediately right of Block 1)
+  %<Type1>; %<Type2>; …; %Normal
+
+Block 3 — Summe row at bottom
+  total counts | total percentages | %verändert | %verändert per 2000
+
+Block 4 — % target reached
+  total_RBC / target × 100
+```
+
+`Normal` is computed as the residual: `RBC − sum(other types)`. `%verändert per 2000` is the back-calculation: `%verändert × 2000 / total_RBC`.
+
+CSV uses `;` as delimiter and `,` as decimal separator for direct Excel import on German locales.
+
+---
+
+## Profile system
+
+A study profile is a small JSON file in `~/Library/Application Support/Erys/profiles/`:
+
+```json
+{
+  "name": "TRIBAL 2026",
+  "import_folder": "/path/to/images",
+  "image_pattern": "^(?P<study>[A-Za-z]+)_(?P<subject>\\d+)_(?P<timepoint>[^_]+)_(?P<date>[^_]+)_(?P<image_num>\\d+)\\.tif$",
+  "target_cells": 2000,
+  "cell_types": [
+    {"key": "normal",       "name": "Normal",               "color": "#FFD000"},
+    {"key": "stechapfel",   "name": "Stechapfel",           "color": "#FF6B6B"},
+    {"key": "auszug",       "name": "Auszüge Membran",      "color": "#4ECDC4"},
+    {"key": "verschmolzen", "name": "Verschmolzen Membran", "color": "#9D4EDD"},
+    {"key": "elongiert",    "name": "Elongierte RBC",       "color": "#F77F00"}
+  ],
+  "cellpose": {"diameter": 30, "flow_threshold": 0.4, "cellprob_threshold": 0.0, "model": "cpsam"},
+  "use_gpu": true,
+  "margin_n": 0,
+  "show_margin_overlay": true,
+  "duplicate_detection": {"enabled": true, "threshold_factor": 0.7, "policy": "remove_smaller"}
+}
+```
+
+The **filename regex** must capture three named groups: `subject`, `timepoint`, `image_num`. Optional named groups (e.g. `study`, `date`) are stored for audit but not used for grouping. Files that don't match end up in an `_ungrouped` bucket.
+
+You can keep multiple profiles side-by-side (one per study) and switch via menu → **Profil → Profile verwalten …**.
+
+---
+
+## Roadmap
+
+Items the project will likely tackle next, in roughly the order they make sense:
+
+- **v14** — Per-study aggregated CSV (all subjects of one profile), Excel `.xlsx` export.
+- **v15** — Auto-resegment workflow when profile parameters change (per-image user-confirm).
+- **v16** — Pluggable Cellpose model paths (run your own custom-trained model from a profile).
+- **v17** — Onboarding wizard for new studies (regex live-test against a chosen folder).
+- **v18** — Plug-in points for downstream R / Python scripts triggered from the app.
+- **v19** — Built-in stats: A/B comparisons between timepoints, box-plots, significance tests.
+- **v20** — Multi-user sync (server-merged reviews).
+
+---
+
+## Acknowledgments
+
+- **Cellpose** — the underlying segmentation engine. <https://github.com/MouseLand/cellpose>
+  > Pachitariu, M., & Stringer, C. (2022). _Cellpose 2.0: how to train your own model._ Nature Methods.
+  > Stringer, C., & Pachitariu, M. (2025). _Cellpose-SAM: superhuman generalization for cellular segmentation._ bioRxiv.
+- **scikit-image** for the morphological operations + label measurements.
+- **matplotlib** for the canvas.
+
+If you publish work that used ErysReview, please cite the relevant Cellpose papers.
+
+---
+
+## License
+
+MIT. See `LICENSE`.

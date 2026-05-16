@@ -19,6 +19,7 @@ from tkinter import filedialog, ttk
 
 from . import __version__
 from .canvas import EryCanvas
+from .detail_panel import DetailPanel
 from .cellpose_runner import (
     has_cache, list_images, load_cached_masks, load_image,
     params_match, run_for_image, discard_cache,
@@ -257,6 +258,11 @@ class EryApp:
         )
         self.folder_label.pack(fill="x", side="bottom")
 
+        # Cockpit detail panel (Frage 1b option i: lives below the tree).
+        self.details = DetailPanel(self.sidebar, P, S)
+        self.details.pack(fill="x", side="bottom", padx=8, pady=(4, 4),
+                          ipady=2)
+
     def _configure_ttk_styles(self) -> None:
         """Custom ttk styles for cleaner buttons. Uses 'clam' theme as base so
         we can actually paint backgrounds/foregrounds (macOS 'aqua' ignores them)."""
@@ -415,6 +421,13 @@ class EryApp:
             style="ErysAction.TButton", command=self._on_undo,
         )
         self.btn_undo.pack(side="left", padx=3, pady=8)
+
+        # ⓘ Info — opens the detail panel for the CURRENT image.
+        self.btn_info = ttk.Button(
+            bar, text="ⓘ   " + S["tool_info"],
+            style="ErysAction.TButton", command=self._show_current_image_info,
+        )
+        self.btn_info.pack(side="left", padx=3, pady=8)
 
         # Spacer pushes the primary CTA + banner to the right
         spacer = tk.Frame(bar, bg=P["toolbar_bg"])
@@ -607,6 +620,12 @@ class EryApp:
         self._invalidate_group_cache()
         self._refresh_current_group_counter()
         self._refresh_tool_indicator()
+        # If the panel was showing the *previously* selected image, swap it to the
+        # newly loaded one so the cockpit always reflects what's on screen.
+        if self.details.mode == "image":
+            self._show_current_image_info()
+        else:
+            self._refresh_details()
 
     def _step_image(self, delta: int) -> None:
         if self.images:
@@ -684,11 +703,12 @@ class EryApp:
         return label
 
     def _sub_label(self, label: str, tp_key: str, sub_key: str) -> str:
-        # When the group node is closed, show only the name + status dot.
-        # When opened, the open-handler swaps in the full counter.
+        """Closed subject row: '<name>  <n_active>/<target>  ⓘ'."""
         counts = self._group_counters(tp_key, sub_key)
-        # Show compact even when closed; full counter shown via _on_tree_open()
-        return f"{label}  ({counts['n_done']}/{counts['n_total']})"
+        compact = self.S["sb_group_closed_counter"].format(
+            n_active=counts["n_active"], target=counts["target"],
+        )
+        return f"{label}  ·  {compact}   ⓘ"
 
     def _group_counters(self, tp_key: str, sub_key: str) -> dict:
         target = max(1, self.profile.target_cells)
@@ -750,11 +770,13 @@ class EryApp:
             if is_open:
                 full = self.S["sb_group_open_counter"].format(
                     n_active=counts["n_active"], target=counts["target"],
-                    n_done=counts["n_done"], n_total=counts["n_total"],
                 )
-                self.tree.item(iid, text=f"{label_base}  ·  {full}")
+                self.tree.item(iid, text=f"{label_base}  ·  {full}   ⓘ")
             else:
-                self.tree.item(iid, text=f"{label_base}  ({counts['n_done']}/{counts['n_total']})")
+                compact = self.S["sb_group_closed_counter"].format(
+                    n_active=counts["n_active"], target=counts["target"],
+                )
+                self.tree.item(iid, text=f"{label_base}  ·  {compact}   ⓘ")
         if recurse:
             for child in self.tree.get_children(iid):
                 self._refresh_group_node(child, recurse=True)
@@ -789,14 +811,42 @@ class EryApp:
         if not sel:
             return
         name = sel[0]
-        # Skip group nodes (their iids start with tp:: or sub::)
-        if name.startswith("tp::") or name.startswith("sub::"):
+        # Subject row → open subject details panel (its row is the "ⓘ" target)
+        if name.startswith("sub::"):
+            try:
+                _, tp_key, sub_key = name.split("::", 2)
+            except ValueError:
+                return
+            self._show_subject_info(tp_key, sub_key)
+            return
+        # Timepoint row → no-op
+        if name.startswith("tp::"):
             return
         for i, p in enumerate(self.images):
             if p.name == name:
                 if i != self.idx:
                     self._show_image_at(i)
                 break
+
+    def _show_current_image_info(self) -> None:
+        """Toolbar ⓘ → render details for the currently-loaded image."""
+        if self.folder is None or not self.images:
+            return
+        self.details.show_image(self.folder, self.images[self.idx], self.profile)
+
+    def _show_subject_info(self, tp_key: str, sub_key: str) -> None:
+        """Sidebar click on subject row → render aggregate details for that group."""
+        if self.folder is None or self.grouped is None:
+            return
+        self.details.show_subject(self.folder, tp_key, sub_key,
+                                  self.profile, self.grouped)
+
+    def _refresh_details(self) -> None:
+        """Re-render the detail panel using fresh data (called after edits)."""
+        try:
+            self.details.refresh(self.folder, self.profile, self.grouped)
+        except Exception:
+            pass
 
     def _on_tree_open(self, _evt=None) -> None:
         iid = self.tree.focus()
@@ -877,6 +927,7 @@ class EryApp:
         self._refresh_sidebar_status()
         self._invalidate_group_cache()
         self._refresh_current_group_counter()
+        self._refresh_details()
 
     def _on_batch(self) -> None:
         if self.folder is None or not self.images:
@@ -968,6 +1019,7 @@ class EryApp:
         self._invalidate_group_cache()
         self._refresh_sidebar_status()
         self._update_status()
+        self._refresh_details()
 
     def _on_help_hotkeys(self) -> None:
         info_dialog(self.root, self.S["help_hotkeys_title"], self.S["help_hotkeys"])
@@ -992,6 +1044,8 @@ class EryApp:
         # Status + sidebar icon for current image may have changed.
         self._refresh_sidebar_status()
         self._update_status()
+        # Live cockpit update
+        self._refresh_details()
 
     def _update_status(self) -> None:
         if self.folder is None or not self.images:
@@ -1010,11 +1064,26 @@ class EryApp:
         n_excluded = sum(1 for cid in infos if cid in excluded)
         n_inactive_auto = sum(1 for cid in infos
                               if auto_inactive(cid) and cid not in included and cid not in excluded)
+        # Verändert = active cells whose type is not "normal"
+        default_key = self.profile.default_type_key()
+        types_map = self.review.types
+        n_changed = 0
+        for cid in infos:
+            if cid in excluded:
+                continue
+            if auto_inactive(cid) and cid not in included:
+                continue
+            t = types_map.get(str(cid), default_key)
+            if t != "normal":
+                n_changed += 1
+        pct_changed = (100.0 * n_changed / n_active) if n_active > 0 else 0.0
+
         S = self.S
         idx_str = f"[{self.idx+1}/{len(self.images)}]"
         finished = f"  ·  {S['status_finished']}" if self.review.is_finished else ""
         text = (f"{idx_str}  {path.name}  ·  "
                 f"{n_active} {S['status_active']}  ·  "
+                f"{n_changed} {S['status_changed']} ({pct_changed:.1f}%)  ·  "
                 f"{n_excluded} {S['status_excluded']}  ·  "
                 f"{n_inactive_auto} {S['status_border']}  ·  "
                 f"{n_total} {S['status_total']}{finished}")
