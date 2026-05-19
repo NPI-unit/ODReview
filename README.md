@@ -170,7 +170,7 @@ You should see versions printed and `True` if GPU is available.
 | `o` | overlay on/off (also toggles margin overlay) |
 | `r` | re-run Cellpose on current image |
 | `z` | undo |
-| `s` / `Cmd+S` | export |
+| `s` / `Cmd+S` / `Ctrl+S` | export |
 | `q` | quit |
 
 ---

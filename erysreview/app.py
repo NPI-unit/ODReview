@@ -225,9 +225,12 @@ class EryApp:
         self.root.bind("<Key-z>", lambda e: self._on_undo())
         self.root.bind("<Key-q>", lambda e: self._on_close())
         self.root.bind("<Key-s>", lambda e: self._on_export())
-        self.root.bind("<Command-s>", lambda e: self._on_export())
-        self.root.bind("<Command-o>", lambda e: self._on_open_folder())
-        self.root.bind("<Command-q>", lambda e: self._on_close())
+        # Modifier bindings — wire both Cmd (macOS) and Ctrl (Windows/Linux)
+        # so the app behaves identically across platforms.
+        for mod in ("Command", "Control"):
+            self.root.bind(f"<{mod}-s>", lambda e: self._on_export())
+            self.root.bind(f"<{mod}-o>", lambda e: self._on_open_folder())
+            self.root.bind(f"<{mod}-q>", lambda e: self._on_close())
         self.root.bind("<Home>", lambda e: self.canvas.reset_zoom())
         self.root.bind("<Key-0>", lambda e: self.canvas.reset_zoom())
 
