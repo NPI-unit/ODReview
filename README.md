@@ -80,7 +80,7 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
    python -m erysreview
    ```
 
-4. (Optional) **Double-click launcher**: create a file `run_erys.command` in the repo root with:
+5. (Optional) **Double-click launcher**: create a file `run_erys.command` in the repo root with:
    ```bash
    #!/bin/bash
    cd "$(dirname "$0")"
@@ -116,7 +116,7 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
    python -m erysreview
    ```
 
-4. (Optional) Create a `run_erys.bat` next to the repo root:
+5. (Optional) Create a `run_erys.bat` next to the repo root:
    ```bat
    @echo off
    call "%USERPROFILE%\miniforge3\Scripts\activate.bat" erys
