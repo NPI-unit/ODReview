@@ -61,18 +61,22 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
    ```
    Accept defaults. Close and reopen Terminal afterwards.
 
-2. **Create the environment** and install dependencies:
-   ```bash
-   conda create -n erys python=3.12 -y
-   conda activate erys
-   pip install cellpose==4.1.1 matplotlib pandas scikit-image pillow tifffile
-   ```
-   On Apple Silicon, `pip install cellpose` pulls a PyTorch build with MPS (GPU) support automatically. Segmentation will run on the Mac GPU.
-
-3. **Clone this repo** and run:
+2. **Clone this repo**:
    ```bash
    git clone https://github.com/finn-dreisigacker/ErysReview.git
    cd ErysReview
+   ```
+
+3. **Create the environment** and install dependencies via `requirements.txt`:
+   ```bash
+   conda create -n erys python=3.12 -y
+   conda activate erys
+   pip install -r requirements.txt
+   ```
+   On Apple Silicon, `pip install` pulls a PyTorch build with MPS (GPU) support automatically. Segmentation will run on the Mac GPU.
+
+4. **Run**:
+   ```bash
    python -m erysreview
    ```
 
@@ -89,22 +93,26 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
 
 1. **Install Miniforge**: download `Miniforge3-Windows-x86_64.exe` from <https://github.com/conda-forge/miniforge#download> and run it. Accept defaults.
 
-2. From the Start menu, open **Miniforge Prompt**, then:
+2. **Clone this repo** (you need [Git for Windows](https://git-scm.com/download/win) installed first):
+   ```cmd
+   git clone https://github.com/finn-dreisigacker/ErysReview.git
+   cd ErysReview
+   ```
+
+3. From the Start menu, open **Miniforge Prompt**, then:
    ```cmd
    conda create -n erys python=3.12 -y
    conda activate erys
-   pip install cellpose==4.1.1 matplotlib pandas scikit-image pillow tifffile
+   pip install -r requirements.txt
    ```
-   If you have an NVIDIA GPU and want GPU acceleration, install the CUDA-enabled PyTorch first:
+   If you have an NVIDIA GPU and want GPU acceleration, install the CUDA-enabled PyTorch *before* the line above:
    ```cmd
    pip install torch --index-url https://download.pytorch.org/whl/cu121
    ```
    _(Replace `cu121` with the CUDA version matching your driver.)_
 
-3. **Clone this repo** (you need [Git for Windows](https://git-scm.com/download/win) installed first):
+4. **Run**:
    ```cmd
-   git clone https://github.com/finn-dreisigacker/ErysReview.git
-   cd ErysReview
    python -m erysreview
    ```
 
