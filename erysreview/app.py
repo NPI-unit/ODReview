@@ -52,6 +52,9 @@ class EryApp:
         self.root.minsize(900, 600)
         self.root.configure(bg=self.P["bg"])
 
+        # App icon (works on macOS, Windows, Linux — Tk picks the right size)
+        self._apply_window_icon()
+
         # App-level state (canonical)
         self.folder: Path | None = None
         self.images: list[Path] = []
@@ -85,6 +88,34 @@ class EryApp:
     # ─────────────────────────────────────────
     # Startup helpers
     # ─────────────────────────────────────────
+    def _apply_window_icon(self) -> None:
+        """Set the window icon from assets/. Falls back silently if files are missing.
+        Tk picks the best-sized PNG via iconphoto. On Windows we additionally try
+        iconbitmap with the .ico for taskbar fidelity."""
+        try:
+            import sys
+            assets = Path(__file__).resolve().parent.parent / "assets"
+            png_paths = [assets / "icon_64.png", assets / "icon_256.png", assets / "icon.png"]
+            images = []
+            for p in png_paths:
+                if p.exists():
+                    try:
+                        images.append(tk.PhotoImage(file=str(p)))
+                    except tk.TclError:
+                        pass
+            if images:
+                self.root.iconphoto(True, *images)
+                self._icon_refs = images  # keep references so Tk doesn't GC them
+            if sys.platform.startswith("win"):
+                ico = assets / "icon.ico"
+                if ico.exists():
+                    try:
+                        self.root.iconbitmap(default=str(ico))
+                    except tk.TclError:
+                        pass
+        except Exception:
+            pass  # icon is cosmetic — never crash the app over it
+
     def _initial_profile_load(self) -> ProfileData:
         bootstrap = tk.Tk()
         bootstrap.withdraw()

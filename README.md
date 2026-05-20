@@ -4,6 +4,22 @@ A desktop reviewer for **automated erythrocyte (red-blood-cell) segmentation** o
 
 Designed for hematology / parasitology studies where you need to classify erythrocytes across many images.
 
+---
+
+## Easiest install (double-click)
+
+If you don't want to touch a terminal:
+
+1. Install **Miniforge** once — <https://github.com/conda-forge/miniforge#download>. Pick the file matching your OS and run it with all defaults.
+2. **Download or clone** this repo to a folder of your choice (e.g. your Desktop).
+3. Double-click the installer for your OS:
+   - **macOS**: `install.command`
+   - **Windows**: `install.bat`
+4. Wait until you see `Done. ErysReview is installed.` (~5–10 min on first run).
+5. Use the new **ErysReview** icon on your Desktop. Or double-click `run.command` / `run.bat` inside the repo folder.
+
+If anything in those steps fails, scroll down to **Manual install** for the explicit conda commands.
+
 > Note: this project is unaffiliated with the Cellpose authors. It is a UI wrapper that calls the Cellpose Python package locally on your machine. All segmentation credit goes to the Cellpose project.
 
 ---
@@ -44,7 +60,7 @@ ErysReview gives you exactly that, in a single Tk window.
 
 ---
 
-## Installation
+## Manual install (if the double-click installer fails)
 
 ErysReview is a Python application. If you have never used Python before, follow the section that matches your operating system.
 

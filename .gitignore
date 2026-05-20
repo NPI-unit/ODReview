@@ -62,3 +62,5 @@ run_erys.command
 
 # ─── Allow specific things back in ────────────────
 !docs/**/*.png
+!assets/*.png
+!assets/*.ico
