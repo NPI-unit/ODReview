@@ -127,6 +127,13 @@ def profile_manager_dialog(parent: tk.Misc, strings: dict) -> ProfileData | None
     top = tk.Toplevel(parent); top.title(S["pm_title"])
     top.transient(parent); top.grab_set()
     top.minsize(440, 340)
+    # Force the dialog to the front and request focus — on Windows the
+    # bootstrap-parent approach used to leave this dialog behind the
+    # taskbar / other windows.
+    top.lift()
+    top.attributes("-topmost", True)
+    top.after(120, lambda: top.attributes("-topmost", False))
+    top.focus_force()
 
     tk.Label(top, text=S["pm_existing"], font=("TkDefaultFont", 11, "bold"),
              anchor="w").pack(fill="x", padx=14, pady=(14, 4))

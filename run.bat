@@ -32,7 +32,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python -m erysreview
+REM -u = unbuffered output so the user sees the loading progress live
+REM     instead of a frozen blinking cursor while imports run (10-20 s
+REM     the first time on Windows).
+python -u -m erysreview
 if errorlevel 1 (
     echo.
     echo App exited with an error. Press any key to close.

@@ -34,4 +34,4 @@ conda activate erys || {
     exit 1
 }
 
-python -m erysreview
+python -u -m erysreview

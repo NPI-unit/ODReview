@@ -40,20 +40,46 @@ from .toolbar import Toolbar
 
 class EryApp:
     def __init__(self):
+        # Print to stdout so the launcher console shows progress while heavy
+        # imports (matplotlib, skimage) finish loading. Useful on Windows
+        # where the first import takes 10-20 s and the user otherwise sees
+        # nothing but a blinking cursor.
+        import sys
+        print("ErysReview: loading settings ...", flush=True)
         self.settings = AppSettings.load()
         self.S = get_strings(self.settings.language)
         self.P = palette(self.settings.theme)
 
-        self.profile: ProfileData = self._initial_profile_load()
-
+        # ── Create the real root FIRST and use it as the parent for the
+        # profile-manager dialog. The earlier approach (transient bootstrap +
+        # withdraw) renders an invisible window on Windows — the dialog
+        # then has no taskbar entry and may stay behind other windows.
+        print("ErysReview: opening window ...", flush=True)
         self.root = tk.Tk()
-        self.root.title(self.S["title_with_profile"].format(profile=self.profile.name))
-        self.root.geometry(f"{self.settings.window_w}x{self.settings.window_h}")
+        self.root.title("ErysReview")
+        # Respect the previous geometry but clamp so an off-screen value
+        # from a removed second monitor can't hide the window completely.
+        self.root.geometry(self._safe_geometry(
+            self.settings.window_w, self.settings.window_h,
+        ))
         self.root.minsize(900, 600)
         self.root.configure(bg=self.P["bg"])
-
-        # App icon (works on macOS, Windows, Linux — Tk picks the right size)
         self._apply_window_icon()
+
+        # Show a "Loading ..." placeholder so the user sees a window
+        # immediately while we ask for the profile.
+        loading = tk.Label(
+            self.root, text="ErysReview\n\nLoading …",
+            bg=self.P["bg"], fg=self.P["fg_secondary"],
+            font=("TkDefaultFont", 16, "bold"), justify="center",
+        )
+        loading.place(relx=0.5, rely=0.5, anchor="center")
+        self.root.update()
+
+        print("ErysReview: picking profile ...", flush=True)
+        self.profile: ProfileData = self._initial_profile_load()
+        loading.destroy()
+        self.root.title(self.S["title_with_profile"].format(profile=self.profile.name))
 
         # App-level state (canonical)
         self.folder: Path | None = None
@@ -117,21 +143,31 @@ class EryApp:
             pass  # icon is cosmetic — never crash the app over it
 
     def _initial_profile_load(self) -> ProfileData:
-        bootstrap = tk.Tk()
-        bootstrap.withdraw()
+        """Resolve which profile to use at startup. Runs the Profile Manager
+        dialog if no last-used profile name is on disk."""
+        chosen: ProfileData | None = None
+        if self.settings.last_profile_name:
+            chosen = load_profile(self.settings.last_profile_name)
+        if chosen is None:
+            chosen = profile_manager_dialog(self.root, self.S)
+        if chosen is None:
+            chosen = ensure_default_profile()
+        self.settings.last_profile_name = chosen.name
+        self.settings.save()
+        return chosen
+
+    def _safe_geometry(self, w: int, h: int) -> str:
+        """Clamp geometry so a previously-saved off-screen position can't
+        hide the window on a different monitor layout. Returns just the
+        size — Tk centers it on the active screen."""
         try:
-            chosen: ProfileData | None = None
-            if self.settings.last_profile_name:
-                chosen = load_profile(self.settings.last_profile_name)
-            if chosen is None:
-                chosen = profile_manager_dialog(bootstrap, self.S)
-            if chosen is None:
-                chosen = ensure_default_profile()
-            self.settings.last_profile_name = chosen.name
-            self.settings.save()
-            return chosen
-        finally:
-            bootstrap.destroy()
+            sw = self.root.winfo_screenwidth() if hasattr(self, "root") else 1600
+            sh = self.root.winfo_screenheight() if hasattr(self, "root") else 1000
+        except tk.TclError:
+            sw, sh = 1600, 1000
+        w = max(900, min(int(w), sw - 40))
+        h = max(600, min(int(h), sh - 40))
+        return f"{w}x{h}"
 
     # ─────────────────────────────────────────
     # UI construction
