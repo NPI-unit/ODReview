@@ -55,7 +55,17 @@ class ProfileData:
     name: str = DEFAULT_PROFILE_NAME
     import_folder: str | None = None  # path to the images folder for this study
     image_pattern: str = DEFAULT_IMAGE_PATTERN
+    # Friendly filename parser (alternative to regex). When use_simple_parser is
+    # True the filename is split on any character in `delimiters` (extension
+    # stripped first) and each resulting token is mapped to a role via
+    # `field_roles` (one role per token position): "subject" | "timepoint" |
+    # "image_num" | "ignore". The regex above is still kept for the advanced tab.
+    use_simple_parser: bool = False
+    delimiters: list[str] = field(default_factory=lambda: ["_"])
+    field_roles: list[str] = field(default_factory=list)
     target_cells: int = 2000
+    # Show the in-app Statistics tab for this study.
+    stats_enabled: bool = True
     cell_types: list[TypeDef] = field(default_factory=lambda: list(DEFAULT_TYPES_TRIBAL))
     cellpose: CellposeParams = field(default_factory=CellposeParams)
     use_gpu: bool = True
@@ -91,7 +101,11 @@ class ProfileData:
             name=raw.get("name", DEFAULT_PROFILE_NAME),
             import_folder=raw.get("import_folder"),
             image_pattern=raw.get("image_pattern", DEFAULT_IMAGE_PATTERN),
+            use_simple_parser=bool(raw.get("use_simple_parser", False)),
+            delimiters=list(raw.get("delimiters", ["_"])) or ["_"],
+            field_roles=list(raw.get("field_roles", [])),
             target_cells=int(raw.get("target_cells", 2000)),
+            stats_enabled=bool(raw.get("stats_enabled", True)),
             cell_types=types,
             cellpose=cp,
             use_gpu=bool(raw.get("use_gpu", True)),
@@ -111,7 +125,11 @@ class ProfileData:
             "name": self.name,
             "import_folder": self.import_folder,
             "image_pattern": self.image_pattern,
+            "use_simple_parser": self.use_simple_parser,
+            "delimiters": self.delimiters,
+            "field_roles": self.field_roles,
             "target_cells": self.target_cells,
+            "stats_enabled": self.stats_enabled,
             "cell_types": [asdict(t) for t in self.cell_types],
             "cellpose": asdict(self.cellpose),
             "use_gpu": self.use_gpu,

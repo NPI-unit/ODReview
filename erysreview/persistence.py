@@ -117,6 +117,7 @@ class AppSettings:
     overlay_visible: bool = True
     active_tool: str = TOOL_ADD
     last_profile_name: str | None = None
+    reviewer_name: str = ""           # stamped into shared packages + import logs
 
     @classmethod
     def load(cls) -> "AppSettings":
@@ -140,6 +141,7 @@ class AppSettings:
                 overlay_visible=bool(raw.get("overlay_visible", True)),
                 active_tool=active_tool,
                 last_profile_name=raw.get("last_profile_name"),
+                reviewer_name=str(raw.get("reviewer_name", "")),
             )
         except (TypeError, ValueError):
             return cls()
@@ -155,6 +157,7 @@ class AppSettings:
             "overlay_visible": self.overlay_visible,
             "active_tool": self.active_tool,
             "last_profile_name": self.last_profile_name,
+            "reviewer_name": self.reviewer_name,
         })
 
 
@@ -208,6 +211,13 @@ class ReviewState:
     manual_cells: list[ManualCell] = field(default_factory=list)
     is_finished: bool = False
     next_manual_id: int = 0
+    # Active review time accumulated on this image (seconds), idle-paused.
+    time_spent_s: float = 0.0
+    # Whether this image counts toward the per-group target (2000) evaluation:
+    #   None  -> automatic (auto-fill by image order until target exceeded)
+    #   True  -> user forced INTO the evaluation
+    #   False -> user forced OUT of the evaluation
+    eval_include: bool | None = None
 
     @staticmethod
     def review_path(folder: Path, image_stem: str) -> Path:
@@ -224,6 +234,9 @@ class ReviewState:
             force_excluded = raw.get("force_excluded")
             if force_excluded is None:
                 force_excluded = raw.get("deactivated_ids", [])
+            eval_include = raw.get("eval_include", None)
+            if eval_include is not None:
+                eval_include = bool(eval_include)
             return cls(
                 force_excluded=list(force_excluded),
                 force_included=list(raw.get("force_included", [])),
@@ -231,6 +244,8 @@ class ReviewState:
                 manual_cells=manual,
                 is_finished=bool(raw.get("is_finished", False)),
                 next_manual_id=int(raw.get("next_manual_id", 0)),
+                time_spent_s=float(raw.get("time_spent_s", 0.0)),
+                eval_include=eval_include,
             )
         except (TypeError, ValueError):
             return cls()
@@ -245,6 +260,8 @@ class ReviewState:
                 "manual_cells": [asdict(m) for m in self.manual_cells],
                 "is_finished": self.is_finished,
                 "next_manual_id": self.next_manual_id,
+                "time_spent_s": round(self.time_spent_s, 1),
+                "eval_include": self.eval_include,
             },
         )
 
@@ -252,4 +269,5 @@ class ReviewState:
         return bool(
             self.force_excluded or self.force_included
             or self.types or self.manual_cells or self.is_finished
+            or self.eval_include is not None
         )

@@ -51,6 +51,13 @@ ErysReview gives you exactly that, in a single Tk window.
 - **Structured export** to `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/` with original TIFs copied alongside masks, overlay PNGs, per-image stats CSV, and a per-subject summary CSV in a 4-block layout matching the standard lab spreadsheet format.
 - **Two themes** — Lab Neutral (light) and Soft Dark (dark) — sharing identical semantic color keys, both targeted at scientific work.
 - **DE / EN** strings.
+- **Share packages** — bundle a study (precomputed `.npy` masks + reviews, originals optional) into one ZIP via `Datei → Paket erstellen …`. A teammate runs `Datei → Paket importieren …` and reviews **without ever running Cellpose** — ideal when their machine is too weak to segment. Imported images are always set to *bearbeitet* (never *fertig*); per-image conflicts with local reviews are resolved interactively (import / keep / all).
+- **Editable 2000-cell cap** — each subject×timepoint group auto-selects images (in order) until the running active count just exceeds the target; press `e` to swap any single image in/out/auto. Skipped images are marked `⊘` in the sidebar and drop out of the summary CSV.
+- **Friendly filename parser** — instead of a regex, tick delimiters (`_`, space, `-`, `.`) and assign each token a role (Proband / Zeitpunkt / Bildnummer / ignorieren) with a live preview over your real files. Regex stays available as an advanced fallback.
+- **In-app statistics** — `Auswertung → Statistik …` shows box-plots (by timepoint / by subject) and a descriptive table for `% verändert`, `% verändert pro 2000`, per-subtype %, and absolute counts.
+- **Progress dashboard & time tracking** — `Auswertung → Übersicht …` lists each group's `n/Ziel`, whether the target is reached, and the review time spent per subject and in total.
+
+> Building a downstream subtype classifier? See [`docs/ML_DATASET.md`](docs/ML_DATASET.md) — the per-cell `*_stats.csv` already carries canonical type keys, a `label_source` (reviewer vs. auto) flag and an `image_in_evaluation` flag so the export converts losslessly into a training set.
 
 ---
 
@@ -183,6 +190,7 @@ You should see versions printed and `True` if GPU is available.
 | `Home` / `0` | reset zoom |
 | `←` / `→` | previous / next image |
 | `f` | mark image as finished |
+| `e` | toggle current image in / out / auto for the 2000-cell evaluation |
 | `o` | overlay on/off (also toggles margin overlay) |
 | `r` | re-run Cellpose on current image |
 | `z` | undo |
@@ -278,9 +286,9 @@ Items the project will likely tackle next, in roughly the order they make sense:
 - **v14** — Per-study aggregated CSV (all subjects of one profile), Excel `.xlsx` export.
 - **v15** — Auto-resegment workflow when profile parameters change (per-image user-confirm).
 - **v16** — Pluggable Cellpose model paths (run your own custom-trained model from a profile).
-- **v17** — Onboarding wizard for new studies (regex live-test against a chosen folder).
-- **v18** — Plug-in points for downstream R / Python scripts triggered from the app.
-- **v19** — Built-in stats: A/B comparisons between timepoints, box-plots, significance tests.
+- **v17** ✅ — Friendly filename parser (delimiter + roles, live preview), share packages (create/import), editable 2000-cell cap, in-app statistics box-plots, progress dashboard + time tracking, ML-ready per-cell export columns.
+- **v18** — One-click ML dataset export (consolidated parquet + per-cell crops + COCO), see [`docs/ML_DATASET.md`](docs/ML_DATASET.md).
+- **v19** — Built-in stats: A/B comparisons between timepoints, significance tests.
 - **v20** — Multi-user sync (server-merged reviews).
 
 ---

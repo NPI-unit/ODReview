@@ -62,8 +62,13 @@ def write_proband_zeitpunkt_summary(
     type_keys_all = type_keys_non_normal + ["normal"]   # Normal as last column
     type_name_by_key = {t.key: (t.name or t.key) for t in profile.cell_types}
 
+    from .evaluation import effective_eval_stems
+    eval_stems = effective_eval_stems(folder, images_in_group, profile)
+
     rows: list[dict] = []
     for info in images_in_group:
+        if info.path.stem not in eval_stems:
+            continue  # image excluded from the 2000-cell evaluation
         c = per_image_counts(folder, info, profile)
         if c is None:
             continue

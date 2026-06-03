@@ -6,8 +6,8 @@ No emojis — geometric Unicode where compactness matters, plain text elsewhere.
 STRINGS = {
     "de": {
         # Window
-        "title":               "Erys v10 – Erythrozyten-Review",
-        "title_with_profile":  "Erys v10 – {profile}",
+        "title":               "Erys v17 – Erythrozyten-Review",
+        "title_with_profile":  "Erys v17 – {profile}",
         # Menu
         "menu_file":           "Datei",
         "menu_open_folder":    "Ordner öffnen …",
@@ -202,6 +202,7 @@ STRINGS = {
             "  o – Overlay an/aus\n"
             "  r – Cellpose neu rechnen\n"
             "  z – Rückgängig\n"
+            "  e – Bild zur Auswertung (2000) ein/aus/auto\n"
             "  s / Cmd+S – Exportieren\n"
             "  q – Beenden"
         ),
@@ -221,10 +222,95 @@ STRINGS = {
         # Export
         "export_done_title":   "Export abgeschlossen",
         "export_done_msg":     "Exportiert nach:\n{path}",
+        # Generic
+        "btn_close":           "Schließen",
+        # Menus (v17)
+        "menu_package_create": "Paket erstellen …",
+        "menu_package_import": "Paket importieren …",
+        "menu_analysis":       "Auswertung",
+        "menu_stats":          "Statistik …",
+        "menu_dashboard":      "Übersicht (Dashboard) …",
+        # Settings
+        "settings_reviewer":   "Reviewer-Name (für Pakete)",
+        # Package create
+        "pkg_create_title":    "Paket erstellen",
+        "pkg_include_images":  "Originalbilder einbeziehen (eigenständiges Paket)",
+        "pkg_reviewer":        "Reviewer",
+        "pkg_n_images":        "{n} gerechnete Bilder werden eingepackt.",
+        "pkg_save_as":         "Paket speichern unter …",
+        "pkg_create_btn":      "Erstellen …",
+        "pkg_creating":        "Paket wird erstellt …",
+        "pkg_created_msg":     "{n} Bilder verpackt nach:\n{path}",
+        # Package import
+        "pkg_import_title":    "Paket importieren",
+        "pkg_import_pick":     "Erys-Paket (ZIP) wählen …",
+        "pkg_not_a_package":   "Diese Datei ist kein gültiges Erys-Paket.",
+        "pkg_import_info":     ("Von: {reviewer}\nBilder im Paket: {n}\nOriginale enthalten: {images}\n"
+                                "Profil: {profile}\n\nZielordner wählen?"),
+        "pkg_import_choose_target": "Zielordner wählen …",
+        "pkg_pick_target":     "Zielordner für den Import",
+        "pkg_import_subfolder": "In Unterordner „{name}“ entpacken?",
+        "pkg_importing":       "Import läuft …",
+        "pkg_import_done":     ("Import abgeschlossen.\nImportiert: {imported}   Übersprungen: {skipped}\n"
+                                "Ziel:\n{target}"),
+        "pkg_conflict_title":  "Konflikt",
+        "pkg_conflict_msg":    "Für „{name}“ existiert bereits ein lokaler Review. Was tun?",
+        "pkg_conflict_import": "Importieren",
+        "pkg_conflict_keep":   "Behalten",
+        "pkg_conflict_import_all": "Alle importieren",
+        "pkg_conflict_keep_all": "Alle behalten",
+        # Stats
+        "stats_title":         "Statistik",
+        "stats_metric":        "Kennzahl:",
+        "stats_view":          "Ansicht:",
+        "stats_by_timepoint":  "nach Zeitpunkt",
+        "stats_by_subject":    "nach Proband",
+        "stats_no_data":       "Noch keine ausgewerteten Gruppen vorhanden.\nBearbeite Bilder, bis Gruppen Zellen zählen.",
+        "stats_col_group":     "Gruppe",
+        "stats_mean":          "Mittel",
+        "stats_median":        "Median",
+        "stats_sd":            "SD",
+        "stats_min":           "Min",
+        "stats_max":           "Max",
+        # Dashboard
+        "dash_title":          "Übersicht",
+        "dash_col_tp":         "Zeitpunkt",
+        "dash_col_sub":        "Proband",
+        "dash_col_images":     "Bilder",
+        "dash_col_progress":   "n/Ziel",
+        "dash_col_reached":    "Ziel erreicht",
+        "dash_col_time":       "Zeit",
+        "dash_yes":            "ja",
+        "dash_no":             "nein",
+        "dash_subject_totals": "Zeit pro Proband:",
+        "dash_total_time":     "Gesamtzeit: {time}",
+        # Eval cap
+        "status_eval_out":     "nicht gewertet",
+        "eval_toggled_in":     "Bild zählt zur Auswertung",
+        "eval_toggled_out":    "Bild zählt NICHT zur Auswertung",
+        "eval_toggled_auto":   "Bild: automatische Wertung",
+        # Parser (friendly)
+        "pe_use_simple":       "Einfacher Parser (Trennzeichen statt Regex)",
+        "pe_delimiters":       "Trennzeichen:",
+        "pe_delim_underscore": "Unterstrich  _",
+        "pe_delim_space":      "Leerzeichen",
+        "pe_delim_dash":       "Bindestrich  -",
+        "pe_delim_dot":        "Punkt  .",
+        "pe_roles":            "Felder zuordnen (aus Beispiel-Dateiname):",
+        "pe_role_subject":     "Proband",
+        "pe_role_timepoint":   "Zeitpunkt",
+        "pe_role_image_num":   "Bildnummer",
+        "pe_role_ignore":      "Ignorieren",
+        "pe_preview":          "Vorschau (echte Dateien):",
+        "pe_preview_none":     "Kein Ordner / keine Dateien zum Testen.",
+        "pe_preview_ok":       "{ok}/{total} Dateien erkannt.",
+        "pe_stats_enabled":    "Statistik-Tab für dieses Profil aktivieren",
+        "pe_section_stats":    "Statistik",
+        # Export
     },
     "en": {
-        "title":               "Erys v10 – Erythrocyte review",
-        "title_with_profile":  "Erys v10 – {profile}",
+        "title":               "Erys v17 – Erythrocyte review",
+        "title_with_profile":  "Erys v17 – {profile}",
         "menu_file":           "File",
         "menu_open_folder":    "Open folder …",
         "menu_batch":          "Multiple images …",
@@ -402,6 +488,7 @@ STRINGS = {
             "  o – overlay on/off\n"
             "  r – re-run Cellpose\n"
             "  z – undo\n"
+            "  e – image in/out/auto for evaluation (2000)\n"
             "  s / Cmd+S – export\n"
             "  q – quit"
         ),
@@ -417,6 +504,90 @@ STRINGS = {
         "type_spherocyte":     "Spherocyte",
         "export_done_title":   "Export complete",
         "export_done_msg":     "Exported to:\n{path}",
+        # Generic
+        "btn_close":           "Close",
+        # Menus (v17)
+        "menu_package_create": "Create package …",
+        "menu_package_import": "Import package …",
+        "menu_analysis":       "Analysis",
+        "menu_stats":          "Statistics …",
+        "menu_dashboard":      "Overview (dashboard) …",
+        # Settings
+        "settings_reviewer":   "Reviewer name (for packages)",
+        # Package create
+        "pkg_create_title":    "Create package",
+        "pkg_include_images":  "Include original images (self-contained package)",
+        "pkg_reviewer":        "Reviewer",
+        "pkg_n_images":        "{n} segmented images will be packed.",
+        "pkg_save_as":         "Save package as …",
+        "pkg_create_btn":      "Create …",
+        "pkg_creating":        "Creating package …",
+        "pkg_created_msg":     "Packed {n} images to:\n{path}",
+        # Package import
+        "pkg_import_title":    "Import package",
+        "pkg_import_pick":     "Choose Erys package (ZIP) …",
+        "pkg_not_a_package":   "This file is not a valid Erys package.",
+        "pkg_import_info":     ("From: {reviewer}\nImages in package: {n}\nOriginals included: {images}\n"
+                                "Profile: {profile}\n\nChoose a target folder?"),
+        "pkg_import_choose_target": "Choose target folder …",
+        "pkg_pick_target":     "Target folder for the import",
+        "pkg_import_subfolder": "Extract into subfolder “{name}”?",
+        "pkg_importing":       "Importing …",
+        "pkg_import_done":     ("Import complete.\nImported: {imported}   Skipped: {skipped}\n"
+                                "Target:\n{target}"),
+        "pkg_conflict_title":  "Conflict",
+        "pkg_conflict_msg":    "A local review already exists for “{name}”. What now?",
+        "pkg_conflict_import": "Import",
+        "pkg_conflict_keep":   "Keep",
+        "pkg_conflict_import_all": "Import all",
+        "pkg_conflict_keep_all": "Keep all",
+        # Stats
+        "stats_title":         "Statistics",
+        "stats_metric":        "Metric:",
+        "stats_view":          "View:",
+        "stats_by_timepoint":  "by timepoint",
+        "stats_by_subject":    "by subject",
+        "stats_no_data":       "No evaluated groups yet.\nReview images until groups count cells.",
+        "stats_col_group":     "Group",
+        "stats_mean":          "Mean",
+        "stats_median":        "Median",
+        "stats_sd":            "SD",
+        "stats_min":           "Min",
+        "stats_max":           "Max",
+        # Dashboard
+        "dash_title":          "Overview",
+        "dash_col_tp":         "Timepoint",
+        "dash_col_sub":        "Subject",
+        "dash_col_images":     "Images",
+        "dash_col_progress":   "n/target",
+        "dash_col_reached":    "Target reached",
+        "dash_col_time":       "Time",
+        "dash_yes":            "yes",
+        "dash_no":             "no",
+        "dash_subject_totals": "Time per subject:",
+        "dash_total_time":     "Total time: {time}",
+        # Eval cap
+        "status_eval_out":     "not counted",
+        "eval_toggled_in":     "Image counts toward evaluation",
+        "eval_toggled_out":    "Image does NOT count toward evaluation",
+        "eval_toggled_auto":   "Image: automatic evaluation",
+        # Parser (friendly)
+        "pe_use_simple":       "Simple parser (delimiters instead of regex)",
+        "pe_delimiters":       "Delimiters:",
+        "pe_delim_underscore": "Underscore  _",
+        "pe_delim_space":      "Space",
+        "pe_delim_dash":       "Dash  -",
+        "pe_delim_dot":        "Dot  .",
+        "pe_roles":            "Assign fields (from example filename):",
+        "pe_role_subject":     "Subject",
+        "pe_role_timepoint":   "Timepoint",
+        "pe_role_image_num":   "Image number",
+        "pe_role_ignore":      "Ignore",
+        "pe_preview":          "Preview (real files):",
+        "pe_preview_none":     "No folder / no files to test.",
+        "pe_preview_ok":       "{ok}/{total} files recognized.",
+        "pe_stats_enabled":    "Enable statistics tab for this profile",
+        "pe_section_stats":    "Statistics",
     },
 }
 

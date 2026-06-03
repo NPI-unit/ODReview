@@ -11,6 +11,7 @@ state: folder, images, idx, profile, settings, current ReviewState.
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
@@ -26,6 +27,9 @@ from .dialogs import (
     profile_editor_dialog, profile_manager_dialog, settings_dialog,
 )
 from .export import export_folder_structured
+from .extras import (
+    dashboard_window, package_create_dialog, package_import_dialog, stats_window,
+)
 from .grouping import group_images
 from .i18n import get_strings
 from .persistence import (
@@ -89,6 +93,12 @@ class EryApp:
         self.folder_state: FolderState = FolderState()
         self.review: ReviewState = ReviewState()
 
+        # Time tracking: accrue active review seconds onto the current image,
+        # paused after TIME_IDLE_S without interaction so an idle window doesn't
+        # inflate the numbers. Flushed to disk on image switch / save / close.
+        self._time_last_activity = time.monotonic()
+        self._time_last_tick = time.monotonic()
+
         # Debounce bookkeeping for profile.save() calls on hot paths.
         self._profile_save_after_id: str | None = None
         self._profile_save_debounce_ms = 200
@@ -100,6 +110,7 @@ class EryApp:
         self._build_layout()
         self._bind_hotkeys()
         self._refresh_tool_indicator()
+        self._start_time_tracking()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -184,6 +195,9 @@ class EryApp:
         m_file.add_separator()
         m_file.add_command(label=S["menu_batch"], command=self._on_batch)
         m_file.add_separator()
+        m_file.add_command(label=S["menu_package_create"], command=self._on_package_create)
+        m_file.add_command(label=S["menu_package_import"], command=self._on_package_import)
+        m_file.add_separator()
         m_file.add_command(label=S["menu_export"], command=self._on_export, accelerator="Cmd+S")
         m_file.add_separator()
         m_file.add_command(label=S["menu_quit"], command=self._on_close, accelerator="Cmd+Q")
@@ -193,6 +207,11 @@ class EryApp:
         m_prof.add_command(label=S["menu_profile_manage"], command=self._on_profile_manage)
         m_prof.add_command(label=S["menu_profile_edit"], command=self._on_profile_edit)
         menubar.add_cascade(label=S["menu_profile"], menu=m_prof)
+
+        m_analysis = tk.Menu(menubar, tearoff=0)
+        m_analysis.add_command(label=S["menu_stats"], command=self._on_stats)
+        m_analysis.add_command(label=S["menu_dashboard"], command=self._on_dashboard)
+        menubar.add_cascade(label=S["menu_analysis"], menu=m_analysis)
 
         m_settings = tk.Menu(menubar, tearoff=0)
         m_settings.add_command(label=S["menu_settings_open"], command=self._on_settings)
@@ -300,6 +319,43 @@ class EryApp:
             self.root.bind(f"<{mod}-q>", lambda e: self._on_close())
         self.root.bind("<Home>", lambda e: self.canvas.reset_zoom())
         self.root.bind("<Key-0>", lambda e: self.canvas.reset_zoom())
+        self.root.bind("<Key-e>", lambda e: self._on_toggle_eval())
+
+    # ─────────────────────────────────────────
+    # Time tracking
+    # ─────────────────────────────────────────
+    TIME_IDLE_S = 60.0
+    TIME_TICK_MS = 5000
+
+    def _start_time_tracking(self) -> None:
+        for seq in ("<Motion>", "<Button>", "<Key>", "<MouseWheel>"):
+            self.root.bind(seq, self._mark_activity, add="+")
+        self.root.after(self.TIME_TICK_MS, self._time_tick)
+
+    def _mark_activity(self, _evt=None) -> None:
+        self._time_last_activity = time.monotonic()
+
+    def _time_tick(self) -> None:
+        now = time.monotonic()
+        delta = now - self._time_last_tick
+        self._time_last_tick = now
+        if (self.folder is not None and self.images
+                and (now - self._time_last_activity) < self.TIME_IDLE_S):
+            # Cap the increment so a missed tick (sleep / debugger) can't dump
+            # a huge delta onto one image.
+            self.review.time_spent_s += min(delta, self.TIME_TICK_MS / 1000.0 + 1.0)
+        try:
+            self.root.after(self.TIME_TICK_MS, self._time_tick)
+        except tk.TclError:
+            pass
+
+    def _flush_time(self) -> None:
+        """Persist the current image's accumulated time."""
+        if self.folder is not None and self.images and 0 <= self.idx < len(self.images):
+            try:
+                self.review.save(self.folder, self.images[self.idx].stem)
+            except Exception:
+                pass
 
     # ─────────────────────────────────────────
     # Tool / type plumbing
@@ -434,6 +490,9 @@ class EryApp:
     def _show_image_at(self, idx: int) -> None:
         if not self.images or self.folder is None:
             return
+        # Persist the time accrued on the image we're leaving before switching.
+        self._flush_time()
+        self._time_last_tick = time.monotonic()
         idx = max(0, min(idx, len(self.images) - 1))
         self.idx = idx
         self.folder_state.last_index = idx
@@ -587,9 +646,88 @@ class EryApp:
         )
 
     def _after_batch(self) -> None:
+        self.sidebar.invalidate_group_cache()
         self.sidebar.refresh_statuses()
         if self.images:
             self._show_image_at(self.idx)
+
+    # ─────────────────────────────────────────
+    # Evaluation cap toggle
+    # ─────────────────────────────────────────
+    def _on_toggle_eval(self) -> None:
+        """Cycle the current image's evaluation membership: auto → in → out → auto."""
+        if self.folder is None or not self.images:
+            return
+        cur = self.review.eval_include
+        if cur is None:
+            self.review.eval_include = True
+            msg = self.S["eval_toggled_in"]
+        elif cur is True:
+            self.review.eval_include = False
+            msg = self.S["eval_toggled_out"]
+        else:
+            self.review.eval_include = None
+            msg = self.S["eval_toggled_auto"]
+        self._save_review()
+        self.sidebar.invalidate_group_cache()
+        self.sidebar.refresh_statuses()
+        self.sidebar.refresh_current_group_counter()
+        self._set_status_text(msg)
+
+    # ─────────────────────────────────────────
+    # Share packages
+    # ─────────────────────────────────────────
+    def _on_package_create(self) -> None:
+        if self.folder is None or not self.images or self.grouped is None:
+            info_dialog(self.root, self.S["pkg_create_title"], self.S["status_ready"])
+            return
+        self._flush_time()
+        reviewer = package_create_dialog(
+            self.root, self.folder, self.grouped, self.profile,
+            self.settings.reviewer_name, self.S,
+        )
+        if reviewer is not None and reviewer != self.settings.reviewer_name:
+            self.settings.reviewer_name = reviewer
+            self.settings.save()
+
+    def _on_package_import(self) -> None:
+        result = package_import_dialog(self.root, self.profile, self.S)
+        if result is None:
+            return
+        # Activate the package's profile so types/parameters match the masks.
+        prof = result["profile"]
+        save_profile(prof)
+        self.profile = prof
+        self.settings.last_profile_name = prof.name
+        self.settings.save()
+        self.root.title(self.S["title_with_profile"].format(profile=prof.name))
+        self.canvas.set_profile(prof)
+        self.sidebar.set_profile(prof)
+        self.toolbar.set_profile(prof)
+        target = Path(result["target"])
+        if target.is_dir():
+            self.profile.import_folder = str(target)
+            self._push_recent_folder(str(target))
+            save_profile(self.profile)
+            self._refresh_recent_menu()
+            self._open_folder(target, restore_index=False)
+
+    # ─────────────────────────────────────────
+    # Analysis
+    # ─────────────────────────────────────────
+    def _on_stats(self) -> None:
+        if self.folder is None:
+            info_dialog(self.root, self.S["stats_title"], self.S["stats_no_data"])
+            return
+        self._flush_time()
+        stats_window(self.root, self.folder, self.profile, self.grouped, self.S)
+
+    def _on_dashboard(self) -> None:
+        if self.folder is None:
+            info_dialog(self.root, self.S["dash_title"], self.S["stats_no_data"])
+            return
+        self._flush_time()
+        dashboard_window(self.root, self.folder, self.profile, self.grouped, self.S)
 
     def _on_profile_manage(self) -> None:
         chosen = profile_manager_dialog(self.root, self.S)
@@ -745,6 +883,7 @@ class EryApp:
             self.empty_btn.place_forget()
 
     def _on_close(self) -> None:
+        self._flush_time()
         try:
             self.settings.window_w = self.root.winfo_width()
             self.settings.window_h = self.root.winfo_height()

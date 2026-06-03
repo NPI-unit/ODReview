@@ -60,6 +60,8 @@ class Sidebar(tk.Frame):
         self.idx: int = 0
 
         self._group_active_cache: dict[tuple[str, str], int] = {}
+        # Cache of image stems that count toward the evaluation, per group.
+        self._group_eval_cache: dict[tuple[str, str], set[str]] = {}
         self._build()
 
     # ─────────────────────────────────────────
@@ -178,7 +180,8 @@ class Sidebar(tk.Frame):
                 continue
             status = self._image_status(info.path)
             icon = STATUS_ICONS[status]
-            self.tree.item(info.path.name, text=f"{icon}  {info.path.name}",
+            self.tree.item(info.path.name,
+                           text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}",
                            tags=(f"status_{status}",))
         for iid in self.tree.get_children():
             self._refresh_group_node(iid, recurse=True)
@@ -242,7 +245,7 @@ class Sidebar(tk.Frame):
                         sub_inserted = True
                     icon = STATUS_ICONS[status]
                     self.tree.insert(sub_iid, "end", iid=info.path.name,
-                                     text=f"{icon}  {info.path.name}",
+                                     text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}",
                                      tags=(f"status_{status}",))
 
         if 0 <= self.idx < len(self.images):
@@ -251,6 +254,17 @@ class Sidebar(tk.Frame):
                 self.tree.see(self.images[self.idx].name)
             except tk.TclError:
                 pass
+
+    def _eval_marker(self, info: ImageGroupInfo, status: str) -> str:
+        """Trailing marker for segmented images that don't count toward the cap."""
+        if status == "unsegmented":
+            return ""
+        try:
+            if info.path.stem not in self.eval_stems(info.timepoint, info.subject):
+                return "   ⊘"
+        except Exception:
+            pass
+        return ""
 
     def _image_status(self, image_path: Path) -> str:
         if self.folder is None or not has_cache(self.folder, image_path):
@@ -288,31 +302,42 @@ class Sidebar(tk.Frame):
         n_active = self._group_active_cache.get(cache_key)
         compute_active = n_active is None
         if compute_active:
-            from .summary import per_image_counts
-            n_active = 0
+            from .evaluation import group_eval_summary
+            try:
+                summ = group_eval_summary(self.folder, images, self.profile)
+                n_active = summ["n_active"]
+            except Exception:
+                n_active = 0
+            self._group_active_cache[cache_key] = n_active
         for info in images:
             if self.folder is None or not has_cache(self.folder, info.path):
                 continue
-            review = ReviewState.load(self.folder, info.path.stem)
-            if review.is_finished:
+            if ReviewState.load(self.folder, info.path.stem).is_finished:
                 n_done += 1
-            if compute_active:
-                try:
-                    c = per_image_counts(self.folder, info, self.profile)
-                    if c is not None:
-                        n_active += c["rbc"]
-                except Exception:
-                    pass
-        if compute_active:
-            self._group_active_cache[cache_key] = n_active
         return {"n_total": n_total, "n_done": n_done, "n_active": n_active, "target": target}
+
+    def eval_stems(self, tp_key: str, sub_key: str) -> set[str]:
+        """Cached set of image stems that count toward the evaluation for a group."""
+        cache_key = (tp_key, sub_key)
+        stems = self._group_eval_cache.get(cache_key)
+        if stems is None:
+            images = self.grouped.tree.get(tp_key, {}).get(sub_key, []) if self.grouped else []
+            try:
+                from .evaluation import effective_eval_stems
+                stems = effective_eval_stems(self.folder, images, self.profile)
+            except Exception:
+                stems = set()
+            self._group_eval_cache[cache_key] = stems
+        return stems
 
     def _invalidate_group_cache(self, tp_key: str | None = None,
                                  sub_key: str | None = None) -> None:
         if tp_key is None or sub_key is None:
             self._group_active_cache.clear()
+            self._group_eval_cache.clear()
         else:
             self._group_active_cache.pop((tp_key, sub_key), None)
+            self._group_eval_cache.pop((tp_key, sub_key), None)
 
     def _refresh_group_node(self, iid: str, recurse: bool = False) -> None:
         if iid.startswith("sub::"):

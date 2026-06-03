@@ -259,32 +259,127 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     tk.Spinbox(tab_g, from_=0, to=500, textvariable=margin_var, width=8
                ).grid(row=row, column=1, sticky="w", **pad); row += 1
 
-    # ===== Tab: Grouping (regex) =====
+    # ===== Tab: Grouping =====
+    from . import nameparser
     tab_r = tk.Frame(nb); nb.add(tab_r, text=S["pe_section_grouping"])
-    tk.Label(tab_r, text=S["pe_image_pattern"]).pack(anchor="w", padx=14, pady=(12, 2))
-    pattern_var = tk.StringVar(value=working.image_pattern)
-    tk.Entry(tab_r, textvariable=pattern_var, width=78).pack(anchor="w", padx=14)
-    tk.Label(tab_r, text=S["pe_pattern_help"], fg="#666", wraplength=620, justify="left",
-             font=("TkDefaultFont", 9)).pack(anchor="w", padx=14, pady=(4, 8))
 
-    tk.Label(tab_r, text=S["pe_pattern_test"]).pack(anchor="w", padx=14)
-    test_var = tk.StringVar(value="TRIBAL_195_Prä_19.11.25_021.tif")
-    tk.Entry(tab_r, textvariable=test_var, width=78).pack(anchor="w", padx=14)
+    # Sample filename — shared by both the simple preview and the regex test.
+    def _sample_files() -> list[str]:
+        out: list[str] = []
+        if working.import_folder:
+            p = Path(working.import_folder)
+            if p.is_dir():
+                for f in sorted(p.iterdir()):
+                    if f.is_file() and f.suffix.lower() in nameparser._EXTS:
+                        out.append(f.name)
+        return out
+    sample_files = _sample_files()
+    sample_default = sample_files[0] if sample_files else "TRIBAL_195_Prä_19.11.25_021.tif"
+
+    # ── Simple parser (delimiters + roles) ──
+    simple_var = tk.BooleanVar(value=working.use_simple_parser)
+    tk.Checkbutton(tab_r, text=S["pe_use_simple"], variable=simple_var
+                   ).pack(anchor="w", padx=14, pady=(12, 4))
+
+    delim_defs = [("_", "pe_delim_underscore"), (" ", "pe_delim_space"),
+                  ("-", "pe_delim_dash"), (".", "pe_delim_dot")]
+    delim_vars = {ch: tk.BooleanVar(value=ch in working.delimiters) for ch, _ in delim_defs}
+    delim_row = tk.Frame(tab_r); delim_row.pack(anchor="w", padx=28, pady=(0, 6))
+    tk.Label(delim_row, text=S["pe_delimiters"]).pack(side="left", padx=(0, 8))
+    for ch, key in delim_defs:
+        tk.Checkbutton(delim_row, text=S[key], variable=delim_vars[ch]
+                       ).pack(side="left", padx=4)
+
+    tk.Label(tab_r, text=S["pe_pattern_test"]).pack(anchor="w", padx=28)
+    sample_var = tk.StringVar(value=sample_default)
+    tk.Entry(tab_r, textvariable=sample_var, width=72).pack(anchor="w", padx=28)
+
+    tk.Label(tab_r, text=S["pe_roles"]).pack(anchor="w", padx=28, pady=(8, 2))
+    roles_frame = tk.Frame(tab_r); roles_frame.pack(anchor="w", padx=28)
+
+    role_keys = [nameparser.ROLE_SUBJECT, nameparser.ROLE_TIMEPOINT,
+                 nameparser.ROLE_IMAGE_NUM, nameparser.ROLE_IGNORE]
+    role_key_to_label = {
+        nameparser.ROLE_SUBJECT: S["pe_role_subject"],
+        nameparser.ROLE_TIMEPOINT: S["pe_role_timepoint"],
+        nameparser.ROLE_IMAGE_NUM: S["pe_role_image_num"],
+        nameparser.ROLE_IGNORE: S["pe_role_ignore"],
+    }
+    role_label_to_key = {v: k for k, v in role_key_to_label.items()}
+    role_labels = [role_key_to_label[k] for k in role_keys]
+    role_vars: list[tk.StringVar] = []
+
+    simple_preview = tk.Label(tab_r, text="", anchor="w", justify="left",
+                              font=("TkDefaultFont", 9))
+    simple_preview.pack(anchor="w", padx=28, pady=(6, 8))
+
+    def _selected_delims() -> list[str]:
+        return [ch for ch in delim_vars if delim_vars[ch].get()]
+
+    def _current_roles() -> list[str]:
+        return [role_label_to_key.get(v.get(), nameparser.ROLE_IGNORE) for v in role_vars]
+
+    def update_simple_preview(*_):
+        roles = _current_roles()
+        ok_roles, why = nameparser.validate_roles(roles)
+        if not ok_roles:
+            simple_preview.config(text="⚠ " + why, fg="#c80"); return
+        delims = _selected_delims()
+        files = sample_files or [sample_var.get()]
+        ok = sum(1 for f in files
+                 if nameparser.parse(f, delims, roles) is not None)
+        total = len(files)
+        color = "#0a0" if ok == total and total else "#c80"
+        simple_preview.config(
+            text=S["pe_preview"] + "  " + S["pe_preview_ok"].format(ok=ok, total=total),
+            fg=color)
+
+    def rebuild_roles(*_):
+        for w in roles_frame.winfo_children():
+            w.destroy()
+        role_vars.clear()
+        tokens = nameparser.tokenize(sample_var.get(), _selected_delims())
+        for i, tok in enumerate(tokens):
+            tk.Label(roles_frame, text=tok, width=16, anchor="w", relief="groove"
+                     ).grid(row=i, column=0, sticky="w", padx=(0, 6), pady=1)
+            if i < len(working.field_roles):
+                default_key = working.field_roles[i]
+            else:
+                default_key = nameparser.ROLE_IGNORE
+            var = tk.StringVar(value=role_key_to_label.get(default_key, S["pe_role_ignore"]))
+            cb = ttk.Combobox(roles_frame, textvariable=var, values=role_labels,
+                              state="readonly", width=14)
+            cb.grid(row=i, column=1, sticky="w", pady=1)
+            var.trace_add("write", update_simple_preview)
+            role_vars.append(var)
+        update_simple_preview()
+
+    for ch in delim_vars:
+        delim_vars[ch].trace_add("write", rebuild_roles)
+    sample_var.trace_add("write", rebuild_roles)
+    rebuild_roles()
+
+    # ── Advanced: classic regex ──
+    ttk.Separator(tab_r, orient="horizontal").pack(fill="x", padx=14, pady=(10, 6))
+    tk.Label(tab_r, text=S["pe_image_pattern"] + "  (Regex)").pack(anchor="w", padx=14)
+    pattern_var = tk.StringVar(value=working.image_pattern)
+    tk.Entry(tab_r, textvariable=pattern_var, width=72).pack(anchor="w", padx=14)
+    tk.Label(tab_r, text=S["pe_pattern_help"], fg="#666", wraplength=620, justify="left",
+             font=("TkDefaultFont", 9)).pack(anchor="w", padx=14, pady=(4, 4))
     test_result = tk.Label(tab_r, text="", fg="#0a0", anchor="w", justify="left",
                             font=("Menlo", 10))
-    test_result.pack(anchor="w", padx=14, pady=(4, 0))
+    test_result.pack(anchor="w", padx=14, pady=(2, 0))
 
     def update_regex_test(*_):
         try:
             r = re.compile(pattern_var.get())
         except re.error as e:
             test_result.config(text=f"Regex error: {e}", fg="#c33"); return
-        m = r.match(test_var.get())
+        m = r.match(sample_var.get())
         if not m:
             test_result.config(text=S["pe_pattern_nomatch"], fg="#c33"); return
         gd = m.groupdict()
         text = S["pe_pattern_match"] + ":  " + "  ".join(f"{k}={v}" for k, v in gd.items())
-        # Highlight missing required groups
         required = {"subject", "timepoint", "image_num"}
         missing = required - set(gd.keys())
         if missing:
@@ -293,7 +388,7 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
         else:
             test_result.config(text=text, fg="#0a0")
     pattern_var.trace_add("write", update_regex_test)
-    test_var.trace_add("write", update_regex_test)
+    sample_var.trace_add("write", update_regex_test)
     update_regex_test()
 
     # ===== Tab: Cellpose =====
@@ -474,6 +569,9 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     show_margin_var = tk.BooleanVar(value=working.show_margin_overlay)
     tk.Checkbutton(tab_a, text=S["settings_show_margin_overlay"], variable=show_margin_var
                    ).grid(row=0, column=0, sticky="w", padx=16, pady=8)
+    stats_enabled_var = tk.BooleanVar(value=working.stats_enabled)
+    tk.Checkbutton(tab_a, text=S["pe_stats_enabled"], variable=stats_enabled_var
+                   ).grid(row=1, column=0, sticky="w", padx=16, pady=8)
 
     # ===== Footer =====
     footer = tk.Frame(top); footer.pack(fill="x", padx=12, pady=(0, 12))
@@ -498,7 +596,11 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
         name=name_var.get().strip() or working.name,
         import_folder=folder_var.get() or None,
         image_pattern=pattern_var.get(),
+        use_simple_parser=bool(simple_var.get()),
+        delimiters=_selected_delims() or ["_"],
+        field_roles=_current_roles(),
         target_cells=int(target_var.get()),
+        stats_enabled=bool(stats_enabled_var.get()),
         cell_types=type_state["types"],
         cellpose=CellposeParams(
             diameter=float(diam_var.get()),
@@ -515,6 +617,8 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
             policy=str(dup_policy_var.get()),
         ),
         sidebar_open_groups=working.sidebar_open_groups,
+        details_collapsed=working.details_collapsed,
+        recent_folders=working.recent_folders,
         active_type_key=working.active_type_key,
         created_at=working.created_at,
     )
@@ -550,6 +654,11 @@ def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
                  ).grid(row=row, column=1, sticky="w", **pad)
     row += 1
 
+    tk.Label(top, text=S["settings_reviewer"]).grid(row=row, column=0, sticky="w", **pad)
+    reviewer_var = tk.StringVar(value=settings.reviewer_name)
+    tk.Entry(top, textvariable=reviewer_var, width=18).grid(row=row, column=1, sticky="w", **pad)
+    row += 1
+
     btns = tk.Frame(top); btns.grid(row=row, column=0, columnspan=2, pady=14, sticky="e", padx=16)
     state = {"saved": False}
     def on_cancel(): state["saved"] = False; top.destroy()
@@ -570,6 +679,7 @@ def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
         overlay_visible=settings.overlay_visible,
         active_tool=settings.active_tool,
         last_profile_name=settings.last_profile_name,
+        reviewer_name=reviewer_var.get().strip(),
     )
     return (new, new_lang != settings.language, new_theme != settings.theme)
 

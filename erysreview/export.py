@@ -51,7 +51,7 @@ def _group_folder(root: Path, tp: str, sub: str) -> Path:
 
 
 def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData,
-                  dest: Path) -> bool:
+                  dest: Path, in_eval: bool = True) -> bool:
     """Export one image's derived files into `dest`. Returns True if mask was cached.
 
     Pulls everything from one compute_image_state() call so the exported numbers
@@ -63,6 +63,7 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
 
     image = load_image(image_info.path)
     default_type = profile.default_type_key()
+    type_name_by_key = {t.key: (t.name or t.key) for t in profile.cell_types}
 
     rows = []
     for cid, info in state.cell_infos.items():
@@ -71,7 +72,13 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
         is_dup = cid in state.duplicate_ids
         is_active = cid in state.active_ids
         rows.append({
-            "cell_id": cid, "type": type_key,
+            "cell_id": cid,
+            # ML-insurance columns: stable canonical type key + human name and
+            # whether the label came from the reviewer or the default fallback.
+            "type": type_key,
+            "type_name": type_name_by_key.get(type_key, type_key),
+            "label_source": "reviewer" if str(cid) in state.review.types else "auto",
+            "image_in_evaluation": bool(in_eval),
             "is_active": is_active, "is_border": is_border,
             "is_duplicate": is_dup,
             "is_force_included": cid in state.included,
@@ -117,13 +124,17 @@ def export_folder_structured(folder: Path, profile: ProfileData,
     if grouped is None or not grouped.tree:
         return root
 
+    from .evaluation import effective_eval_stems
+
     for tp in grouped.timepoints():
         for sub in grouped.subjects_in(tp):
             images = grouped.tree[tp][sub]
             dest = _group_folder(root, tp, sub)
+            eval_stems = effective_eval_stems(folder, images, profile)
             any_cached = False
             for info in images:
-                if _export_image(folder, info, profile, dest):
+                in_eval = info.path.stem in eval_stems
+                if _export_image(folder, info, profile, dest, in_eval=in_eval):
                     any_cached = True
             if any_cached:
                 if tp == UNGROUPED_TIMEPOINT:

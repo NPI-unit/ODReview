@@ -55,7 +55,25 @@ class GroupedFolder:
 
 
 def parse_filename(filename: str, profile: ProfileData) -> ImageGroupInfo | None:
-    """Returns None if the filename doesn't match the profile regex."""
+    """Returns None if the filename doesn't match the profile's grouping rule.
+
+    Uses the friendly delimiter/role parser when the profile opts into it,
+    otherwise falls back to the classic named-group regex.
+    """
+    if profile.use_simple_parser and profile.field_roles:
+        from . import nameparser
+        parsed = nameparser.parse(filename, profile.delimiters, profile.field_roles)
+        if parsed is None:
+            return None
+        return ImageGroupInfo(
+            path=Path(filename),
+            timepoint=parsed["timepoint"] or UNGROUPED_TIMEPOINT,
+            subject=parsed["subject"] or UNGROUPED_SUBJECT,
+            image_num=parsed["image_num"],
+            extras=parsed["extras"],
+            is_ungrouped=False,
+        )
+
     try:
         r = re.compile(profile.image_pattern)
     except re.error:
