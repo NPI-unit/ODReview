@@ -19,18 +19,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from .cellpose_runner import has_cache
+from .counts import image_counts
 from .grouping import ImageGroupInfo
-from .image_state import compute_image_state
 from .persistence import ReviewState
 from .profile import ProfileData
 
 
 def _active_count(folder: Path, info: ImageGroupInfo, profile: ProfileData) -> int | None:
     """Active (counted) cells for one image, or None if not segmented yet."""
-    state = compute_image_state(folder, info, profile)
-    if state is None:
-        return None
-    return state.n_active
+    c = image_counts(folder, info, profile)
+    return None if c is None else c["rbc"]
 
 
 def effective_eval_stems(
@@ -76,19 +74,19 @@ def group_eval_summary(
     n_images = 0
     time_s = 0.0
     for info in images_in_group:
-        if info.path.stem not in stems:
-            # still accumulate time for any reviewed image so timing reflects work
-            if folder is not None and has_cache(folder, info.path):
-                time_s += ReviewState.load(folder, info.path.stem).time_spent_s
+        if folder is None or not has_cache(folder, info.path):
             continue
-        state = compute_image_state(folder, info, profile)
-        if state is None:
+        # Time accrues for every reviewed image so timing reflects all work.
+        time_s += ReviewState.load(folder, info.path.stem).time_spent_s
+        if info.path.stem not in stems:
+            continue
+        c = image_counts(folder, info, profile)
+        if c is None:
             continue
         n_images += 1
-        n_active += state.n_active
-        for k, v in state.by_type.items():
+        n_active += c["rbc"]
+        for k, v in c["by_type"].items():
             by_type[k] = by_type.get(k, 0) + v
-        time_s += state.review.time_spent_s
     n_normal = by_type.get("normal", 0)
     pct_changed = (100.0 * (n_active - n_normal) / n_active) if n_active > 0 else 0.0
     pct_changed_2000 = (pct_changed * target / n_active) if n_active > 0 else 0.0

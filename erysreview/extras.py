@@ -14,9 +14,147 @@ from typing import Callable
 
 from . import package as pkg
 from . import stats as statsmod
+from .cellpose_runner import has_cache
+from .counts import image_counts
 from .dialogs import _center_on_parent, confirm_dialog, info_dialog
-from .grouping import GroupedFolder
+from .grouping import GroupedFolder, ImageGroupInfo
+from .persistence import ReviewState
 from .profile import ProfileData
+
+
+def _eval_compute(images, counts, overrides, target):
+    """Effective inclusion set + cumulative active count, honoring overrides.
+
+    overrides[stem] in {True, False, None(=auto)}. Mirrors evaluation.py.
+    """
+    included = set()
+    cum = 0
+    reached = False
+    for info in images:
+        stem = info.path.stem
+        n = counts.get(stem)
+        if n is None:
+            continue
+        ov = overrides.get(stem)
+        if ov is True:
+            included.add(stem); cum += n
+        elif ov is False:
+            continue
+        else:
+            if not reached:
+                included.add(stem); cum += n
+                if cum >= target:
+                    reached = True
+    return included, cum
+
+
+def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
+                       strings: dict) -> bool:
+    """Per-group picker for the images that count toward the target.
+
+    Returns True if any image's eval flag was changed and saved.
+    """
+    S = strings
+    target = max(1, profile.target_cells)
+
+    # Precompute active counts (cached) + original overrides.
+    counts: dict[str, int | None] = {}
+    originals: dict[str, bool | None] = {}
+    for info in images_in_group:
+        stem = info.path.stem
+        if has_cache(folder, info.path):
+            c = image_counts(folder, info, profile)
+            counts[stem] = c["rbc"] if c else None
+        else:
+            counts[stem] = None
+        originals[stem] = ReviewState.load(folder, stem).eval_include
+    overrides = dict(originals)
+
+    top = tk.Toplevel(parent); top.title(S["eval_dlg_title"])
+    top.transient(parent); top.grab_set(); top.minsize(560, 460)
+
+    bar = tk.Frame(top); bar.pack(fill="x", padx=12, pady=(12, 4))
+    def set_all(val):
+        for info in images_in_group:
+            if counts.get(info.path.stem) is not None:
+                overrides[info.path.stem] = val
+        _refresh()
+    def set_auto():
+        for k in overrides:
+            overrides[k] = None
+        _refresh()
+    tk.Button(bar, text=S["eval_dlg_auto"], command=set_auto).pack(side="left", padx=2)
+    tk.Button(bar, text=S["eval_dlg_all"], command=lambda: set_all(True)).pack(side="left", padx=2)
+    tk.Button(bar, text=S["eval_dlg_none"], command=lambda: set_all(False)).pack(side="left", padx=2)
+
+    tf = tk.Frame(top); tf.pack(fill="both", expand=True, padx=12)
+    cols = ("count", "status", "image", "active", "cum")
+    tree = ttk.Treeview(tf, columns=cols, show="headings", height=14)
+    tree.heading("count", text="✓"); tree.column("count", width=36, anchor="center", stretch=False)
+    tree.heading("status", text=""); tree.column("status", width=30, anchor="center", stretch=False)
+    tree.heading("image", text=S["eval_dlg_col_image"]); tree.column("image", anchor="w", stretch=True)
+    tree.heading("active", text=S["eval_dlg_col_active"]); tree.column("active", width=70, anchor="e", stretch=False)
+    tree.heading("cum", text=S["eval_dlg_col_cum"]); tree.column("cum", width=80, anchor="e", stretch=False)
+    sb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=sb.set); sb.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
+
+    footer = tk.Frame(top); footer.pack(fill="x", padx=12, pady=8)
+    summary = tk.Label(footer, text="", anchor="w", font=("TkDefaultFont", 11, "bold"))
+    summary.pack(side="left")
+
+    def _refresh():
+        included, _ = _eval_compute(images_in_group, counts, overrides, target)
+        for iid in tree.get_children():
+            tree.delete(iid)
+        cum = 0
+        total_active = 0
+        for info in images_in_group:
+            stem = info.path.stem
+            n = counts.get(stem)
+            is_in = stem in included
+            if is_in and n is not None:
+                cum += n
+            if n is not None:
+                total_active += n if is_in else 0
+            status = "○" if n is None else "●"
+            label = (str(info.image_num) if info.image_num is not None else info.path.name)
+            tree.insert("", "end", iid=stem, values=(
+                "✓" if is_in else " ", status, f"{label}  {info.path.name}",
+                "—" if n is None else n,
+                "—" if n is None else (cum if is_in else ""),
+            ))
+        _, total = _eval_compute(images_in_group, counts, overrides, target)
+        summary.config(text=S["eval_dlg_summary"].format(n=total, target=target))
+
+    def _toggle(evt):
+        stem = tree.identify_row(evt.y)
+        if not stem or counts.get(stem) is None:
+            return
+        included, _ = _eval_compute(images_in_group, counts, overrides, target)
+        # Toggle effective membership: in -> exclude, out -> include.
+        overrides[stem] = False if stem in included else True
+        _refresh()
+    tree.bind("<Button-1>", _toggle)
+    _refresh()
+
+    result = {"changed": False}
+    def on_save():
+        changed = False
+        for info in images_in_group:
+            stem = info.path.stem
+            if overrides.get(stem) != originals.get(stem):
+                rv = ReviewState.load(folder, stem)
+                rv.eval_include = overrides.get(stem)
+                rv.save(folder, stem)
+                changed = True
+        result["changed"] = changed
+        top.destroy()
+    btns = tk.Frame(top); btns.pack(fill="x", padx=12, pady=(0, 12))
+    tk.Button(btns, text=S["settings_cancel"], width=12, command=top.destroy).pack(side="right", padx=4)
+    tk.Button(btns, text=S["settings_save"], width=12, command=on_save).pack(side="right", padx=4)
+    top.bind("<Escape>", lambda e: top.destroy())
+    _center_on_parent(top, parent); parent.wait_window(top)
+    return result["changed"]
 
 
 def _fmt_time(seconds: float) -> str:
@@ -204,8 +342,17 @@ def package_import_dialog(parent, active_profile: ProfileData | None,
         imported=len(result["imported"]), skipped=len(result["skipped"]),
         target=result["target"],
     )
-    if result["warnings"]:
-        msg += "\n\n⚠ " + "\n".join(result["warnings"])
+    warnings = list(result["warnings"])
+    # Package without originals + target has no images => reviewing won't display.
+    if not manifest.get("includes_images"):
+        from .cellpose_runner import IMG_EXTS
+        tgt = Path(result["target"])
+        has_imgs = tgt.is_dir() and any(
+            p.is_file() and p.suffix.lower() in IMG_EXTS for p in tgt.iterdir())
+        if not has_imgs:
+            warnings.append(S["pkg_import_no_images"])
+    if warnings:
+        msg += "\n\n⚠ " + "\n".join(warnings)
     info_dialog(parent, S["pkg_import_title"], msg)
     return result
 
@@ -216,7 +363,8 @@ def package_import_dialog(parent, active_profile: ProfileData | None,
 def stats_window(parent, folder: Path, profile: ProfileData,
                  grouped: GroupedFolder | None, strings: dict) -> None:
     S = strings
-    records = statsmod.collect_group_records(folder, profile, grouped)
+    holder = {"records": statsmod.collect_group_records(folder, profile, grouped)}
+    records = holder["records"]
 
     top = tk.Toplevel(parent); top.title(S["stats_title"])
     top.transient(parent); top.minsize(720, 560)
@@ -244,6 +392,8 @@ def stats_window(parent, folder: Path, profile: ProfileData,
                     variable=by_var).pack(side="left", padx=2)
     ttk.Radiobutton(ctrl, text=S["stats_by_subject"], value="subject",
                     variable=by_var).pack(side="left", padx=2)
+    tk.Button(ctrl, text=S["btn_refresh"],
+              command=lambda: _do_refresh()).pack(side="right")
 
     # ── Plot ──
     try:
@@ -272,10 +422,14 @@ def stats_window(parent, folder: Path, profile: ProfileData,
     table.configure(yscrollcommand=sb.set)
     sb.pack(side="right", fill="y"); table.pack(side="left", fill="both", expand=True)
 
+    def _do_refresh():
+        holder["records"] = statsmod.collect_group_records(folder, profile, grouped)
+        redraw()
+
     def redraw(*_):
         metric_key = label_to_key.get(metric_var.get(), metrics[0][0])
         by = by_var.get()
-        groups = statsmod.grouped_values(records, by, metric_key)
+        groups = statsmod.grouped_values(holder["records"], by, metric_key)
         ax.clear()
         if groups:
             labels = list(groups.keys())
@@ -309,10 +463,13 @@ def stats_window(parent, folder: Path, profile: ProfileData,
 def dashboard_window(parent, folder: Path, profile: ProfileData,
                      grouped: GroupedFolder | None, strings: dict) -> None:
     S = strings
-    records = statsmod.collect_group_records(folder, profile, grouped)
+    target = max(1, profile.target_cells)
 
     top = tk.Toplevel(parent); top.title(S["dash_title"])
     top.transient(parent); top.minsize(640, 460)
+
+    barbar = tk.Frame(top); barbar.pack(fill="x", padx=12, pady=(10, 0))
+    tk.Button(barbar, text=S["btn_refresh"], command=lambda: _populate()).pack(side="right")
 
     frame = tk.Frame(top); frame.pack(fill="both", expand=True, padx=12, pady=12)
     cols = ("tp", "sub", "images", "progress", "reached", "time")
@@ -327,25 +484,31 @@ def dashboard_window(parent, folder: Path, profile: ProfileData,
     tree.configure(yscrollcommand=sb.set)
     sb.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
 
-    total_time = 0.0
-    subject_time: dict[str, float] = {}
-    target = max(1, profile.target_cells)
-    for r in records:
-        total_time += r["time_s"]
-        subject_time[r["subject"]] = subject_time.get(r["subject"], 0.0) + r["time_s"]
-        tree.insert("", "end", values=(
-            r["timepoint"], r["subject"], r["n_images"],
-            f"{r['rbc']}/{target}",
-            S["dash_yes"] if r["reached"] else S["dash_no"],
-            _fmt_time(r["time_s"]),
-        ))
-
     info = tk.Frame(top); info.pack(fill="x", padx=12, pady=(0, 6))
-    subj_txt = "   ".join(f"{s}: {_fmt_time(t)}" for s, t in sorted(subject_time.items()))
-    tk.Label(info, text=S["dash_subject_totals"] + "  " + (subj_txt or "—"),
-             anchor="w", justify="left", wraplength=600, fg="#888").pack(anchor="w")
-    tk.Label(info, text=S["dash_total_time"].format(time=_fmt_time(total_time)),
-             anchor="w", font=("TkDefaultFont", 11, "bold")).pack(anchor="w", pady=(4, 0))
+    subj_label = tk.Label(info, text="", anchor="w", justify="left", wraplength=600, fg="#888")
+    subj_label.pack(anchor="w")
+    total_label = tk.Label(info, text="", anchor="w", font=("TkDefaultFont", 11, "bold"))
+    total_label.pack(anchor="w", pady=(4, 0))
+
+    def _populate():
+        records = statsmod.collect_group_records(folder, profile, grouped)
+        for iid in tree.get_children():
+            tree.delete(iid)
+        total_time = 0.0
+        subject_time: dict[str, float] = {}
+        for r in records:
+            total_time += r["time_s"]
+            subject_time[r["subject"]] = subject_time.get(r["subject"], 0.0) + r["time_s"]
+            tree.insert("", "end", values=(
+                r["timepoint"], r["subject"], r["n_images"],
+                f"{r['rbc']}/{target}",
+                S["dash_yes"] if r["reached"] else S["dash_no"],
+                _fmt_time(r["time_s"]),
+            ))
+        subj_txt = "   ".join(f"{s}: {_fmt_time(t)}" for s, t in sorted(subject_time.items()))
+        subj_label.config(text=S["dash_subject_totals"] + "  " + (subj_txt or "—"))
+        total_label.config(text=S["dash_total_time"].format(time=_fmt_time(total_time)))
+    _populate()
 
     tk.Button(top, text=S["btn_close"], command=top.destroy).pack(pady=(0, 12))
     _center_on_parent(top, parent)

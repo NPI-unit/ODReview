@@ -56,6 +56,7 @@ ErysReview gives you exactly that, in a single Tk window.
 - **Friendly filename parser** — instead of a regex, tick delimiters (`_`, space, `-`, `.`) and assign each token a role (Proband / Zeitpunkt / Bildnummer / ignorieren) with a live preview over your real files. Regex stays available as an advanced fallback.
 - **In-app statistics** — `Auswertung → Statistik …` shows box-plots (by timepoint / by subject) and a descriptive table for `% verändert`, `% verändert pro 2000`, per-subtype %, and absolute counts.
 - **Progress dashboard & time tracking** — `Auswertung → Übersicht …` lists each group's `n/Ziel`, whether the target is reached, and the review time spent per subject and in total.
+- **No auto-render & instant navigation** — opening a folder or pressing `←`/`→` never blocks: unsegmented images show the raw picture immediately; you segment on demand with the Cellpose button / `r` (bulk via *Mehrere Bilder*). Per-image counts are cached on disk (mtime-invalidated) so the sidebar no longer reloads masks. Editing the profile (regex/parser) re-groups live; `F5` re-scans the folder.
 
 > Building a downstream subtype classifier? See [`docs/ML_DATASET.md`](docs/ML_DATASET.md) — the per-cell `*_stats.csv` already carries canonical type keys, a `label_source` (reviewer vs. auto) flag and an `image_in_evaluation` flag so the export converts losslessly into a training set.
 
@@ -192,7 +193,8 @@ You should see versions printed and `True` if GPU is available.
 | `f` | mark image as finished |
 | `e` | toggle current image in / out / auto for the 2000-cell evaluation |
 | `o` | overlay on/off (also toggles margin overlay) |
-| `r` | re-run Cellpose on current image |
+| `r` | segment / re-run Cellpose on current image (no auto-render on load) |
+| `F5` / `Cmd+R` | refresh — re-scan folder + re-group (also after editing the profile) |
 | `z` | undo |
 | `s` / `Cmd+S` / `Ctrl+S` | export |
 | `q` | quit |

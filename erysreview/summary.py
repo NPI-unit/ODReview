@@ -35,16 +35,13 @@ def per_image_counts(
     folder: Path, image_info: ImageGroupInfo, profile: ProfileData,
 ) -> dict | None:
     """For one image, returns {'rbc': n_active, 'by_type': {type_key: n_active}}.
-    Returns None if no cellpose mask is cached for that image."""
-    state = compute_image_state(folder, image_info, profile)
-    if state is None:
-        return None
-    return {
-        "rbc": state.n_active,
-        "by_type": state.by_type,
-        "image_num": image_info.image_num,
-        "filename": image_info.path.name,
-    }
+    Returns None if no cellpose mask is cached for that image.
+
+    Delegates to the disk-backed count cache so repeated sidebar/summary calls
+    don't reload the mask each time.
+    """
+    from .counts import image_counts
+    return image_counts(folder, image_info, profile)
 
 
 # ─────────────────────────────────────────────

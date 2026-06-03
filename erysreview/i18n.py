@@ -200,7 +200,8 @@ STRINGS = {
             "  Mittel-Drag – Pan\n"
             "  Home / 0    – Zoom zurücksetzen\n"
             "  o – Overlay an/aus\n"
-            "  r – Cellpose neu rechnen\n"
+            "  r – Segmentieren / neu rechnen (aktuelles Bild)\n"
+            "  F5 / Cmd+R – Aktualisieren (Ordner neu einlesen)\n"
             "  z – Rückgängig\n"
             "  e – Bild zur Auswertung (2000) ein/aus/auto\n"
             "  s / Cmd+S – Exportieren\n"
@@ -224,12 +225,29 @@ STRINGS = {
         "export_done_msg":     "Exportiert nach:\n{path}",
         # Generic
         "btn_close":           "Schließen",
+        "btn_refresh":         "Aktualisieren",
         # Menus (v17)
         "menu_package_create": "Paket erstellen …",
         "menu_package_import": "Paket importieren …",
+        "menu_refresh":        "Aktualisieren (neu einlesen)",
         "menu_analysis":       "Auswertung",
+        "menu_eval_select":    "Zählende Bilder wählen …",
         "menu_stats":          "Statistik …",
         "menu_dashboard":      "Übersicht (Dashboard) …",
+        # No-auto-render + profile refresh
+        "status_not_segmented": "Nicht segmentiert – Cellpose-Knopf / r zum Rechnen",
+        "profile_cp_changed_title": "Cellpose-Parameter geändert",
+        "profile_cp_changed_msg":   "Die Cellpose-Parameter haben sich geändert – vorhandene Masken sind veraltet. Jetzt betroffene Bilder neu rechnen (Batch)?",
+        "pkg_import_no_images":     "Das Paket enthält keine Originalbilder und im Zielordner sind keine gefunden – die Bilder können nicht angezeigt werden. Lege die TIFs in den Zielordner.",
+        # Eval-selection dialog
+        "eval_dlg_title":      "Zählende Bilder wählen",
+        "eval_dlg_auto":       "Auto-Vorschlag",
+        "eval_dlg_all":        "Alle",
+        "eval_dlg_none":       "Keine",
+        "eval_dlg_col_image":  "Bild",
+        "eval_dlg_col_active": "aktiv",
+        "eval_dlg_col_cum":    "kumuliert",
+        "eval_dlg_summary":    "Gewertet: {n}/{target}",
         # Settings
         "settings_reviewer":   "Reviewer-Name (für Pakete)",
         # Package create
@@ -486,7 +504,8 @@ STRINGS = {
             "  Middle-drag – pan\n"
             "  Home / 0    – reset zoom\n"
             "  o – overlay on/off\n"
-            "  r – re-run Cellpose\n"
+            "  r – segment / re-run (current image)\n"
+            "  F5 / Cmd+R – refresh (re-scan folder)\n"
             "  z – undo\n"
             "  e – image in/out/auto for evaluation (2000)\n"
             "  s / Cmd+S – export\n"
@@ -506,12 +525,29 @@ STRINGS = {
         "export_done_msg":     "Exported to:\n{path}",
         # Generic
         "btn_close":           "Close",
+        "btn_refresh":         "Refresh",
         # Menus (v17)
         "menu_package_create": "Create package …",
         "menu_package_import": "Import package …",
+        "menu_refresh":        "Refresh (re-scan)",
         "menu_analysis":       "Analysis",
+        "menu_eval_select":    "Choose counted images …",
         "menu_stats":          "Statistics …",
         "menu_dashboard":      "Overview (dashboard) …",
+        # No-auto-render + profile refresh
+        "status_not_segmented": "Not segmented – Cellpose button / r to run",
+        "profile_cp_changed_title": "Cellpose parameters changed",
+        "profile_cp_changed_msg":   "The Cellpose parameters changed – existing masks are stale. Re-run affected images now (batch)?",
+        "pkg_import_no_images":     "The package contains no original images and none were found in the target folder – images can't be displayed. Put the TIFs into the target folder.",
+        # Eval-selection dialog
+        "eval_dlg_title":      "Choose counted images",
+        "eval_dlg_auto":       "Auto-suggest",
+        "eval_dlg_all":        "All",
+        "eval_dlg_none":       "None",
+        "eval_dlg_col_image":  "Image",
+        "eval_dlg_col_active": "active",
+        "eval_dlg_col_cum":    "cumulative",
+        "eval_dlg_summary":    "Counted: {n}/{target}",
         # Settings
         "settings_reviewer":   "Reviewer name (for packages)",
         # Package create

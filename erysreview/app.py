@@ -16,6 +16,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
 
+import numpy as np
+
 from . import __version__
 from .canvas import EryCanvas
 from .cellpose_runner import (
@@ -28,7 +30,8 @@ from .dialogs import (
 )
 from .export import export_folder_structured
 from .extras import (
-    dashboard_window, package_create_dialog, package_import_dialog, stats_window,
+    dashboard_window, eval_select_dialog, package_create_dialog,
+    package_import_dialog, stats_window,
 )
 from .grouping import group_images
 from .i18n import get_strings
@@ -192,6 +195,7 @@ class EryApp:
         self.m_recent = tk.Menu(m_file, tearoff=0)
         m_file.add_cascade(label=S["menu_recent_folders"], menu=self.m_recent)
         self._refresh_recent_menu()
+        m_file.add_command(label=S["menu_refresh"], command=self._on_refresh, accelerator="F5")
         m_file.add_separator()
         m_file.add_command(label=S["menu_batch"], command=self._on_batch)
         m_file.add_separator()
@@ -209,9 +213,14 @@ class EryApp:
         menubar.add_cascade(label=S["menu_profile"], menu=m_prof)
 
         m_analysis = tk.Menu(menubar, tearoff=0)
+        m_analysis.add_command(label=S["menu_eval_select"], command=self._on_eval_select)
+        m_analysis.add_separator()
         m_analysis.add_command(label=S["menu_stats"], command=self._on_stats)
         m_analysis.add_command(label=S["menu_dashboard"], command=self._on_dashboard)
         menubar.add_cascade(label=S["menu_analysis"], menu=m_analysis)
+        self.m_analysis = m_analysis
+        self._stats_menu_index = 2  # eval(0), separator(1), stats(2)
+        self._apply_stats_menu_state()
 
         m_settings = tk.Menu(menubar, tearoff=0)
         m_settings.add_command(label=S["menu_settings_open"], command=self._on_settings)
@@ -320,6 +329,9 @@ class EryApp:
         self.root.bind("<Home>", lambda e: self.canvas.reset_zoom())
         self.root.bind("<Key-0>", lambda e: self.canvas.reset_zoom())
         self.root.bind("<Key-e>", lambda e: self._on_toggle_eval())
+        self.root.bind("<F5>", lambda e: self._on_refresh())
+        for mod in ("Command", "Control"):
+            self.root.bind(f"<{mod}-r>", lambda e: self._on_refresh())
 
     # ─────────────────────────────────────────
     # Time tracking
@@ -508,18 +520,14 @@ class EryApp:
             return
 
         cp_params = self.profile.cellpose
-        if has_cache(self.folder, path):
+        unsegmented = not has_cache(self.folder, path)
+        if not unsegmented:
             masks = load_cached_masks(self.folder, path)
             mismatch = not params_match(self.folder, path, cp_params)
         else:
-            try:
-                with CellposeSpinner(self.root, path.name, self.S):
-                    masks = run_for_image(self.folder, path, img, cp_params,
-                                          force=False, use_gpu=self.profile.use_gpu)
-            except Exception as e:
-                info_dialog(self.root, self.S["title"],
-                            self.S["err_cellpose"].format(err=e))
-                return
+            # Never auto-run Cellpose — show the raw image instantly with an
+            # empty mask. The user segments on demand via the Cellpose button / r.
+            masks = np.zeros(img.shape[:2], dtype=np.int32)
             mismatch = False
 
         if masks is None:
@@ -528,9 +536,12 @@ class EryApp:
         review = ReviewState.load(self.folder, path.stem)
         self.review = review
 
-        self.toolbar.set_param_mismatch(
-            self.S["status_param_mismatch"] if mismatch else None
-        )
+        if unsegmented:
+            self.toolbar.set_param_mismatch(self.S["status_not_segmented"])
+        else:
+            self.toolbar.set_param_mismatch(
+                self.S["status_param_mismatch"] if mismatch else None
+            )
         self.canvas.set_image(img, masks, review)
         # Per-image duplicate detection on the freshly loaded mask
         try:
@@ -602,38 +613,38 @@ class EryApp:
         self._update_status()
 
     def _on_resegment(self) -> None:
+        """Cellpose button / r. Segments an unsegmented image on demand (no
+        confirm), or re-runs an already-segmented one (with confirm, since that
+        discards the review)."""
         if self.folder is None or not self.images:
             return
         path = self.images[self.idx]
-        if not confirm_dialog(
-            self.root, self.S["confirm_resegment_title"],
-            self.S["confirm_resegment_msg"].format(name=path.name),
-            yes_text=self.S["confirm_yes"], no_text=self.S["confirm_no"],
-        ):
-            return
-        discard_cache(self.folder, path)
-        try:
-            ReviewState.review_path(self.folder, path.stem).unlink()
-        except FileNotFoundError:
-            pass
-        self.review = ReviewState()
+        is_new = not has_cache(self.folder, path)
+        if not is_new:
+            if not confirm_dialog(
+                self.root, self.S["confirm_resegment_title"],
+                self.S["confirm_resegment_msg"].format(name=path.name),
+                yes_text=self.S["confirm_yes"], no_text=self.S["confirm_no"],
+            ):
+                return
+            discard_cache(self.folder, path)
+            try:
+                ReviewState.review_path(self.folder, path.stem).unlink()
+            except FileNotFoundError:
+                pass
+            self.review = ReviewState()
         try:
             img = load_image(path)
             with CellposeSpinner(self.root, path.name, self.S):
-                masks = run_for_image(self.folder, path, img, self.profile.cellpose,
-                                      force=True, use_gpu=self.profile.use_gpu)
+                run_for_image(self.folder, path, img, self.profile.cellpose,
+                              force=True, use_gpu=self.profile.use_gpu)
         except Exception as e:
             info_dialog(self.root, self.S["title"],
                         self.S["err_cellpose"].format(err=e))
             return
-        self.canvas.set_image(img, masks, self.review)
-        self.canvas.reset_zoom()
-        self.toolbar.set_param_mismatch(None)
-        self._update_status()
-        self.sidebar.refresh_statuses()
+        # Reload uniformly from the fresh cache (masks + duplicates + status).
         self.sidebar.invalidate_group_cache()
-        self.sidebar.refresh_current_group_counter()
-        self._refresh_details()
+        self._show_image_at(self.idx)
 
     def _on_batch(self) -> None:
         if self.folder is None or not self.images:
@@ -704,6 +715,7 @@ class EryApp:
         self.canvas.set_profile(prof)
         self.sidebar.set_profile(prof)
         self.toolbar.set_profile(prof)
+        self._apply_stats_menu_state()
         target = Path(result["target"])
         if target.is_dir():
             self.profile.import_folder = str(target)
@@ -729,6 +741,52 @@ class EryApp:
         self._flush_time()
         dashboard_window(self.root, self.folder, self.profile, self.grouped, self.S)
 
+    def _apply_stats_menu_state(self) -> None:
+        """Grey out the statistics entry when the profile disables it."""
+        try:
+            state = "normal" if self.profile.stats_enabled else "disabled"
+            self.m_analysis.entryconfig(self._stats_menu_index, state=state)
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _on_eval_select(self) -> None:
+        """Open the per-group dialog to choose which images count toward the cap."""
+        if self.folder is None or not self.images or self.grouped is None:
+            return
+        keys = self.sidebar.current_group_keys()
+        if keys is None:
+            return
+        tp_key, sub_key = keys
+        images = self.grouped.tree.get(tp_key, {}).get(sub_key, [])
+        if not images:
+            return
+        changed = eval_select_dialog(self.root, self.folder, images, self.profile, self.S)
+        if changed:
+            self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
+            self.sidebar.invalidate_group_cache()
+            self.sidebar.refresh_statuses()
+            self.sidebar.refresh_current_group_counter()
+            self._refresh_details()
+
+    # ─────────────────────────────────────────
+    # Refresh (re-scan disk + re-group)
+    # ─────────────────────────────────────────
+    def _on_refresh(self) -> None:
+        if self.folder is None:
+            return
+        self._flush_time()
+        out_dir = self.folder / "outputs"
+        images = list_images(self.folder, exclude={out_dir})
+        if not images:
+            info_dialog(self.root, self.S["title"],
+                        self.S["err_no_images"].format(path=self.folder))
+            return
+        self.images = images
+        self.grouped = group_images(images, self.profile)
+        self.sidebar.populate(self.folder, images, self.grouped)
+        self.idx = max(0, min(self.idx, len(images) - 1))
+        self._show_image_at(self.idx)
+
     def _on_profile_manage(self) -> None:
         chosen = profile_manager_dialog(self.root, self.S)
         if chosen is None or chosen.name == self.profile.name:
@@ -740,6 +798,7 @@ class EryApp:
         self.canvas.set_profile(self.profile)
         self.sidebar.set_profile(self.profile)
         self.toolbar.set_profile(self.profile)
+        self._apply_stats_menu_state()
         if self.profile.import_folder:
             p = Path(self.profile.import_folder)
             if p.is_dir():
@@ -750,15 +809,35 @@ class EryApp:
         if result is None:
             return
         old_margin = self.profile.margin_n
+        old_cp = self.profile.cellpose
         self.profile = result
         save_profile(self.profile)
-        if self.canvas.image is not None:
-            if self.profile.margin_n != old_margin:
-                self.canvas.set_margin_n(self.profile.margin_n)
-            self.canvas.set_profile(self.profile)
-        self.sidebar.set_profile(self.profile)
+        self.canvas.set_profile(self.profile)
+        if self.canvas.image is not None and self.profile.margin_n != old_margin:
+            self.canvas.set_margin_n(self.profile.margin_n)
         self.toolbar.set_profile(self.profile)
+        self._apply_stats_menu_state()
+        # Re-group with the (possibly changed) regex/parser and rebuild the sidebar.
+        if self.folder is not None and self.images:
+            self.grouped = group_images(self.images, self.profile)
+            self.sidebar.set_profile(self.profile)
+            self.sidebar.populate(self.folder, self.images, self.grouped)
+            self._show_image_at(self.idx)
+        else:
+            self.sidebar.set_profile(self.profile)
         self._update_status()
+        # Cellpose parameters changed → existing masks are stale; offer a re-run.
+        cp = self.profile.cellpose
+        cp_changed = (old_cp.diameter != cp.diameter
+                      or old_cp.flow_threshold != cp.flow_threshold
+                      or old_cp.cellprob_threshold != cp.cellprob_threshold
+                      or old_cp.model != cp.model)
+        if (cp_changed and self.folder is not None
+                and any(has_cache(self.folder, p) for p in self.images)):
+            if confirm_dialog(self.root, self.S["profile_cp_changed_title"],
+                              self.S["profile_cp_changed_msg"],
+                              yes_text=self.S["confirm_yes"], no_text=self.S["confirm_no"]):
+                self._on_batch()
 
     def _on_settings(self) -> None:
         new_settings, lang_changed, theme_changed = settings_dialog(
