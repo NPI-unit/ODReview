@@ -49,6 +49,9 @@ ErysReview gives you exactly that, in a single Tk window.
 - **Margin / border filter** so partial cells at image edges don't pollute counts. Configurable per profile.
 - **Auto-save** on every click into per-image JSON sidecars. No `Save` button.
 - **Structured export** to `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/` with original TIFs copied alongside masks, overlay PNGs, per-image stats CSV, and a per-subject summary CSV in a 4-block layout matching the standard lab spreadsheet format.
+- **Overview workbook** — on export, `outputs/Uebersicht.xlsx` aggregates every group: a tidy `Daten` sheet (one row per `Zeitpunkt × Condition × Proband` with counts, percentages, `% verändert`, `% Target`) plus pivot matrices (`% verändert` and one per cell type, `Proband × Zeitpunkt`) and an `RBC_nBilder` control sheet. Toggle per profile; a small preview pops up after export.
+- **Batch with hierarchical filtering** — *Mehrere Bilder* mirrors the sidebar: a `Zeitpunkt → Proband → Bild` tree plus `Zeitpunkt`/`Proband` dropdown filters, so you can target a single subject or timepoint. Quick-selects (all / unsegmented / unfinished / invert) and *Erste N pro Proband* stack as intersections; *Bis Ziel rechnen* computes each group in image order until its active count reaches the profile target; *wachhalten* prevents sleep during long runs (`caffeinate` on macOS, `SetThreadExecutionState` on Windows).
+- **Recursive image loading** — images in sub-folders are read too; the `outputs/` export folder and `.erys_cache/` are skipped and duplicate filenames are ignored.
 - **Two themes** — Lab Neutral (light) and Soft Dark (dark) — sharing identical semantic color keys, both targeted at scientific work.
 - **DE / EN** strings.
 - **Share packages** — bundle a study (precomputed `.npy` masks + reviews, originals optional) into one ZIP via `Datei → Paket erstellen …`. A teammate runs `Datei → Paket importieren …` and reviews **without ever running Cellpose** — ideal when their machine is too weak to segment. Imported images are always set to *bearbeitet* (never *fertig*); per-image conflicts with local reviews are resolved interactively (import / keep / all).
@@ -129,6 +132,8 @@ The recommended way is **Miniforge** (a minimal conda installer for scientific P
    conda activate erys
    pip install -r requirements.txt
    ```
+   _(Upgrading an existing install? Re-run `pip install -r requirements.txt` to pick up new dependencies such as `openpyxl`, which the overview workbook needs.)_
+
    If you have an NVIDIA GPU and want GPU acceleration, install the CUDA-enabled PyTorch *before* the line above:
    ```cmd
    pip install torch --index-url https://download.pytorch.org/whl/cu121
@@ -205,7 +210,7 @@ You should see versions printed and `True` if GPU is available.
 
 ```
 <study_folder>/
-  *.tif                       your microscope images
+  *.tif                       your microscope images (sub-folders are scanned too)
   .erys_cache/                created automatically
     <stem>_masks.npy          cached Cellpose mask
     <stem>_masks.json         which parameters produced this mask
@@ -219,6 +224,7 @@ You should see versions printed and `True` if GPU is available.
         *_masks.npy                          final mask (with manual additions)
         *_overlay.png                        rendered overlay
         <Zeitpunkt>_<Proband>_summary.csv    4-block aggregated CSV
+    Uebersicht.xlsx           cross-group overview (tidy sheet + pivot matrices)
     manifest.json             profile snapshot + app version + timestamp
 ```
 
@@ -285,7 +291,7 @@ You can keep multiple profiles side-by-side (one per study) and switch via menu 
 
 Items the project will likely tackle next, in roughly the order they make sense:
 
-- **v14** — Per-study aggregated CSV (all subjects of one profile), Excel `.xlsx` export.
+- **v14** ✅ — Per-study aggregated Excel `.xlsx` export (`outputs/Uebersicht.xlsx`: tidy sheet + `Proband × Zeitpunkt` pivot matrices); hierarchical batch filtering with *Bis Ziel rechnen* + keep-awake; recursive image loading from sub-folders.
 - **v15** — Auto-resegment workflow when profile parameters change (per-image user-confirm).
 - **v16** — Pluggable Cellpose model paths (run your own custom-trained model from a profile).
 - **v17** ✅ — Friendly filename parser (delimiter + roles, live preview), share packages (create/import), editable 2000-cell cap, in-app statistics box-plots, progress dashboard + time tracking, ML-ready per-cell export columns.

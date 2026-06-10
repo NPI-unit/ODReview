@@ -32,3 +32,4 @@ scipy>=1.13
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121
 #
 # (replace cu121 with the CUDA version your driver supports)
+openpyxl>=3.1

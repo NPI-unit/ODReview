@@ -155,4 +155,12 @@ def export_folder_structured(folder: Path, profile: ProfileData,
     with (root / "manifest.json").open("w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
+    # Cross-group overview workbook (opt-in per profile).
+    if getattr(profile, "overview_xlsx", True):
+        try:
+            from .overview import write_overview_xlsx
+            write_overview_xlsx(folder, profile, grouped, root / "Uebersicht.xlsx")
+        except Exception:
+            pass  # missing openpyxl etc. must not abort the CSV export
+
     return root

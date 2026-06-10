@@ -64,8 +64,13 @@ class ProfileData:
     delimiters: list[str] = field(default_factory=lambda: ["_"])
     field_roles: list[str] = field(default_factory=list)
     target_cells: int = 2000
+    # Batch default: compute the first N images per parsed (timepoint, subject)
+    # group; images beyond N are left raw. Pre-selects the batch dialog.
+    images_per_subject: int = 13
     # Show the in-app Statistics tab for this study.
     stats_enabled: bool = True
+    # Generate the cross-group overview workbook (Uebersicht.xlsx) on export.
+    overview_xlsx: bool = True
     cell_types: list[TypeDef] = field(default_factory=lambda: list(DEFAULT_TYPES_TRIBAL))
     cellpose: CellposeParams = field(default_factory=CellposeParams)
     use_gpu: bool = True
@@ -105,7 +110,9 @@ class ProfileData:
             delimiters=list(raw.get("delimiters", ["_"])) or ["_"],
             field_roles=list(raw.get("field_roles", [])),
             target_cells=int(raw.get("target_cells", 2000)),
+            images_per_subject=int(raw.get("images_per_subject", 13)),
             stats_enabled=bool(raw.get("stats_enabled", True)),
+            overview_xlsx=bool(raw.get("overview_xlsx", True)),
             cell_types=types,
             cellpose=cp,
             use_gpu=bool(raw.get("use_gpu", True)),
@@ -129,7 +136,9 @@ class ProfileData:
             "delimiters": self.delimiters,
             "field_roles": self.field_roles,
             "target_cells": self.target_cells,
+            "images_per_subject": self.images_per_subject,
             "stats_enabled": self.stats_enabled,
+            "overview_xlsx": self.overview_xlsx,
             "cell_types": [asdict(t) for t in self.cell_types],
             "cellpose": asdict(self.cellpose),
             "use_gpu": self.use_gpu,

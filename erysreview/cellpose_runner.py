@@ -50,12 +50,38 @@ def load_image(path: Path) -> np.ndarray:
     return arr
 
 
+# Sub-directories never scanned for images (export copies + hidden caches).
+_SKIP_DIRS = {"outputs", "__pycache__"}
+
+
 def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
+    """All images under `folder`, RECURSIVELY (sub-folders included).
+
+    Skips the export folder (`outputs/`), hidden dirs (e.g. `.erys_cache/`) and
+    anything in `exclude`. Because grouping keys on the filename, duplicate
+    basenames across sub-folders are redundant — only the first is kept and the
+    rest are reported on stdout.
+    """
     exclude = exclude or set()
-    out = []
-    for p in sorted(folder.iterdir()):
-        if p.is_file() and p.suffix.lower() in IMG_EXTS and p not in exclude:
-            out.append(p)
+    out: list[Path] = []
+    seen: dict[str, Path] = {}
+    dupes: list[Path] = []
+    for p in sorted(folder.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in IMG_EXTS:
+            continue
+        rel_parts = p.relative_to(folder).parts[:-1]  # parent dirs only
+        if any(part in _SKIP_DIRS or part.startswith(".") for part in rel_parts):
+            continue
+        if p in exclude or any(p == e or e in p.parents for e in exclude):
+            continue
+        if p.name in seen:
+            dupes.append(p)
+            continue
+        seen[p.name] = p
+        out.append(p)
+    if dupes:
+        print(f"[list_images] {len(dupes)} doppelte Dateinamen übersprungen "
+              f"(z.B. {dupes[0].name})", flush=True)
     return out
 
 

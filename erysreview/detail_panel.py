@@ -153,28 +153,23 @@ class DetailPanel(tk.Frame):
         self.current_image = None
         self.current_subject = (tp_key, sub_key)
         self._clear_body()
-        from .summary import per_image_counts
+        from .evaluation import group_eval_summary
+        from .persistence import ReviewState
 
         sub_disp = self.S["sb_ungrouped"] if sub_key == UNGROUPED_SUBJECT else sub_key
         tp_disp = self.S["sb_ungrouped"] if tp_key == UNGROUPED_TIMEPOINT else tp_key
         images = grouped.tree.get(tp_key, {}).get(sub_key, [])
         n_total = len(images)
-        n_done = 0
-        sum_rbc = 0
-        sum_by_type: dict[str, int] = {t.key: 0 for t in profile.cell_types}
-        for info in images:
-            from .persistence import ReviewState
-            review = ReviewState.load(folder, info.path.stem)
-            if review.is_finished:
-                n_done += 1
-            c = per_image_counts(folder, info, profile)
-            if c is None:
-                continue
-            sum_rbc += c["rbc"]
-            for k, v in c["by_type"].items():
-                sum_by_type[k] = sum_by_type.get(k, 0) + v
+        n_done = sum(1 for info in images
+                     if ReviewState.load(folder, info.path.stem).is_finished)
 
-        target = max(1, profile.target_cells)
+        # Counts restricted to the EVALUATION set (auto-capped near the target),
+        # so the number matches the sidebar's "n/target" counter. Summing every
+        # computed image would overshoot the cap (e.g. 3000/2000).
+        summ = group_eval_summary(folder, images, profile)
+        sum_rbc = summ["n_active"]
+        target = summ["target"]
+        sum_by_type = summ["by_type"]
         pct_target = 100.0 * sum_rbc / target
 
         self._title(f"{self.S['details_proband']}: {sub_disp}  ·  "
@@ -192,14 +187,11 @@ class DetailPanel(tk.Frame):
                 pct = 100.0 * n / sum_rbc
                 self._row(self._type_name(t.key, profile), f"{n}  ({pct:.2f}%)")
             self._spacer()
-            n_changed = sum(sum_by_type.get(k, 0) for k in sum_by_type if k != "normal")
-            pct_changed = 100.0 * n_changed / sum_rbc
-            pct_changed_per_2000 = pct_changed * target / sum_rbc if sum_rbc > 0 else 0.0
             self._row(self.S["details_pct_changed"],
-                      f"{pct_changed:.2f}%", bold=True,
+                      f"{summ['pct_changed']:.2f}%", bold=True,
                       value_color=self.P["accent_warn"])
             self._row(self.S["details_pct_changed_2000"],
-                      f"{pct_changed_per_2000:.2f}%",
+                      f"{summ['pct_changed_2000']:.2f}%",
                       value_color=self.P["accent_warn"])
 
     def refresh(self, folder: Path | None, profile: ProfileData,

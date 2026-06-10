@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from tkinter import font as tkfont, ttk
 from typing import Callable
 
 from .cellpose_runner import has_cache
@@ -29,6 +29,10 @@ from .theme import STATUS_ICONS_3, STATUS_TO_COLOR
 # 3-state mapping (Frage answer C earlier)
 STATUS_ICONS = STATUS_ICONS_3
 
+# Trailing per-subject affordance: clicking exactly this glyph opens the
+# "choose counted images" dialog for that subject.
+SETTINGS_ICON = "⚙"
+
 
 class Sidebar(tk.Frame):
     def __init__(
@@ -41,6 +45,7 @@ class Sidebar(tk.Frame):
         on_image_select: Callable[[int], None],
         on_subject_select: Callable[[str, str], None],
         on_open_changed: Callable[[], None],
+        on_subject_settings: Callable[[str, str], None] | None = None,
         on_details_collapsed_changed: Callable[[bool], None] | None = None,
     ):
         super().__init__(parent, bg=palette["sidebar_bg"])
@@ -50,6 +55,7 @@ class Sidebar(tk.Frame):
         self._cb_open_folder = on_open_folder
         self._cb_image_select = on_image_select
         self._cb_subject_select = on_subject_select
+        self._cb_subject_settings = on_subject_settings
         self._cb_open_changed = on_open_changed
         self._cb_details_collapsed = on_details_collapsed_changed
 
@@ -131,6 +137,7 @@ class Sidebar(tk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<<TreeviewOpen>>",  self._on_tree_open)
         self.tree.bind("<<TreeviewClose>>", self._on_tree_close)
+        self.tree.bind("<Button-1>", self._on_tree_click, add="+")
 
         # Folder label removed per user spec — sidebar is cleaner without it.
         # DetailPanel docked at bottom of sidebar, with collapse toggle
@@ -291,7 +298,7 @@ class Sidebar(tk.Frame):
         compact = self.S["sb_group_closed_counter"].format(
             n_active=counts["n_active"], target=counts["target"],
         )
-        return f"{label}  ·  {compact}   ⓘ"
+        return f"{label}  ·  {compact}   {SETTINGS_ICON}"
 
     def _group_counters(self, tp_key: str, sub_key: str) -> dict:
         target = max(1, self.profile.target_cells)
@@ -352,12 +359,12 @@ class Sidebar(tk.Frame):
                 full = self.S["sb_group_open_counter"].format(
                     n_active=counts["n_active"], target=counts["target"],
                 )
-                self.tree.item(iid, text=f"{label_base}  ·  {full}   ⓘ")
+                self.tree.item(iid, text=f"{label_base}  ·  {full}   {SETTINGS_ICON}")
             else:
                 compact = self.S["sb_group_closed_counter"].format(
                     n_active=counts["n_active"], target=counts["target"],
                 )
-                self.tree.item(iid, text=f"{label_base}  ·  {compact}   ⓘ")
+                self.tree.item(iid, text=f"{label_base}  ·  {compact}   {SETTINGS_ICON}")
         if recurse:
             for child in self.tree.get_children(iid):
                 self._refresh_group_node(child, recurse=True)
@@ -365,6 +372,51 @@ class Sidebar(tk.Frame):
     # ─────────────────────────────────────────
     # Tree event handlers
     # ─────────────────────────────────────────
+    def _hit_settings_icon(self, iid: str, x: int) -> bool:
+        """True if event x-coordinate falls on the trailing ⚙ of a subject row.
+
+        Tkinter's Treeview has no per-glyph hit testing, so we measure the row
+        text with the tree font and treat the rightmost glyph (plus a small
+        tolerance, extended to the cell's right edge) as the icon hot zone.
+        """
+        text = self.tree.item(iid, "text")
+        if SETTINGS_ICON not in text:
+            return False
+        bbox = self.tree.bbox(iid, "#0")
+        if not bbox:
+            return False
+        bx, _by, bw, _bh = bbox
+        try:
+            font = tkfont.nametofont("TkDefaultFont")
+        except tk.TclError:
+            return False
+        full_w = font.measure(text)
+        icon_w = font.measure(SETTINGS_ICON)
+        pad = 6
+        icon_left = bx + full_w - icon_w - pad
+        # Anything from just left of the icon to the cell's right edge counts —
+        # the icon is the last glyph, with only empty cell padding after it.
+        return x >= icon_left
+
+    def _on_tree_click(self, evt) -> None:
+        """Open the per-subject 'counted images' dialog when the ⚙ is clicked.
+
+        A click anywhere else on the row falls through to normal selection.
+        """
+        if self._cb_subject_settings is None:
+            return
+        iid = self.tree.identify_row(evt.y)
+        if not iid or not iid.startswith("sub::"):
+            return
+        if not self._hit_settings_icon(iid, evt.x):
+            return
+        try:
+            _, tp_key, sub_key = iid.split("::", 2)
+        except ValueError:
+            return
+        # Defer so this click finishes (selection/focus) before a modal opens.
+        self.after_idle(lambda: self._cb_subject_settings(tp_key, sub_key))
+
     def _on_tree_select(self, _evt=None) -> None:
         sel = self.tree.selection()
         if not sel:

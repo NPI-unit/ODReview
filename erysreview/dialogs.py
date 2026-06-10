@@ -254,6 +254,11 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     tk.Spinbox(tab_g, from_=100, to=100000, increment=100, textvariable=target_var, width=10
                ).grid(row=row, column=1, sticky="w", **pad); row += 1
 
+    tk.Label(tab_g, text=S["pe_images_per_subject"]).grid(row=row, column=0, sticky="w", **pad)
+    perimg_var = tk.IntVar(value=working.images_per_subject)
+    tk.Spinbox(tab_g, from_=1, to=10000, increment=1, textvariable=perimg_var, width=10
+               ).grid(row=row, column=1, sticky="w", **pad); row += 1
+
     tk.Label(tab_g, text=S["settings_margin_n"]).grid(row=row, column=0, sticky="w", **pad)
     margin_var = tk.IntVar(value=working.margin_n)
     tk.Spinbox(tab_g, from_=0, to=500, textvariable=margin_var, width=8
@@ -572,6 +577,9 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     stats_enabled_var = tk.BooleanVar(value=working.stats_enabled)
     tk.Checkbutton(tab_a, text=S["pe_stats_enabled"], variable=stats_enabled_var
                    ).grid(row=1, column=0, sticky="w", padx=16, pady=8)
+    overview_xlsx_var = tk.BooleanVar(value=working.overview_xlsx)
+    tk.Checkbutton(tab_a, text=S["pe_overview_xlsx"], variable=overview_xlsx_var
+                   ).grid(row=2, column=0, sticky="w", padx=16, pady=8)
 
     # ===== Footer =====
     footer = tk.Frame(top); footer.pack(fill="x", padx=12, pady=(0, 12))
@@ -600,7 +608,9 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
         delimiters=_selected_delims() or ["_"],
         field_roles=_current_roles(),
         target_cells=int(target_var.get()),
+        images_per_subject=int(perimg_var.get()),
         stats_enabled=bool(stats_enabled_var.get()),
+        overview_xlsx=bool(overview_xlsx_var.get()),
         cell_types=type_state["types"],
         cellpose=CellposeParams(
             diameter=float(diam_var.get()),
@@ -687,123 +697,395 @@ def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
 # ─────────────────────────────────────────────
 # Batch dialog
 # ─────────────────────────────────────────────
+def overview_preview_dialog(parent: tk.Misc, header: list, rows: list,
+                            path, strings: dict, max_rows: int = 12) -> None:
+    """Small read-only preview of the overview 'Daten' sheet after export."""
+    S = strings
+    top = tk.Toplevel(parent); top.title(S["overview_preview_title"])
+    top.transient(parent); top.grab_set(); top.minsize(680, 360)
+    frm = tk.Frame(top, padx=12, pady=12); frm.pack(fill="both", expand=True)
+    tk.Label(frm, text=S["overview_preview_path"].format(path=path), anchor="w",
+             fg="#888", wraplength=640, justify="left").pack(fill="x", pady=(0, 6))
+
+    cols = [f"c{i}" for i in range(len(header))]
+    tree = ttk.Treeview(frm, columns=cols, show="headings",
+                        height=min(max_rows, max(1, len(rows))))
+    for i, h in enumerate(header):
+        tree.heading(cols[i], text=str(h))
+        tree.column(cols[i], width=84, anchor="center", stretch=False)
+    for row in rows[:max_rows]:
+        tree.insert("", "end", values=["" if v is None else v for v in row])
+    xsb = ttk.Scrollbar(frm, orient="horizontal", command=tree.xview)
+    tree.configure(xscrollcommand=xsb.set)
+    tree.pack(fill="both", expand=True); xsb.pack(fill="x")
+    if len(rows) > max_rows:
+        tk.Label(frm, text=S["overview_preview_more"].format(n=len(rows) - max_rows),
+                 fg="#888").pack(anchor="w", pady=(4, 0))
+    tk.Button(frm, text="OK", width=12, command=top.destroy).pack(pady=(8, 0))
+    top.bind("<Escape>", lambda e: top.destroy())
+    _center_on_parent(top, parent); parent.wait_window(top)
+
+
 def batch_dialog(
     parent: tk.Misc, folder: Path, images: list[Path],
     profile: ProfileData, strings: dict,
     image_status_fn: Callable[[Path], str],
     on_done: Callable[[], None],
+    grouped=None,
 ) -> None:
     S = strings
-    top = tk.Toplevel(parent); top.title(S["batch_title"])
-    top.transient(parent); top.grab_set(); top.minsize(560, 480)
+    from .grouping import (ImageGroupInfo, UNGROUPED_TIMEPOINT, UNGROUPED_SUBJECT)
+    from .counts import image_counts
 
-    checked = {p.name: not has_cache(folder, p) for p in images}
+    top = tk.Toplevel(parent); top.title(S["batch_title"])
+    top.transient(parent); top.grab_set(); top.minsize(640, 600)
+
+    target = max(1, getattr(profile, "target_cells", 2000))
     avg_seconds_per_image = 30.0
+
+    # ── Build (timepoint -> [(subject, [ImageGroupInfo])]) preserving order ──
+    info_by_name: dict[str, ImageGroupInfo] = {}
+    subs_by_tp: dict[str, list[tuple[str, list]]] = {}
+    tp_order: list[str] = []
+    if grouped is not None and getattr(grouped, "tree", None):
+        for tp in grouped.timepoints():
+            for sub in grouped.subjects_in(tp):
+                infos = list(grouped.tree[tp][sub])
+                subs_by_tp.setdefault(tp, [])
+                if tp not in tp_order:
+                    tp_order.append(tp)
+                subs_by_tp[tp].append((sub, infos))
+                for info in infos:
+                    info_by_name[info.path.name] = info
+    # Any image not represented in `grouped` -> ungrouped bucket.
+    leftover = [p for p in images if p.name not in info_by_name]
+    if leftover:
+        infos = [ImageGroupInfo(path=p, timepoint=UNGROUPED_TIMEPOINT,
+                                subject=UNGROUPED_SUBJECT, image_num=None,
+                                is_ungrouped=True) for p in leftover]
+        subs_by_tp.setdefault(UNGROUPED_TIMEPOINT, [])
+        if UNGROUPED_TIMEPOINT not in tp_order:
+            tp_order.append(UNGROUPED_TIMEPOINT)
+        subs_by_tp[UNGROUPED_TIMEPOINT].append((UNGROUPED_SUBJECT, infos))
+        for info in infos:
+            info_by_name[info.path.name] = info
+
+    checked = {nm: not has_cache(folder, info.path) for nm, info in info_by_name.items()}
+    n_total = len(info_by_name)
+
+    tp_values = list(tp_order)
+    sub_values = list(dict.fromkeys(
+        sub for tp in tp_order for sub, _ in subs_by_tp[tp]))
+
+    def _disp_tp(tp): return S["sb_ungrouped"] if tp == UNGROUPED_TIMEPOINT else tp
+    def _disp_sub(sub): return S["sb_ungrouped"] if sub == UNGROUPED_SUBJECT else sub
+
     container = tk.Frame(top); container.pack(fill="both", expand=True, padx=12, pady=12)
 
-    bar = tk.Frame(container); bar.pack(fill="x", pady=(0, 6))
+    # ── Row: dropdown quick-filters (Zeitpunkt / Proband) ──
+    filt = tk.Frame(container); filt.pack(fill="x", pady=(0, 6))
+    tk.Label(filt, text=S["batch_filter_tp"]).pack(side="left")
+    tp_combo = ttk.Combobox(filt, state="readonly", width=12,
+                            values=[S["batch_filter_all"]] + [_disp_tp(t) for t in tp_values])
+    tp_combo.current(0); tp_combo.pack(side="left", padx=(2, 12))
+    tk.Label(filt, text=S["batch_filter_sub"]).pack(side="left")
+    sub_combo = ttk.Combobox(filt, state="readonly", width=10,
+                             values=[S["batch_filter_all"]] + [_disp_sub(s) for s in sub_values])
+    sub_combo.current(0); sub_combo.pack(side="left", padx=2)
+
+    def _group_visible(tp, sub):
+        if tp_combo.current() > 0 and tp != tp_values[tp_combo.current() - 1]:
+            return False
+        if sub_combo.current() > 0 and sub != sub_values[sub_combo.current() - 1]:
+            return False
+        return True
+
+    def _visible_infos():
+        out = []
+        for tp in tp_order:
+            for sub, infos in subs_by_tp[tp]:
+                if _group_visible(tp, sub):
+                    out += infos
+        return out
+
+    # ── Row: status quick-selects (operate on the visible/filtered set) ──
+    bar = tk.Frame(container); bar.pack(fill="x", pady=(0, 4))
     def select_all():
-        for n in checked: checked[n] = True
-        _refresh_tree(); _refresh_footer()
+        for i in _visible_infos(): checked[i.path.name] = True
+        _update_marks(); _refresh_footer()
     def select_unsegmented():
-        for p in images: checked[p.name] = (image_status_fn(p) == "unsegmented")
-        _refresh_tree(); _refresh_footer()
+        for i in _visible_infos(): checked[i.path.name] = (image_status_fn(i.path) == "unsegmented")
+        _update_marks(); _refresh_footer()
     def select_unfinished():
-        for p in images: checked[p.name] = (image_status_fn(p) != "finished")
-        _refresh_tree(); _refresh_footer()
+        for i in _visible_infos(): checked[i.path.name] = (image_status_fn(i.path) != "finished")
+        _update_marks(); _refresh_footer()
     def invert_selection():
-        for n in checked: checked[n] = not checked[n]
-        _refresh_tree(); _refresh_footer()
+        for i in _visible_infos(): checked[i.path.name] = not checked[i.path.name]
+        _update_marks(); _refresh_footer()
+    def select_first_n_per_group():
+        try: n = max(0, int(per_n_var.get()))
+        except (tk.TclError, ValueError): return
+        first_n = set()
+        for tp in tp_order:
+            for sub, infos in subs_by_tp[tp]:
+                if _group_visible(tp, sub):
+                    first_n.update(i.path.name for i in infos[:n])
+        for i in _visible_infos():
+            nm = i.path.name
+            checked[nm] = checked[nm] and (nm in first_n)
+        _update_marks(); _refresh_footer()
     tk.Button(bar, text=S["batch_select_all"], command=select_all).pack(side="left", padx=2)
     tk.Button(bar, text=S["batch_select_unsegmented"], command=select_unsegmented).pack(side="left", padx=2)
     tk.Button(bar, text=S["batch_select_unfinished"], command=select_unfinished).pack(side="left", padx=2)
     tk.Button(bar, text=S["batch_select_invert"], command=invert_selection).pack(side="left", padx=2)
 
+    bar2 = tk.Frame(container); bar2.pack(fill="x", pady=(0, 6))
+    tk.Label(bar2, text=S["batch_per_subject_label"]).pack(side="left", padx=(0, 4))
+    per_n_var = tk.IntVar(value=max(1, getattr(profile, "images_per_subject", 13)))
+    tk.Spinbox(bar2, from_=1, to=10000, increment=1, textvariable=per_n_var, width=6
+               ).pack(side="left", padx=2)
+    tk.Button(bar2, text=S["batch_select_first_n"], command=select_first_n_per_group).pack(side="left", padx=2)
+
+    # ── Hierarchical tree: Zeitpunkt > Proband > Bild, with check column ──
     tree_frame = tk.Frame(container); tree_frame.pack(fill="both", expand=True)
-    tree = ttk.Treeview(tree_frame, columns=("check", "status", "name"), show="headings", height=14)
-    tree.heading("check", text="✓"); tree.column("check", width=40, anchor="center", stretch=False)
-    tree.heading("status", text=""); tree.column("status", width=40, anchor="center", stretch=False)
-    tree.heading("name", text="Datei"); tree.column("name", anchor="w", stretch=True)
+    tree = ttk.Treeview(tree_frame, columns=("check", "status"),
+                        show="tree headings", height=15)
+    tree.heading("#0", text=S["batch_col_tree"]); tree.column("#0", width=340, anchor="w", stretch=True)
+    tree.heading("check", text="✓"); tree.column("check", width=44, anchor="center", stretch=False)
+    tree.heading("status", text=""); tree.column("status", width=44, anchor="center", stretch=False)
     sb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=sb.set); sb.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
+    tree.configure(yscrollcommand=sb.set); sb.pack(side="right", fill="y")
+    tree.pack(side="left", fill="both", expand=True)
     icons = {"unsegmented": "○", "segmented": "◐", "in_progress": "●", "finished": "◉"}
-    def _refresh_tree():
-        for iid in tree.get_children(): tree.delete(iid)
-        for p in images:
-            mark = "✓" if checked[p.name] else " "
-            icon = icons[image_status_fn(p)]
-            tree.insert("", "end", iid=p.name, values=(mark, icon, p.name))
-    def _toggle_row(evt):
-        sel = tree.identify_row(evt.y)
-        if not sel: return
-        col = tree.identify_column(evt.x)
-        if col != "#1": return
-        checked[sel] = not checked[sel]
-        tree.set(sel, "check", "✓" if checked[sel] else " ")
-        _refresh_footer()
-    tree.bind("<Button-1>", _toggle_row)
+
+    def _grp_mark(infos):
+        vals = [checked[i.path.name] for i in infos]
+        if vals and all(vals): return "✓"
+        if any(vals): return "–"
+        return " "
+
+    def _rebuild_tree():
+        tree.delete(*tree.get_children())
+        for tp in tp_order:
+            vis = [(sub, infos) for sub, infos in subs_by_tp[tp] if _group_visible(tp, sub)]
+            if not vis: continue
+            tp_infos = [i for _, infos in vis for i in infos]
+            tp_iid = f"tp::{tp}"
+            tree.insert("", "end", iid=tp_iid, text=_disp_tp(tp), open=True,
+                        values=(_grp_mark(tp_infos), ""))
+            for sub, infos in vis:
+                sub_iid = f"sub::{tp}::{sub}"
+                tree.insert(tp_iid, "end", iid=sub_iid,
+                            text=f"{_disp_sub(sub)}  ({len(infos)})", open=False,
+                            values=(_grp_mark(infos), ""))
+                for i in infos:
+                    tree.insert(sub_iid, "end", iid="img::" + i.path.name,
+                                text=i.path.name,
+                                values=("✓" if checked[i.path.name] else " ",
+                                        icons[image_status_fn(i.path)]))
+
+    def _infos_of(iid):
+        if iid.startswith("img::"):
+            return [info_by_name[iid[5:]]]
+        if iid.startswith("sub::"):
+            _, tp, sub = iid.split("::", 2)
+            return [i for s, infos in subs_by_tp[tp] if s == sub for i in infos]
+        if iid.startswith("tp::"):
+            tp = iid[4:]
+            return [i for sub, infos in subs_by_tp[tp]
+                    if _group_visible(tp, sub) for i in infos]
+        return []
+
+    def _update_marks():
+        for tp_iid in tree.get_children(""):
+            tree.set(tp_iid, "check", _grp_mark(_infos_of(tp_iid)))
+            for sub_iid in tree.get_children(tp_iid):
+                tree.set(sub_iid, "check", _grp_mark(_infos_of(sub_iid)))
+                for img_iid in tree.get_children(sub_iid):
+                    nm = img_iid[5:]
+                    tree.set(img_iid, "check", "✓" if checked[nm] else " ")
+
+    def _toggle(evt):
+        iid = tree.identify_row(evt.y)
+        if not iid or tree.identify_column(evt.x) != "#1":
+            return
+        infos = _infos_of(iid)
+        if not infos: return
+        if iid.startswith("img::"):
+            nm = iid[5:]; checked[nm] = not checked[nm]
+        else:
+            newval = not all(checked[i.path.name] for i in infos)
+            for i in infos: checked[i.path.name] = newval
+        _update_marks(); _refresh_footer()
+    tree.bind("<Button-1>", _toggle)
+
+    def _on_filter(*_):
+        _rebuild_tree(); _refresh_footer()
+    tp_combo.bind("<<ComboboxSelected>>", _on_filter)
+    sub_combo.bind("<<ComboboxSelected>>", _on_filter)
+
+    # ── Options: Bis-Ziel mode + keep-awake ──
+    opts = tk.Frame(container); opts.pack(fill="x", pady=(6, 0))
+    target_mode_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(opts, text=S["batch_target_mode"].format(target=target),
+                   variable=target_mode_var).pack(side="left")
+    awake_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(opts, text=S["batch_keep_awake"], variable=awake_var).pack(side="left", padx=(16, 0))
 
     footer = tk.Frame(container); footer.pack(fill="x", pady=(8, 0))
     footer_left = tk.Label(footer, text="", fg="#888", anchor="w", font=("TkDefaultFont", 10))
     footer_left.pack(side="left", fill="x", expand=True)
-    tk.Button(footer, text=S["batch_cancel"], width=12, command=top.destroy
-              ).pack(side="right", padx=4)
+    tk.Button(footer, text=S["batch_cancel"], width=12, command=top.destroy).pack(side="right", padx=4)
     start_btn = tk.Button(footer, text=S["batch_start"], width=12)
     start_btn.pack(side="right", padx=4)
+
     def _refresh_footer():
         n = sum(1 for v in checked.values() if v)
         est_min = max(1, int(round(n * avg_seconds_per_image / 60.0)))
-        footer_left.config(text=S["batch_n_selected"].format(n=n, total=len(images), minutes=est_min))
-    _refresh_tree(); _refresh_footer()
+        footer_left.config(text=S["batch_n_selected"].format(n=n, total=n_total, minutes=est_min))
 
+    _rebuild_tree(); _refresh_footer()
+
+    # ── Run machinery ──
     state = {"cancel": False}
-    def _enter_progress(selected_paths: list[Path]):
+
+    def _start_awake():
+        # Returns an opaque token for _stop_awake, or None. Cross-platform:
+        # macOS -> caffeinate (auto-quits with our PID via -w, so a crash can't
+        # leave it running); Windows -> SetThreadExecutionState.
+        if not awake_var.get():
+            return None
+        import sys, os
+        try:
+            if sys.platform == "darwin":
+                import subprocess
+                proc = subprocess.Popen(
+                    ["caffeinate", "-i", "-w", str(os.getpid())])
+                return ("mac", proc)
+            if sys.platform == "win32":
+                import ctypes
+                ES_CONTINUOUS, ES_SYSTEM, ES_DISPLAY = 0x80000000, 0x1, 0x2
+                ctypes.windll.kernel32.SetThreadExecutionState(
+                    ES_CONTINUOUS | ES_SYSTEM | ES_DISPLAY)
+                return ("win", None)
+        except Exception:
+            return None
+        return None
+
+    def _stop_awake(token):
+        if not token:
+            return
+        kind, obj = token
+        try:
+            if kind == "mac" and obj is not None:
+                obj.terminate()
+            elif kind == "win":
+                import ctypes
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)  # ES_CONTINUOUS
+        except Exception:
+            pass
+
+    def _progress_ui(maximum):
         for w in container.winfo_children(): w.destroy()
         tk.Label(container, text=S["batch_progress_title"],
                  font=("TkDefaultFont", 13, "bold")).pack(pady=(0, 10))
         lbl = tk.Label(container, text="", font=("TkDefaultFont", 11)); lbl.pack(pady=(0, 6))
         pb = ttk.Progressbar(container, orient="horizontal", mode="determinate",
-                              length=460, maximum=len(selected_paths))
+                             length=460, maximum=max(1, maximum))
         pb.pack(pady=(0, 14))
         def on_cancel_after():
-            state["cancel"] = True; cancel_btn2.config(state="disabled", text="…")
-        cancel_btn2 = tk.Button(container, text=S["batch_progress_cancel"],
-                                 command=on_cancel_after)
-        cancel_btn2.pack()
-        errors: list[tuple[str, str]] = []; skipped = 0
-        for i, path in enumerate(selected_paths, start=1):
-            if state["cancel"]: break
-            lbl.config(text=S["batch_progress_running"].format(
-                i=i, n=len(selected_paths), name=path.name))
-            pb["value"] = i - 1
-            container.update_idletasks(); container.update()
-            if has_cache(folder, path):
-                skipped += 1; pb["value"] = i; continue
-            try:
-                img = load_image(path)
-                run_for_image(folder, path, img, profile.cellpose,
-                              force=False, use_gpu=profile.use_gpu)
-            except Exception as e:
-                errors.append((path.name, str(e)))
-            pb["value"] = i
-            container.update_idletasks(); container.update()
+            state["cancel"] = True; cancel_btn.config(state="disabled", text="…")
+        cancel_btn = tk.Button(container, text=S["batch_progress_cancel"], command=on_cancel_after)
+        cancel_btn.pack()
+        return lbl, pb
+
+    def _summary(done, skipped, errors, extra=""):
         for w in container.winfo_children(): w.destroy()
         tk.Label(container, text=S["batch_summary_title"],
                  font=("TkDefaultFont", 13, "bold")).pack(pady=(0, 10))
-        summary_text = (
-            S["batch_summary_done"].format(n=i - len(errors)) + "\n" +
-            S["batch_summary_skipped"].format(n=skipped)
-        )
+        txt = (S["batch_summary_done"].format(n=done) + "\n"
+               + S["batch_summary_skipped"].format(n=skipped))
+        if extra: txt += "\n" + extra
         if errors:
-            summary_text += "\n\n" + S["batch_summary_errors"].format(n=len(errors))
-            for n, e in errors[:20]: summary_text += f"\n  – {n}: {e}"
-        tk.Label(container, text=summary_text, justify="left", wraplength=520
-                 ).pack(pady=(0, 14))
+            txt += "\n\n" + S["batch_summary_errors"].format(n=len(errors))
+            for nm, e in errors[:20]: txt += f"\n  – {nm}: {e}"
+        tk.Label(container, text=txt, justify="left", wraplength=540).pack(pady=(0, 14))
         tk.Button(container, text="OK", width=12,
                   command=lambda: (on_done(), top.destroy())).pack()
 
+    def _compute_one(info):
+        img = load_image(info.path)
+        run_for_image(folder, info.path, img, profile.cellpose,
+                      force=False, use_gpu=profile.use_gpu)
+
+    def _active_count(info):
+        c = image_counts(folder, info, profile)
+        return (c or {}).get("rbc", 0) or 0
+
+    def _enter_progress_normal(sel_infos):
+        lbl, pb = _progress_ui(len(sel_infos))
+        proc = _start_awake()
+        errors, skipped, done = [], 0, 0
+        try:
+            for idx, info in enumerate(sel_infos, start=1):
+                if state["cancel"]: break
+                lbl.config(text=S["batch_progress_running"].format(
+                    i=idx, n=len(sel_infos), name=info.path.name))
+                pb["value"] = idx - 1
+                container.update_idletasks(); container.update()
+                if has_cache(folder, info.path):
+                    skipped += 1; pb["value"] = idx; continue
+                try:
+                    _compute_one(info); done += 1
+                except Exception as e:
+                    errors.append((info.path.name, str(e)))
+                pb["value"] = idx
+                container.update_idletasks(); container.update()
+        finally:
+            _stop_awake(proc)
+        _summary(done, skipped, errors)
+
+    def _enter_progress_target(sel_groups):
+        total = sum(len(infos) for _, _, infos in sel_groups)
+        lbl, pb = _progress_ui(total)
+        proc = _start_awake()
+        errors, skipped, done, touched, n_groups = [], 0, 0, 0, 0
+        try:
+            for tp, sub, infos in sel_groups:
+                if state["cancel"]: break
+                n_groups += 1
+                cumulative = 0
+                for info in infos:                      # image_num order
+                    if state["cancel"]: break
+                    if cumulative >= target:
+                        break                            # group target reached
+                    touched += 1
+                    pb["value"] = touched
+                    lbl.config(text=S["batch_progress_target"].format(
+                        tp=_disp_tp(tp), sub=_disp_sub(sub), cum=cumulative, target=target))
+                    container.update_idletasks(); container.update()
+                    if has_cache(folder, info.path):
+                        skipped += 1
+                    else:
+                        try:
+                            _compute_one(info); done += 1
+                        except Exception as e:
+                            errors.append((info.path.name, str(e))); continue
+                    cumulative += _active_count(info)
+        finally:
+            _stop_awake(proc)
+        _summary(done, skipped, errors,
+                 extra=S["batch_summary_groups"].format(g=n_groups))
+
     def _on_start():
-        sel = [p for p in images if checked[p.name]]
-        if sel: _enter_progress(sel)
+        if target_mode_var.get():
+            sel = [(tp, sub, infos) for tp in tp_order
+                   for sub, infos in subs_by_tp[tp]
+                   if any(checked[i.path.name] for i in infos)]
+            if sel: _enter_progress_target(sel)
+        else:
+            sel = [info_by_name[nm] for nm, v in checked.items() if v]
+            if sel: _enter_progress_normal(sel)
     start_btn.config(command=_on_start)
+
     _center_on_parent(top, parent); parent.wait_window(top)

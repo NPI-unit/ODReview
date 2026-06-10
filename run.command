@@ -1,37 +1,29 @@
 #!/bin/bash
 # ErysReview — macOS launcher.
-# Double-click to start the app. Run install.command first to set things up.
-cd "$(dirname "$0")"
+# Double-click to start the app.
+#
+# Uses the local .venv (Homebrew-Python, Tk 9.0.3). This avoids the Tk 8.6.13
+# segfault that conda's Tk triggers on macOS 26 (Tahoe) when opening modal
+# dialogs (e.g. the ⚙ "counted images" picker).
+cd "$(dirname "$0")" || exit 1
 
-# Find conda
-CONDA=""
-if command -v conda >/dev/null 2>&1; then
-    CONDA="$(command -v conda)"
-else
-    for p in \
-        "$HOME/miniforge3/bin/conda" \
-        "$HOME/miniconda3/bin/conda" \
-        "$HOME/anaconda3/bin/conda" \
-        "/opt/homebrew/Caskroom/miniforge/base/bin/conda" \
-        "/opt/miniforge3/bin/conda"
-    do
-        if [ -x "$p" ]; then CONDA="$p"; break; fi
-    done
+# Preferred: the local venv with a macOS-26-compatible Tk.
+if [ -x "./.venv/bin/python" ]; then
+    exec ./.venv/bin/python -u -m erysreview
 fi
 
-if [ -z "$CONDA" ]; then
-    echo "[!] conda not found. Run install.command first."
-    read -p "Press Enter to close ..."
-    exit 1
+# Fallback: (re)create the venv from Homebrew Python if it's missing.
+HBPY="/opt/homebrew/bin/python3.12"
+if [ -x "$HBPY" ]; then
+    echo "[i] .venv fehlt — wird neu erstellt ..."
+    "$HBPY" -m venv .venv \
+      && ./.venv/bin/python -m pip install --upgrade pip \
+      && ./.venv/bin/pip install -r requirements.txt \
+      && exec ./.venv/bin/python -u -m erysreview
 fi
 
-CONDA_BASE="$($CONDA info --base)"
-# shellcheck disable=SC1091
-source "$CONDA_BASE/etc/profile.d/conda.sh"
-conda activate erys || {
-    echo "[!] Could not activate the erys env. Run install.command first."
-    read -p "Press Enter to close ..."
-    exit 1
-}
-
-python -u -m erysreview
+echo "[!] Kein .venv und kein Homebrew-Python (/opt/homebrew/bin/python3.12) gefunden."
+echo "    Bitte einmal:  /opt/homebrew/bin/python3.12 -m venv .venv"
+echo "                   ./.venv/bin/pip install -r requirements.txt"
+read -r -p "Enter zum Schließen ..."
+exit 1

@@ -26,7 +26,8 @@ from .cellpose_runner import (
 )
 from .dialogs import (
     CellposeSpinner, batch_dialog, confirm_dialog, info_dialog,
-    profile_editor_dialog, profile_manager_dialog, settings_dialog,
+    overview_preview_dialog, profile_editor_dialog, profile_manager_dialog,
+    settings_dialog,
 )
 from .export import export_folder_structured
 from .extras import (
@@ -213,13 +214,11 @@ class EryApp:
         menubar.add_cascade(label=S["menu_profile"], menu=m_prof)
 
         m_analysis = tk.Menu(menubar, tearoff=0)
-        m_analysis.add_command(label=S["menu_eval_select"], command=self._on_eval_select)
-        m_analysis.add_separator()
         m_analysis.add_command(label=S["menu_stats"], command=self._on_stats)
         m_analysis.add_command(label=S["menu_dashboard"], command=self._on_dashboard)
         menubar.add_cascade(label=S["menu_analysis"], menu=m_analysis)
         self.m_analysis = m_analysis
-        self._stats_menu_index = 2  # eval(0), separator(1), stats(2)
+        self._stats_menu_index = 0  # stats(0), dashboard(1)
         self._apply_stats_menu_state()
 
         m_settings = tk.Menu(menubar, tearoff=0)
@@ -285,6 +284,7 @@ class EryApp:
             on_open_folder=self._on_open_folder,
             on_image_select=self._show_image_at,
             on_subject_select=self._show_subject_info,
+            on_subject_settings=self._on_eval_select,
             on_open_changed=self._schedule_profile_save,
             on_details_collapsed_changed=lambda _b: self._schedule_profile_save(),
         )
@@ -654,6 +654,7 @@ class EryApp:
             profile=self.profile, strings=self.S,
             image_status_fn=self.sidebar._image_status,
             on_done=self._after_batch,
+            grouped=self.grouped,
         )
 
     def _after_batch(self) -> None:
@@ -749,14 +750,12 @@ class EryApp:
         except (AttributeError, tk.TclError):
             pass
 
-    def _on_eval_select(self) -> None:
-        """Open the per-group dialog to choose which images count toward the cap."""
+    def _on_eval_select(self, tp_key: str, sub_key: str) -> None:
+        """Open the dialog to choose which images count toward the cap, for a
+        specific (timepoint, subject) group — triggered by the ⚙ next to a
+        subject in the sidebar."""
         if self.folder is None or not self.images or self.grouped is None:
             return
-        keys = self.sidebar.current_group_keys()
-        if keys is None:
-            return
-        tp_key, sub_key = keys
         images = self.grouped.tree.get(tp_key, {}).get(sub_key, [])
         if not images:
             return
@@ -879,6 +878,17 @@ class EryApp:
                 self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
         info_dialog(self.root, self.S["export_done_title"],
                     self.S["export_done_msg"].format(path=out))
+        # Small preview of the overview workbook (opt-in per profile).
+        if getattr(self.profile, "overview_xlsx", True) and self.grouped is not None:
+            try:
+                from .overview import build_overview
+                data = build_overview(self.folder, self.profile, self.grouped)
+                if data["tidy_rows"]:
+                    overview_preview_dialog(
+                        self.root, data["tidy_header"], data["tidy_rows"],
+                        out / "Uebersicht.xlsx", self.S)
+            except Exception:
+                pass
         self.sidebar.invalidate_group_cache()
         self.sidebar.refresh_statuses()
         self._update_status()
