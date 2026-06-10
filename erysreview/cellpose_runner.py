@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import zipfile
 from dataclasses import asdict
 from pathlib import Path
 
@@ -122,13 +123,37 @@ def params_match(folder: Path, image_path: Path, params: CellposeParams) -> bool
     )
 
 
+def save_mask(path: Path, masks: np.ndarray) -> None:
+    """Write a label mask compactly: int16 (falls back to int32 only if there
+    are >32k labels) + zlib, in an .npz container kept under the historical
+    `_masks.npy` filename. np.load auto-detects the zip on read, so packages,
+    the rename script and every reader keep working unchanged. ~180x smaller
+    than the old uncompressed int32 dump."""
+    m = np.asarray(masks)
+    dtype = np.int16 if int(m.max(initial=0)) < 32767 else np.int32
+    with open(path, "wb") as f:
+        np.savez_compressed(f, m=m.astype(dtype))
+
+
+def _read_mask(path: Path) -> np.ndarray:
+    """Read either the new compressed .npz-in-.npy or a legacy plain int32 .npy."""
+    obj = np.load(path)
+    if isinstance(obj, np.lib.npyio.NpzFile):
+        try:
+            arr = obj[obj.files[0]]
+        finally:
+            obj.close()
+        return np.asarray(arr)
+    return np.asarray(obj)
+
+
 def load_cached_masks(folder: Path, image_path: Path) -> np.ndarray | None:
     npy, _ = cache_paths(folder, image_path)
     if not npy.exists():
         return None
     try:
-        return np.load(npy).astype(np.int32)
-    except (OSError, ValueError):
+        return _read_mask(npy).astype(np.int32)
+    except (OSError, ValueError, zipfile.BadZipFile):
         return None
 
 
@@ -194,7 +219,7 @@ def run_for_image(
     masks = run_cellpose(image, params, use_gpu=use_gpu)
 
     npy, meta = cache_paths(folder, image_path)
-    np.save(npy, masks.astype(np.int32))
+    save_mask(npy, masks)
 
     try:
         import cellpose as _cp

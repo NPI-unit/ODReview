@@ -71,6 +71,11 @@ class ProfileData:
     stats_enabled: bool = True
     # Generate the cross-group overview workbook (Uebersicht.xlsx) on export.
     overview_xlsx: bool = True
+    # Export: write per-image overlay PNGs (off by default — large + slow).
+    overlay_png: bool = False
+    # Export: copy original TIFs into outputs/ (off by default — avoids
+    # duplicating the source images; masks already live compressed in the cache).
+    copy_originals_to_outputs: bool = False
     cell_types: list[TypeDef] = field(default_factory=lambda: list(DEFAULT_TYPES_TRIBAL))
     cellpose: CellposeParams = field(default_factory=CellposeParams)
     use_gpu: bool = True
@@ -113,6 +118,8 @@ class ProfileData:
             images_per_subject=int(raw.get("images_per_subject", 13)),
             stats_enabled=bool(raw.get("stats_enabled", True)),
             overview_xlsx=bool(raw.get("overview_xlsx", True)),
+            overlay_png=bool(raw.get("overlay_png", False)),
+            copy_originals_to_outputs=bool(raw.get("copy_originals_to_outputs", False)),
             cell_types=types,
             cellpose=cp,
             use_gpu=bool(raw.get("use_gpu", True)),
@@ -139,6 +146,8 @@ class ProfileData:
             "images_per_subject": self.images_per_subject,
             "stats_enabled": self.stats_enabled,
             "overview_xlsx": self.overview_xlsx,
+            "overlay_png": self.overlay_png,
+            "copy_originals_to_outputs": self.copy_originals_to_outputs,
             "cell_types": [asdict(t) for t in self.cell_types],
             "cellpose": asdict(self.cellpose),
             "use_gpu": self.use_gpu,

@@ -57,6 +57,23 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
     Pulls everything from one compute_image_state() call so the exported numbers
     are guaranteed identical to what the app's status bar + detail panel show.
     """
+    from .cellpose_runner import cache_paths, save_mask
+    from .persistence import ReviewState
+
+    stem = image_info.path.stem
+    npy, _ = cache_paths(folder, image_info.path)
+    if not npy.exists():
+        return False
+
+    # Incremental: skip rewriting if neither the mask nor the review changed
+    # since the last export (compare against the existing stats CSV).
+    stats_out = dest / f"{stem}_stats.csv"
+    rev = ReviewState.review_path(folder, stem)
+    src_mtime = max(npy.stat().st_mtime,
+                    rev.stat().st_mtime if rev.exists() else 0.0)
+    if stats_out.exists() and stats_out.stat().st_mtime >= src_mtime:
+        return True
+
     state = compute_image_state(folder, image_info, profile)
     if state is None:
         return False
@@ -89,29 +106,30 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
         })
     df = pd.DataFrame(rows).sort_values("cell_id")
 
-    stem = image_info.path.stem
-
-    # Copy original
-    try:
-        shutil.copy2(image_info.path, dest / image_info.path.name)
-    except (FileNotFoundError, shutil.SameFileError):
-        pass
+    # Copy original (off by default — avoids duplicating the source TIFs).
+    if getattr(profile, "copy_originals_to_outputs", False):
+        try:
+            shutil.copy2(image_info.path, dest / image_info.path.name)
+        except (FileNotFoundError, shutil.SameFileError):
+            pass
 
     df.to_csv(dest / f"{stem}_stats.csv", index=False)
-    np.save(dest / f"{stem}_masks.npy", state.masks)
+    save_mask(dest / f"{stem}_masks.npy", state.masks)
 
-    fig = plt.figure(figsize=(14, 9))
-    ax = fig.add_subplot(111)
-    ax.imshow(normalize_image_for_display(image), interpolation="nearest")
-    rgba = build_overlay_rgba(state.masks, state.cell_infos, state.review, profile,
-                              state.border_ids, state.duplicate_ids)
-    ax.imshow(rgba, interpolation="nearest")
-    ax.axis("off")
-    fig.suptitle(f"{image_info.path.name}  -  {state.n_active} active erys",
-                 fontsize=11)
-    fig.tight_layout()
-    fig.savefig(dest / f"{stem}_overlay.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    # Overlay PNG (off by default — large + slow).
+    if getattr(profile, "overlay_png", False):
+        fig = plt.figure(figsize=(14, 9))
+        ax = fig.add_subplot(111)
+        ax.imshow(normalize_image_for_display(image), interpolation="nearest")
+        rgba = build_overlay_rgba(state.masks, state.cell_infos, state.review, profile,
+                                  state.border_ids, state.duplicate_ids)
+        ax.imshow(rgba, interpolation="nearest")
+        ax.axis("off")
+        fig.suptitle(f"{image_info.path.name}  -  {state.n_active} active erys",
+                     fontsize=11)
+        fig.tight_layout()
+        fig.savefig(dest / f"{stem}_overlay.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
     return True
 
 

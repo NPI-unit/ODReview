@@ -580,6 +580,12 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     overview_xlsx_var = tk.BooleanVar(value=working.overview_xlsx)
     tk.Checkbutton(tab_a, text=S["pe_overview_xlsx"], variable=overview_xlsx_var
                    ).grid(row=2, column=0, sticky="w", padx=16, pady=8)
+    overlay_png_var = tk.BooleanVar(value=working.overlay_png)
+    tk.Checkbutton(tab_a, text=S["pe_overlay_png"], variable=overlay_png_var
+                   ).grid(row=3, column=0, sticky="w", padx=16, pady=8)
+    copy_orig_var = tk.BooleanVar(value=working.copy_originals_to_outputs)
+    tk.Checkbutton(tab_a, text=S["pe_copy_originals"], variable=copy_orig_var
+                   ).grid(row=4, column=0, sticky="w", padx=16, pady=8)
 
     # ===== Footer =====
     footer = tk.Frame(top); footer.pack(fill="x", padx=12, pady=(0, 12))
@@ -611,6 +617,8 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
         images_per_subject=int(perimg_var.get()),
         stats_enabled=bool(stats_enabled_var.get()),
         overview_xlsx=bool(overview_xlsx_var.get()),
+        overlay_png=bool(overlay_png_var.get()),
+        copy_originals_to_outputs=bool(copy_orig_var.get()),
         cell_types=type_state["types"],
         cellpose=CellposeParams(
             diameter=float(diam_var.get()),
