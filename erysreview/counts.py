@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .cellpose_runner import cache_paths
+from .cellpose_runner import mask_read_paths
 from .grouping import ImageGroupInfo
 from .image_state import compute_image_state
 from .persistence import ReviewState, cache_dir_for, read_json, write_json_atomic
@@ -55,8 +55,8 @@ def image_counts(folder: Path, info: ImageGroupInfo, profile: ProfileData) -> di
     """
     if folder is None:
         return None
-    npy, _ = cache_paths(folder, info.path)
-    if not npy.exists():
+    npy, _ = mask_read_paths(folder, info.path)
+    if npy is None:
         return None
 
     stem = info.path.stem

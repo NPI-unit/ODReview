@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import __version__
-from .cellpose_runner import cache_paths, has_cache
+from .cellpose_runner import mask_read_paths, has_cache
 from .grouping import GroupedFolder
 from .persistence import ReviewState, cache_dir_for
 from .profile import ProfileData
@@ -63,10 +63,10 @@ def create_package(
             if progress_cb:
                 progress_cb(i, n, info.path.name)
             stem = info.path.stem
-            npy, meta = cache_paths(folder, info.path)
-            if npy.exists():
+            npy, meta = mask_read_paths(folder, info.path)
+            if npy is not None:
                 zf.write(npy, f"cache/{npy.name}")
-            if meta.exists():
+            if meta is not None:
                 zf.write(meta, f"cache/{meta.name}")
             review_path = ReviewState.review_path(folder, stem)
             if review_path.exists():

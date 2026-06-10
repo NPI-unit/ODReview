@@ -70,6 +70,8 @@ def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
     for p in sorted(folder.rglob("*")):
         if not p.is_file() or p.suffix.lower() not in IMG_EXTS:
             continue
+        if p.name.endswith("_overlay.png"):
+            continue  # export artifact, not a source image
         rel_parts = p.relative_to(folder).parts[:-1]  # parent dirs only
         if any(part in _SKIP_DIRS or part.startswith(".") for part in rel_parts):
             continue
@@ -90,19 +92,39 @@ def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
 # Cache files
 # ─────────────────────────────────────────────
 def cache_paths(folder: Path, image_path: Path) -> tuple[Path, Path]:
+    """WRITE target for a mask + its params: always the hidden .erys_cache."""
     cache = cache_dir_for(folder)
     stem = image_path.stem
     return cache / f"{stem}_masks.npy", cache / f"{stem}_masks.json"
 
 
+def _sibling_paths(image_path: Path) -> tuple[Path, Path]:
+    """Export layout: mask + params sit right next to the image."""
+    stem = image_path.stem
+    d = image_path.parent
+    return d / f"{stem}_masks.npy", d / f"{stem}_masks.json"
+
+
+def mask_read_paths(folder: Path, image_path: Path) -> tuple[Path | None, Path | None]:
+    """Resolve where to READ a mask/params from. The cache always wins (it is
+    the live, editable copy); otherwise fall back to the export layout next to
+    the image, so an `outputs/` folder is directly readable/packageable.
+    Returns (npy_or_None, meta_or_None)."""
+    c_npy, c_meta = cache_paths(folder, image_path)
+    s_npy, s_meta = _sibling_paths(image_path)
+    npy = c_npy if c_npy.exists() else (s_npy if s_npy.exists() else None)
+    meta = c_meta if c_meta.exists() else (s_meta if s_meta.exists() else None)
+    return npy, meta
+
+
 def has_cache(folder: Path, image_path: Path) -> bool:
-    npy, _ = cache_paths(folder, image_path)
-    return npy.exists()
+    npy, _ = mask_read_paths(folder, image_path)
+    return npy is not None
 
 
 def cached_params(folder: Path, image_path: Path) -> dict | None:
-    _, meta = cache_paths(folder, image_path)
-    if not meta.exists():
+    _, meta = mask_read_paths(folder, image_path)
+    if meta is None:
         return None
     try:
         with meta.open("r", encoding="utf-8") as f:
@@ -148,8 +170,8 @@ def _read_mask(path: Path) -> np.ndarray:
 
 
 def load_cached_masks(folder: Path, image_path: Path) -> np.ndarray | None:
-    npy, _ = cache_paths(folder, image_path)
-    if not npy.exists():
+    npy, _ = mask_read_paths(folder, image_path)
+    if npy is None:
         return None
     try:
         return _read_mask(npy).astype(np.int32)
