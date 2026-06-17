@@ -181,4 +181,12 @@ def export_folder_structured(folder: Path, profile: ProfileData,
         except Exception:
             pass  # missing openpyxl etc. must not abort the CSV export
 
+    # Consolidated SQLite reporting store (additive — alongside the CSVs, never
+    # replacing them). The DB is a bonus, so a failure must not abort the export.
+    try:
+        from .db import write_db
+        write_db(folder, profile, grouped, root / "erys.db")
+    except Exception:
+        pass
+
     return root

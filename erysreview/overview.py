@@ -56,7 +56,7 @@ def build_overview(folder: Path, profile, grouped) -> dict:
         ["Zeitpunkt", "Condition", "Proband", "nBilder", "RBC"]
         + [type_name.get(k, k) for k in type_keys_all]
         + ["%" + type_name.get(k, k) for k in type_keys_all]
-        + ["%verändert", "%verändert_2000", "%Target"]
+        + ["%verändert", "%verändert_2000", "%Target", "Ziel"]
     )
     tidy_rows: list[list] = []
     for tp, sub, s in records:
@@ -68,7 +68,7 @@ def build_overview(folder: Path, profile, grouped) -> dict:
         row += [round(100.0 * by.get(k, 0) / rbc, 2) if rbc > 0 else 0.0
                 for k in type_keys_all]
         row += [round(s["pct_changed"], 2), round(s["pct_changed_2000"], 2),
-                round(100.0 * rbc / target, 2)]
+                round(100.0 * rbc / target, 2), target]
         tidy_rows.append(row)
 
     # Matrix axes.
@@ -104,6 +104,7 @@ def build_overview(folder: Path, profile, grouped) -> dict:
         "n_matrix": matrix(lambda s: s["n_images"]),
         "type_name": type_name,
         "type_keys_all": type_keys_all,
+        "target": target,
     }
 
 
@@ -170,6 +171,21 @@ def write_xlsx(data: dict, dest: Path) -> Path | None:
         c.font = bold
     for row in data["n_matrix"]:
         sc.append(row)
+
+    # Definitionen / legend — so a reader can see how every value is computed.
+    from .db import METRIC_DEFINITIONS
+    sdef = wb.create_sheet(_safe_title("Definitionen", used))
+    sdef.append(["Größe", "Formel", "Beschreibung"])
+    for c in sdef[1]:
+        c.font = bold
+    for _key, label, formula, desc in METRIC_DEFINITIONS:
+        sdef.append([label, formula, desc])
+    sdef.append([])
+    sdef.append(["Ziel (target_cells) bei diesem Export", data.get("target")])
+    sdef.cell(row=sdef.max_row, column=1).font = bold
+    sdef.column_dimensions["A"].width = 28
+    sdef.column_dimensions["B"].width = 44
+    sdef.column_dimensions["C"].width = 72
 
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
