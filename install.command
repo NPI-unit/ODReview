@@ -81,30 +81,55 @@ echo "[3/4] Installing dependencies from requirements.txt ..."
     exit 1
 }
 
-# ─── 4. Make launcher executable + copy shortcut to Desktop ────────────────
-echo "[4/4] Setting up Desktop launcher ..."
+# ─── 4. Build a Desktop .app bundle (proper Dock icon + name) ──────────────
+echo "[4/4] Building ErysReview.app on your Desktop ..."
 chmod +x "$(pwd)/run.command"
-
-DESKTOP_SHORTCUT="$HOME/Desktop/ErysReview.command"
-cp "$(pwd)/run.command" "$DESKTOP_SHORTCUT"
-chmod +x "$DESKTOP_SHORTCUT"
-# Embed the absolute path to the repo so the desktop copy knows where to cd to.
 ROOT="$(pwd)"
-"$PY" - <<PY
-from pathlib import Path
-p = Path("$DESKTOP_SHORTCUT")
-text = p.read_text()
-text = text.replace('cd "\$(dirname "\$0")" || exit 1', 'cd "$ROOT" || exit 1')
-p.write_text(text)
-PY
+APP="$HOME/Desktop/ErysReview.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+# Launcher: run THIS repo's venv python (it has the macOS-26-safe Tk — never
+# the system python). Wrapped in a bundle so the Dock shows our icon + name
+# instead of the generic "Python" rocket. $ROOT is baked in at install time.
+cat > "$APP/Contents/MacOS/ErysReview" <<LAUNCHER
+#!/bin/bash
+cd "$ROOT" || exit 1
+exec "$ROOT/.venv/bin/python" -m erysreview
+LAUNCHER
+chmod +x "$APP/Contents/MacOS/ErysReview"
+
+# Dock icon (optional — the bundle still launches without it).
+if [ -f "$ROOT/assets/icon.icns" ]; then
+    cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
+fi
+
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>               <string>ErysReview</string>
+    <key>CFBundleDisplayName</key>        <string>ErysReview</string>
+    <key>CFBundleExecutable</key>         <string>ErysReview</string>
+    <key>CFBundleIdentifier</key>         <string>de.erys.review</string>
+    <key>CFBundleIconFile</key>           <string>icon</string>
+    <key>CFBundlePackageType</key>        <string>APPL</string>
+    <key>CFBundleShortVersionString</key> <string>1.0</string>
+    <key>NSHighResolutionCapable</key>    <true/>
+</dict>
+</plist>
+PLIST
+
+# Nudge LaunchServices so the new icon/name register immediately.
+touch "$APP" 2>/dev/null || true
 
 echo ""
 echo "============================================"
 echo " Done. ErysReview is installed.   (Tk $TKVER)"
 echo "============================================"
 echo ""
-echo "You now have two ways to start the app:"
-echo "  1. Double-click \"ErysReview\" on your Desktop"
-echo "  2. Double-click run.command inside this folder"
+echo "Start the app by double-clicking ErysReview on your Desktop"
+echo "(or run.command inside this folder)."
 echo ""
 read -r -p "Press Enter to close ..."

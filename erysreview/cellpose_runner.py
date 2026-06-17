@@ -6,8 +6,13 @@ Cache layout (Frage 4 + 10c):
         <stem>_masks.json         – {diameter, flow_threshold, cellprob_threshold,
                                       model, cellpose_version, created_at}
 
-Single-threaded by design. The UI calls run_for_image(...) and blocks until done;
-the modal spinner above keeps the UI alive.
+run_for_image(...) is synchronous and CPU/GPU-bound. The UI never calls it on
+the Tk thread directly — it runs it on a worker thread via
+dialogs.run_in_thread_pumping(), which keeps the event loop (and the modal
+spinner) responsive while inference runs. Nothing here touches Tk, so it is
+safe to call off the main thread. A single worker runs at a time (the modal
+grab prevents concurrent segmentation), so the module-level model cache needs
+no locking.
 """
 
 from __future__ import annotations
@@ -63,25 +68,78 @@ def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
     basenames across sub-folders are redundant — only the first is kept and the
     rest are reported on stdout.
     """
-    exclude = exclude or set()
+    # Normalize the folder path first. On Windows a path coming from
+    # filedialog.askdirectory (forward slashes) joined with a subfolder, or one
+    # with odd casing / trailing separators, can make rglob enumerate nothing
+    # even though the files are right there — the blank-sidebar-on-import bug.
+    # resolve() canonicalizes slashes, case and `..`.
+    try:
+        folder = Path(folder).resolve()
+    except OSError:
+        folder = Path(folder)
+    excl = set()
+    for e in (exclude or set()):
+        try:
+            excl.add(Path(e).resolve())
+        except OSError:
+            excl.add(Path(e))
+
     out: list[Path] = []
     seen: dict[str, Path] = {}
     dupes: list[Path] = []
-    for p in sorted(folder.rglob("*")):
-        if not p.is_file() or p.suffix.lower() not in IMG_EXTS:
+    # Per-reason drop tally so a single Windows run reveals where images are lost.
+    drops = {"not_file": 0, "ext": 0, "overlay": 0, "hidden": 0, "excluded": 0}
+
+    try:
+        candidates = sorted(folder.rglob("*"))
+    except OSError as e:
+        print(f"[list_images] rglob failed on {folder!r}: {e}", flush=True)
+        candidates = []
+    raw = len(candidates)
+
+    for p in candidates:
+        try:
+            if not p.is_file():
+                drops["not_file"] += 1; continue
+            if p.suffix.lower() not in IMG_EXTS:
+                drops["ext"] += 1; continue
+            if p.name.endswith("_overlay.png"):
+                drops["overlay"] += 1; continue  # export artifact, not a source
+            rel_parts = p.relative_to(folder).parts[:-1]  # parent dirs only
+            if any(part in _SKIP_DIRS or part.startswith(".") for part in rel_parts):
+                drops["hidden"] += 1; continue
+            rp = p.resolve()
+            if excl and (rp in excl or any(e == rp or e in rp.parents for e in excl)):
+                drops["excluded"] += 1; continue
+            if p.name in seen:
+                dupes.append(p); continue
+            seen[p.name] = p
+            out.append(p)
+        except OSError:
+            # Unstattable path (long path, permission, race) — skip, never crash.
+            drops["not_file"] += 1
             continue
-        if p.name.endswith("_overlay.png"):
-            continue  # export artifact, not a source image
-        rel_parts = p.relative_to(folder).parts[:-1]  # parent dirs only
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in rel_parts):
-            continue
-        if p in exclude or any(p == e or e in p.parents for e in exclude):
-            continue
-        if p.name in seen:
-            dupes.append(p)
-            continue
-        seen[p.name] = p
-        out.append(p)
+
+    # Fallback: recursion yielded nothing usable, but the top level itself holds
+    # images (e.g. a freshly imported folder). Scan one level non-recursively so
+    # an import never lands on a blank sidebar when the files are clearly there.
+    if not out:
+        try:
+            flat = sorted(
+                q for q in folder.iterdir()
+                if q.is_file() and q.suffix.lower() in IMG_EXTS
+                and not q.name.endswith("_overlay.png")
+            )
+        except OSError:
+            flat = []
+        if flat:
+            print(f"[list_images] recursive scan empty; flat fallback found "
+                  f"{len(flat)} image(s) in {folder}", flush=True)
+            out = flat
+
+    if not out or dupes:
+        print(f"[list_images] folder={folder} raw={raw} kept={len(out)} "
+              f"drops={drops} dupes={len(dupes)}", flush=True)
     if dupes:
         print(f"[list_images] {len(dupes)} doppelte Dateinamen übersprungen "
               f"(z.B. {dupes[0].name})", flush=True)

@@ -1,4 +1,8 @@
-# ErysReview runtime dependencies — pip install -r requirements.txt
+# ErysReview runtime dependencies — macOS / pip path (install.command uses this).
+#
+#   WINDOWS USERS: do NOT pip install this file. Run install.bat instead — it
+#   builds a conda-forge env. Pip-installing torch alongside conda's MKL numpy
+#   loads libiomp5md.dll twice and deadlocks Cellpose on Windows (OMP Error #15).
 #
 # Python 3.12 required.
 # Tkinter is part of the Python standard library on Windows/macOS conda installs;
@@ -24,9 +28,9 @@ scipy>=1.13
 #   - macOS arm64 (Apple Silicon): MPS-enabled wheel
 #   - macOS x86_64:                 CPU
 #   - Linux:                        CPU
-#   - Windows:                      CPU
+# (Windows torch is installed via conda-forge by install.bat, not from here.)
 #
-# For NVIDIA GPU acceleration on Windows / Linux, install torch *separately*
+# For NVIDIA GPU acceleration on macOS-x86_64 / Linux, install torch *separately*
 # from the CUDA wheel index before running this file:
 #
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121

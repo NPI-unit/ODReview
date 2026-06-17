@@ -17,7 +17,9 @@ from . import stats as statsmod
 from .cellpose_runner import has_cache
 from .counts import image_counts
 from .dialogs import _center_on_parent, confirm_dialog, info_dialog
-from .grouping import GroupedFolder, ImageGroupInfo
+from .grouping import (
+    GroupedFolder, ImageGroupInfo, UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT,
+)
 from .persistence import ReviewState
 from .profile import ProfileData
 
@@ -188,14 +190,114 @@ def package_create_dialog(parent, folder: Path, grouped: GroupedFolder,
     tk.Entry(frm, textvariable=reviewer_var, width=28
              ).grid(row=1, column=1, sticky="w", pady=4)
 
-    n_cached = sum(1 for i in grouped.flat if pkg.has_cache(folder, i.path))
-    tk.Label(frm, text=S["pkg_n_images"].format(n=n_cached), fg="#888",
-             font=("TkDefaultFont", 9)).grid(row=2, column=0, columnspan=2,
-                                             sticky="w", pady=(4, 10))
+    # ── Per-image picker (only images that already have a cached mask) ──
+    CHK, OFF, PART = "☑", "☐", "▣"
+    checked: dict[str, bool] = {}            # stem -> selected?
+    group_stems: dict[str, list[str]] = {}   # group iid -> its descendant stems
+    img_name: dict[str, str] = {}            # stem -> filename
+
+    hdr = tk.Frame(frm); hdr.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    tk.Label(hdr, text=S["pkg_pick_images"], fg="#888",
+             font=("TkDefaultFont", 9)).pack(side="left")
+    tk.Button(hdr, text=S["pkg_select_none"], padx=4,
+              command=lambda: _set_all(False)).pack(side="right")
+    tk.Button(hdr, text=S["pkg_select_all"], padx=4,
+              command=lambda: _set_all(True)).pack(side="right", padx=(0, 4))
+
+    pick = tk.Frame(frm); pick.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(2, 6))
+    tv = ttk.Treeview(pick, show="tree", selectmode="none", height=11)
+    sb = ttk.Scrollbar(pick, orient="vertical", command=tv.yview)
+    tv.configure(yscrollcommand=sb.set)
+    sb.pack(side="right", fill="y"); tv.pack(side="left", fill="both", expand=True)
+
+    def _disp_tp(tp):
+        return S["sb_ungrouped"] if tp == UNGROUPED_TIMEPOINT else tp
+
+    def _disp_sub(sub):
+        return S["sb_ungrouped"] if sub == UNGROUPED_SUBJECT else sub
+
+    for tp in grouped.timepoints():
+        tp_iid = f"tp::{tp}"; tp_stems: list[str] = []; tp_in = False
+        for sub in grouped.subjects_in(tp):
+            sub_iid = f"sub::{tp}::{sub}"; sub_stems: list[str] = []; sub_in = False
+            for info in grouped.tree[tp][sub]:
+                if not has_cache(folder, info.path):
+                    continue
+                stem = info.path.stem
+                checked[stem] = True; img_name[stem] = info.path.name
+                if not tp_in:
+                    tv.insert("", "end", iid=tp_iid, text="", open=True); tp_in = True
+                if not sub_in:
+                    tv.insert(tp_iid, "end", iid=sub_iid, text="", open=True); sub_in = True
+                tv.insert(sub_iid, "end", iid=f"img::{stem}", text="")
+                sub_stems.append(stem); tp_stems.append(stem)
+            if sub_in:
+                group_stems[sub_iid] = sub_stems
+        if tp_in:
+            group_stems[tp_iid] = tp_stems
+
+    def _group_glyph(iid):
+        stems = group_stems.get(iid, [])
+        on = sum(1 for s in stems if checked[s])
+        return CHK if (stems and on == len(stems)) else (OFF if on == 0 else PART)
+
+    def _update_count():
+        sel = sum(1 for v in checked.values() if v)
+        count_lbl.config(text=S["pkg_n_images"].format(n=sel))
+
+    def _redraw():
+        for tp in grouped.timepoints():
+            tp_iid = f"tp::{tp}"
+            if tp_iid not in group_stems:
+                continue
+            tv.item(tp_iid, text=f"{_group_glyph(tp_iid)}  {_disp_tp(tp)}")
+            for sub in grouped.subjects_in(tp):
+                sub_iid = f"sub::{tp}::{sub}"
+                if sub_iid not in group_stems:
+                    continue
+                stems = group_stems[sub_iid]
+                on = sum(1 for s in stems if checked[s])
+                tv.item(sub_iid,
+                        text=f"{_group_glyph(sub_iid)}  {_disp_sub(sub)}  ({on}/{len(stems)})")
+                for stem in stems:
+                    glyph = CHK if checked[stem] else OFF
+                    tv.item(f"img::{stem}", text=f"{glyph}  {img_name[stem]}")
+        _update_count()
+
+    def _set_all(val):
+        for s in checked:
+            checked[s] = val
+        _redraw()
+
+    def _on_click(evt):
+        iid = tv.identify_row(evt.y)
+        if not iid:
+            return
+        if iid.startswith("img::"):
+            stem = iid[5:]
+            checked[stem] = not checked[stem]
+        elif iid in group_stems:
+            stems = group_stems[iid]
+            new = not all(checked[s] for s in stems)   # all on -> off, else on
+            for s in stems:
+                checked[s] = new
+        else:
+            return
+        _redraw()
+    tv.bind("<Button-1>", _on_click, add="+")
+
+    count_lbl = tk.Label(frm, text="", fg="#888", font=("TkDefaultFont", 9))
+    count_lbl.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    frm.rowconfigure(3, weight=1); frm.columnconfigure(1, weight=1)
+    _redraw()
 
     state = {"reviewer": None}
 
     def on_create():
+        selected = {s for s, v in checked.items() if v}
+        if not selected:
+            info_dialog(top, S["pkg_create_title"], S["pkg_n_images"].format(n=0))
+            return
         default_name = f"{profile.name}_{folder.name}.eryspkg.zip".replace(" ", "_")
         dest = filedialog.asksaveasfilename(
             parent=top, title=S["pkg_save_as"], defaultextension=".zip",
@@ -209,7 +311,8 @@ def package_create_dialog(parent, folder: Path, grouped: GroupedFolder,
         tk.Label(frm, text=S["pkg_creating"], font=("TkDefaultFont", 12, "bold")
                  ).pack(pady=(0, 10))
         lbl = tk.Label(frm, text=""); lbl.pack()
-        bar = ttk.Progressbar(frm, length=360, mode="determinate", maximum=max(1, n_cached))
+        bar = ttk.Progressbar(frm, length=360, mode="determinate",
+                              maximum=max(1, len(selected)))
         bar.pack(pady=10)
 
         def prog(i, n, name):
@@ -221,7 +324,7 @@ def package_create_dialog(parent, folder: Path, grouped: GroupedFolder,
             res = pkg.create_package(
                 folder, grouped, profile, Path(dest),
                 include_images=include_var.get(), reviewer=reviewer,
-                progress_cb=prog,
+                selected_stems=selected, progress_cb=prog,
             )
         except Exception as e:
             info_dialog(top, S["pkg_create_title"], f"{e}")
@@ -231,7 +334,7 @@ def package_create_dialog(parent, folder: Path, grouped: GroupedFolder,
         info_dialog(parent, S["pkg_create_title"],
                     S["pkg_created_msg"].format(n=res["n_images"], path=res["path"]))
 
-    btns = tk.Frame(frm); btns.grid(row=3, column=0, columnspan=2, sticky="e")
+    btns = tk.Frame(frm); btns.grid(row=5, column=0, columnspan=2, sticky="e")
     tk.Button(btns, text=S["settings_cancel"], width=12, command=top.destroy
               ).pack(side="right", padx=4)
     tk.Button(btns, text=S["pkg_create_btn"], width=14, command=on_create

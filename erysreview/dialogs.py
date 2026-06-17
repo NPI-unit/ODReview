@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 import tkinter as tk
 from copy import deepcopy
 from pathlib import Path
@@ -26,6 +28,18 @@ def _center_on_parent(top: tk.Toplevel, parent: tk.Misc) -> None:
     px = parent.winfo_rootx() + max(0, parent.winfo_width() // 2 - w // 2)
     py = parent.winfo_rooty() + max(0, parent.winfo_height() // 2 - h // 2)
     top.geometry(f"{w}x{h}+{px}+{py}")
+
+
+def _clampf(var, lo: float, hi: float, default: float) -> float:
+    """Read a Tk numeric var as float and clamp to [lo, hi]. The Spinbox arrows
+    bound the range but typed input does not, so an out-of-range value (how the
+    'diameter 200/2000' values got in) is snapped here before it reaches
+    Cellpose. Falls back to `default` if the field holds non-numeric garbage."""
+    try:
+        v = float(var.get())
+    except (tk.TclError, ValueError):
+        return default
+    return max(lo, min(hi, v))
 
 
 def _sanitize_key(name: str, taken: set[str]) -> str:
@@ -72,7 +86,10 @@ class CellposeSpinner:
         self._dot_count = (self._dot_count + 1) % 4
         dots = "." * self._dot_count + " " * (3 - self._dot_count)
         self._lbl_main.config(text=f"{self.S['cp_running']}{dots}")
-        try: self.top.update()
+        # update_idletasks (not update): the inference runs in a worker thread
+        # while run_in_thread_pumping() pumps the full event loop, so here we
+        # only need a redraw — a nested full update() would be re-entrant.
+        try: self.top.update_idletasks()
         except tk.TclError: return
         self._after_id = self.top.after(350, self._tick)
 
@@ -84,6 +101,40 @@ class CellposeSpinner:
             try: self.top.grab_release()
             except tk.TclError: pass
             self.top.destroy(); self.top = None
+
+
+def run_in_thread_pumping(widget: tk.Misc, work_fn: Callable):
+    """Run ``work_fn()`` in a daemon thread while keeping ``widget``'s Tk event
+    loop responsive, then return its result (re-raising any exception it threw).
+
+    Cellpose inference is CPU/GPU-bound and can take many seconds — on Windows
+    (CPU) far longer. Running it directly on the Tk thread freezes the window
+    ("Not Responding"). Here the heavy call happens on a worker thread; the main
+    thread keeps pumping events (~50 Hz) so spinners animate and Cancel buttons
+    stay clickable. ``work_fn`` MUST NOT touch any Tk object — Tk is single-
+    threaded; all UI work stays on the main thread, here.
+    """
+    holder: dict = {"result": None, "error": None}
+    done = threading.Event()
+
+    def _worker():
+        try:
+            holder["result"] = work_fn()
+        except BaseException as e:  # noqa: BLE001 — surfaced on the main thread
+            holder["error"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    while not done.is_set():
+        try:
+            widget.update()          # full pump so a modal Cancel can register
+        except tk.TclError:
+            break                    # widget destroyed under us — stop pumping
+        time.sleep(0.02)
+    if holder["error"] is not None:
+        raise holder["error"]
+    return holder["result"]
 
 
 # ─────────────────────────────────────────────
@@ -621,9 +672,10 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
         copy_originals_to_outputs=bool(copy_orig_var.get()),
         cell_types=type_state["types"],
         cellpose=CellposeParams(
-            diameter=float(diam_var.get()),
-            flow_threshold=float(flow_var.get()),
-            cellprob_threshold=float(cellprob_var.get()),
+            diameter=_clampf(diam_var, 5.0, 500.0, working.cellpose.diameter),
+            flow_threshold=_clampf(flow_var, 0.0, 3.0, working.cellpose.flow_threshold),
+            cellprob_threshold=_clampf(
+                cellprob_var, -6.0, 6.0, working.cellpose.cellprob_threshold),
             model=working.cellpose.model,
         ),
         use_gpu=bool(use_gpu_var.get()),
@@ -1022,9 +1074,16 @@ def batch_dialog(
                   command=lambda: (on_done(), top.destroy())).pack()
 
     def _compute_one(info):
-        img = load_image(info.path)
-        run_for_image(folder, info.path, img, profile.cellpose,
-                      force=False, use_gpu=profile.use_gpu)
+        # Off the main thread so the progress bar + Cancel button stay
+        # responsive during each (CPU-only on Windows, so potentially slow)
+        # segmentation. Cancel registers immediately; it takes effect once the
+        # current image finishes (torch inference can't be interrupted mid-run).
+        run_in_thread_pumping(
+            top,
+            lambda: run_for_image(folder, info.path, load_image(info.path),
+                                  profile.cellpose, force=False,
+                                  use_gpu=profile.use_gpu),
+        )
 
     def _active_count(info):
         c = image_counts(folder, info, profile)

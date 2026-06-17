@@ -27,7 +27,7 @@ from .cellpose_runner import (
 from .dialogs import (
     CellposeSpinner, batch_dialog, confirm_dialog, info_dialog,
     overview_preview_dialog, profile_editor_dialog, profile_manager_dialog,
-    settings_dialog,
+    run_in_thread_pumping, settings_dialog,
 )
 from .export import export_folder_structured
 from .extras import (
@@ -62,6 +62,10 @@ class EryApp:
         # profile-manager dialog. The earlier approach (transient bootstrap +
         # withdraw) renders an invisible window on Windows — the dialog
         # then has no taskbar entry and may stay behind other windows.
+        # Windows: claim a distinct taskbar identity BEFORE the window exists,
+        # else the taskbar shows the generic python.exe icon and groups the app
+        # under "Python". No-op on macOS/Linux.
+        self._set_app_user_model_id()
         print("ErysReview: opening window ...", flush=True)
         self.root = tk.Tk()
         self.root.title("ErysReview")
@@ -129,6 +133,20 @@ class EryApp:
     # ─────────────────────────────────────────
     # Startup helpers
     # ─────────────────────────────────────────
+    @staticmethod
+    def _set_app_user_model_id() -> None:
+        """Windows-only: set an explicit AppUserModelID so the taskbar uses our
+        own icon + name instead of python.exe. Must run before the root window
+        is created. Silently does nothing elsewhere or on failure."""
+        import sys
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Erys.Review")
+        except Exception:
+            pass  # taskbar identity is cosmetic — never block startup
+
     def _apply_window_icon(self) -> None:
         """Set the window icon from assets/. Falls back silently if files are missing.
         Tk picks the best-sized PNG via iconphoto. On Windows we additionally try
@@ -634,10 +652,17 @@ class EryApp:
                 pass
             self.review = ReviewState()
         try:
-            img = load_image(path)
-            with CellposeSpinner(self.root, path.name, self.S):
-                run_for_image(self.folder, path, img, self.profile.cellpose,
-                              force=True, use_gpu=self.profile.use_gpu)
+            # Inference runs on a worker thread (load + segment) while the
+            # spinner pumps the event loop, so the window stays responsive
+            # instead of freezing — critical on Windows where it's CPU-only.
+            with CellposeSpinner(self.root, path.name, self.S) as spin:
+                run_in_thread_pumping(
+                    spin.top,
+                    lambda: run_for_image(
+                        self.folder, path, load_image(path),
+                        self.profile.cellpose, force=True,
+                        use_gpu=self.profile.use_gpu),
+                )
         except Exception as e:
             info_dialog(self.root, self.S["title"],
                         self.S["err_cellpose"].format(err=e))

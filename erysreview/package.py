@@ -47,13 +47,19 @@ def create_package(
     dest_zip: Path,
     include_images: bool = True,
     reviewer: str = "",
+    selected_stems: set[str] | None = None,
     progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """Write a share package. Only images with a cached mask are included.
 
+    If `selected_stems` is given, only those image stems are packed (still
+    subject to having a cached mask); None means every cached image.
+
     Returns a small summary dict.
     """
     infos = [i for i in grouped.flat if has_cache(folder, i.path)]
+    if selected_stems is not None:
+        infos = [i for i in infos if i.path.stem in selected_stems]
     stems: list[str] = []
     n = len(infos)
 
