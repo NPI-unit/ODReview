@@ -17,12 +17,11 @@ echo ============================================
 echo.
 
 REM ─── 1. Locate conda ───────────────────────────────────────────────────
+REM Capture the FULL path from `where` (not the literal "conda"): the conda
+REM root is derived later via %%~dpI, which only works on a real path.
 set "CONDA_EXE="
-where conda >nul 2>&1
-if not errorlevel 1 (
-    set "CONDA_EXE=conda"
-    goto :have_conda
-)
+for /f "delims=" %%P in ('where conda 2^>nul') do if not defined CONDA_EXE set "CONDA_EXE=%%P"
+if defined CONDA_EXE goto :have_conda
 
 REM Common Miniforge install paths
 for %%P in (
