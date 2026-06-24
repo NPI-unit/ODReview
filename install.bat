@@ -70,7 +70,7 @@ if errorlevel 1 (
 )
 
 REM ─── 3. Install / upgrade dependencies ─────────────────────────────────
-echo [3/4] Installing dependencies from requirements.txt ...
+echo [3/5] Installing dependencies from requirements.txt ...
 call "%CONDA_ACTIVATE%" erys
 if errorlevel 1 (
     echo [!] Failed to activate erys env.
@@ -85,8 +85,30 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM ─── 4. Generate a Desktop shortcut ────────────────────────────────────
-echo [4/4] Creating Desktop shortcut ...
+REM ─── 3b. GPU acceleration (NVIDIA only) ────────────────────────────────
+REM requirements.txt always pulls the CPU build of PyTorch on Windows, so on a
+REM machine with an NVIDIA GPU Cellpose would crawl on the CPU (minutes per
+REM image) while the GPU sits idle. If an NVIDIA GPU is present and the current
+REM torch can't see CUDA, swap in the CUDA build (big download, ~2.5 GB once).
+echo [4/5] Checking for an NVIDIA GPU ...
+where nvidia-smi >nul 2>&1
+if errorlevel 1 (
+    echo     No NVIDIA GPU detected - using CPU PyTorch.
+) else (
+    python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo     NVIDIA GPU found - installing CUDA PyTorch ^(one-time ~2.5 GB download^) ...
+        python -m pip install --upgrade --force-reinstall --index-url https://download.pytorch.org/whl/cu124 torch torchvision
+        if errorlevel 1 (
+            echo     [!] CUDA PyTorch install failed - keeping CPU PyTorch ^(app still works, just slower^).
+        )
+    ) else (
+        echo     CUDA PyTorch already active.
+    )
+)
+
+REM ─── 5. Generate a Desktop shortcut ────────────────────────────────────
+echo [5/5] Creating Desktop shortcut ...
 set "SHORTCUT=%USERPROFILE%\Desktop\ErysReview.lnk"
 set "ICON=%CD%\assets\icon.ico"
 set "TARGET=%CD%\run.bat"

@@ -20,6 +20,8 @@ If you don't want to touch a terminal:
 
 If anything in those steps fails, scroll down to **Manual install** for the explicit conda commands.
 
+> **NVIDIA GPU users (Windows):** `install.bat` now detects an NVIDIA GPU and automatically installs the CUDA build of PyTorch (a one-time ~2.5 GB download), so Cellpose runs on the GPU — seconds per image instead of minutes on the CPU. No manual step needed.
+
 > Note: this project is unaffiliated with the Cellpose authors. It is a UI wrapper that calls the Cellpose Python package locally on your machine. All segmentation credit goes to the Cellpose project.
 
 ---
