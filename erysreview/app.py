@@ -12,6 +12,7 @@ state: folder, images, idx, profile, settings, current ReviewState.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -641,12 +642,39 @@ class EryApp:
             self.review = ReviewState()
         try:
             img = load_image(path)
-            with CellposeSpinner(self.root, path.name, self.S):
-                run_for_image(self.folder, path, img, self.profile.cellpose,
-                              force=True, use_gpu=self.profile.use_gpu)
         except Exception as e:
             info_dialog(self.root, self.S["title"],
                         self.S["err_cellpose"].format(err=e))
+            return
+
+        # Run Cellpose on a worker thread and keep pumping the Tk event loop so
+        # the spinner animates and the window never goes "(keine Rückmeldung)" /
+        # "Not Responding" on Windows. The spinner's grab_set() makes it modal,
+        # so pumping events can't let the user start a second action meanwhile.
+        result: dict = {}
+        finished = threading.Event()
+
+        def _work():
+            try:
+                run_for_image(self.folder, path, img, self.profile.cellpose,
+                              force=True, use_gpu=self.profile.use_gpu)
+            except Exception as e:  # surfaced on the main thread below
+                result["err"] = e
+            finally:
+                finished.set()
+
+        with CellposeSpinner(self.root, path.name, self.S):
+            threading.Thread(target=_work, daemon=True).start()
+            while not finished.is_set():
+                try:
+                    self.root.update()
+                except tk.TclError:
+                    break
+                time.sleep(0.02)
+
+        if "err" in result:
+            info_dialog(self.root, self.S["title"],
+                        self.S["err_cellpose"].format(err=result["err"]))
             return
         # Reload uniformly from the fresh cache (masks + duplicates + status).
         self.sidebar.invalidate_group_cache()
