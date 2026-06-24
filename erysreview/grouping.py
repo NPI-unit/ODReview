@@ -16,6 +16,18 @@ UNGROUPED_TIMEPOINT = "_ungrouped"
 UNGROUPED_SUBJECT   = "_ungrouped"
 
 
+def natural_key(s: str):
+    """Sort key that orders embedded numbers numerically, so e.g. d2 < d7 < d14
+    (not the lexical d14 < d2 < d7) and Proband2 < Proband10. Pure-text values
+    (prä, post, …) still fall back to case-insensitive lexical order.
+
+    re.split keeps an alternating [text, number, text, …] shape, so two keys
+    always compare str-to-str / int-to-int at each position — never a clash.
+    """
+    return [int(p) if p.isdigit() else p.lower()
+            for p in re.split(r"(\d+)", str(s))]
+
+
 @dataclass
 class ImageGroupInfo:
     path: Path
@@ -43,14 +55,14 @@ class GroupedFolder:
         return len(self.flat)
 
     def timepoints(self) -> list[str]:
-        # Sort so that ungrouped goes last
+        # Natural order (d2 < d7 < d14), ungrouped always last.
         keys = list(self.tree.keys())
-        keys.sort(key=lambda k: (k == UNGROUPED_TIMEPOINT, k))
+        keys.sort(key=lambda k: (k == UNGROUPED_TIMEPOINT, natural_key(k)))
         return keys
 
     def subjects_in(self, timepoint: str) -> list[str]:
         keys = list(self.tree.get(timepoint, {}).keys())
-        keys.sort(key=lambda k: (k == UNGROUPED_SUBJECT, k))
+        keys.sort(key=lambda k: (k == UNGROUPED_SUBJECT, natural_key(k)))
         return keys
 
 

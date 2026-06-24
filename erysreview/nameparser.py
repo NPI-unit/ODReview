@@ -55,14 +55,17 @@ def parse(filename: str, delimiters: list[str], field_roles: list[str]
           ) -> dict | None:
     """Return {'subject','timepoint','image_num','extras'} or None on no match.
 
-    A match requires the token count to equal len(field_roles) and the
-    subject + timepoint roles to be present and non-empty. image_num is optional
-    (None if its token isn't an integer / role unused).
+    Roles are matched against the leading tokens by position; the filename must
+    have *at least* as many tokens as there are roles. Any extra trailing tokens
+    are ignored, so a stray suffix (e.g. ``Tribal_123_prä_5.6.24_001_edited``)
+    still groups correctly instead of silently dropping into ``_ungrouped``.
+    A match still requires the subject + timepoint roles to be present and
+    non-empty; image_num is optional (None if its token isn't an integer).
     """
     if not field_roles:
         return None
     tokens = tokenize(filename, delimiters)
-    if len(tokens) != len(field_roles):
+    if len(tokens) < len(field_roles):
         return None
 
     subject = timepoint = None
