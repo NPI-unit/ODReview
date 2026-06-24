@@ -434,7 +434,13 @@ def stats_window(parent, folder: Path, profile: ProfileData,
         if groups:
             labels = list(groups.keys())
             data = [groups[k] for k in labels]
-            ax.boxplot(data, labels=labels, showmeans=True)
+            # matplotlib renamed boxplot's `labels` -> `tick_labels` in 3.9 and
+            # removed `labels` in 3.11, which would crash the stats plot. Use the
+            # new name, falling back to the old one on pre-3.9 matplotlib.
+            try:
+                ax.boxplot(data, tick_labels=labels, showmeans=True)
+            except TypeError:
+                ax.boxplot(data, labels=labels, showmeans=True)
             ax.set_ylabel(metric_var.get())
             ax.set_xlabel(S["stats_by_subject"] if by == "subject" else S["stats_by_timepoint"])
             ax.grid(axis="y", alpha=0.3)
