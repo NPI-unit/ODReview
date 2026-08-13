@@ -1,7 +1,7 @@
 """Single source of truth for everything derived from a (mask, review, profile) triple.
 
 Before v14 three consumers — canvas.py, summary.py, export.py — independently
-recomputed border/duplicate/active/per-type-count logic. That worked, but kept
+recomputed border/size-outlier/active/per-type-count logic. That worked, but kept
 the risk of subtle drift between counters and exported numbers. Now they all
 go through `compute_image_state(folder, image_info, profile)` and read the
 returned ImageState.
@@ -21,7 +21,7 @@ from skimage.draw import disk as sk_disk
 
 from .canvas import CellInfo, compute_cell_infos, is_border_cell
 from .cellpose_runner import load_cached_masks
-from .duplicates import detect_duplicates
+from .sizefilter import detect_size_outliers
 from .grouping import ImageGroupInfo
 from .persistence import ReviewState
 from .profile import ProfileData
@@ -36,7 +36,7 @@ class ImageState:
     review: ReviewState
 
     border_ids: set[int]
-    duplicate_ids: set[int]
+    duplicate_ids: set[int]        # size-filter rejects; name matches is_duplicate
     manual_ids: set[int]
 
     excluded: set[int]                  # = set(review.force_excluded)
@@ -85,7 +85,7 @@ def compute_image_state(
         cid for cid, info in cell_infos.items()
         if is_border_cell(info, h, w, profile.margin_n)
     }
-    duplicate_ids = detect_duplicates(cell_infos, profile.duplicate_detection)
+    duplicate_ids = detect_size_outliers(cell_infos, profile.size_filter)
 
     excluded = set(review.force_excluded)
     included = set(review.force_included)

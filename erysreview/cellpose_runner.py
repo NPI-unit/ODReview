@@ -176,8 +176,16 @@ def mask_read_paths(folder: Path, image_path: Path) -> tuple[Path | None, Path |
 
 
 def has_cache(folder: Path, image_path: Path) -> bool:
-    npy, _ = mask_read_paths(folder, image_path)
-    return npy is not None
+    """Cheap existence probe for a cached mask.
+
+    Deliberately does NOT go through mask_read_paths(): that also resolves the
+    *meta* path (one or two extra stat calls) which this caller throws away, and
+    has_cache runs once per image on every sidebar refresh.
+    """
+    c_npy, _ = cache_paths(folder, image_path)
+    if c_npy.exists():
+        return True
+    return _sibling_paths(image_path)[0].exists()
 
 
 def cached_params(folder: Path, image_path: Path) -> dict | None:
@@ -242,6 +250,79 @@ def load_cached_masks(folder: Path, image_path: Path) -> np.ndarray | None:
 # ─────────────────────────────────────────────
 _MODEL_CACHE: dict = {}  # keyed by (model_name, use_gpu); switching toggles re-init.
 
+# Models the pinned Cellpose ships with. 4.1.1 has exactly one: the v3 zoo
+# (cyto/cyto2/cyto3/nuclei) is gone with Cellpose-SAM. 4.2 added cpdino,
+# cpdino-vitb and cpsam_v2, so this list is NOT authoritative — known_builtins()
+# asks the installed package before anything is refused. Hard-coding it would
+# make this app block models its own Cellpose supports.
+# Only what THIS pin (4.1.1) actually ships. Listing names a newer Cellpose has
+# (4.2 added cpsam_v2, cpdino, cpdino-vitb) would be worse than useless: the name
+# would pass our check, reach a Cellpose that does not know it, and be silently
+# replaced by cpsam — the very substitution this module exists to prevent.
+BUILTIN_MODELS: tuple[str, ...] = ("cpsam",)
+BUILTIN_MODEL = BUILTIN_MODELS[0]        # what an empty profile setting means
+
+_BUILTIN_CACHE: tuple[str, ...] | None = None
+
+
+def known_builtins(force: bool = False) -> tuple[str, ...]:
+    """Model names the INSTALLED Cellpose provides itself.
+
+    Authoritative — never merged with BUILTIN_MODELS, so upgrading Cellpose adds
+    its new models here without a code change, and *not* upgrading cannot make a
+    name pass that the installed package would then quietly swap for cpsam.
+
+    `force=False` (UI) only reads cellpose if it is already imported, so opening
+    a dialog never pays for the torch import; the pinned list is the fallback.
+    `force=True` (resolution, which is about to run inference anyway) imports it.
+    """
+    global _BUILTIN_CACHE
+    if _BUILTIN_CACHE is not None:
+        return _BUILTIN_CACHE
+    import sys as _sys
+    if not force and "cellpose.models" not in _sys.modules:
+        return BUILTIN_MODELS          # best guess, never used to allow a name
+    try:
+        from cellpose.models import MODEL_NAMES
+        names = tuple(MODEL_NAMES)
+    except Exception:
+        names = BUILTIN_MODELS
+    _BUILTIN_CACHE = names
+    return names
+
+
+class ModelUnavailable(RuntimeError):
+    """The profile asks for a model this machine has no file for.
+
+    Raised instead of letting Cellpose do what it does on its own: log
+    "pretrained model ... not found, using default model" and segment with cpsam
+    anyway. That silent substitution would mix two models' counts inside one
+    study, and the mask metadata would still claim the requested one.
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f"Cellpose model {name!r} is not registered on this machine")
+
+
+def resolve_model(name: str, registry: dict | None) -> str:
+    """Model NAME (as stored in a profile) -> what to hand Cellpose.
+
+    Returns "cpsam" for the built-in, otherwise the registered file path.
+    Raises ModelUnavailable if the name is unknown here or the file is gone.
+    """
+    if not name:
+        return BUILTIN_MODEL
+    path = (registry or {}).get(name)
+    if path and Path(path).is_file():
+        return path
+    # The installed package decides, not a list baked in here — that way an
+    # upgrade brings cpdino/cpsam_v2 along, and *not* upgrading refuses them
+    # instead of letting Cellpose substitute cpsam behind our back.
+    if name in known_builtins(force=True):
+        return name
+    raise ModelUnavailable(name)
+
 
 def detect_gpu_backend() -> str:
     """Returns 'mps', 'cuda', or 'cpu'. Used for the Settings info label and decision."""
@@ -267,9 +348,14 @@ def _get_model(model_name: str, use_gpu: bool):
     return _MODEL_CACHE[key]
 
 
-def run_cellpose(image: np.ndarray, params: CellposeParams, use_gpu: bool = True) -> np.ndarray:
-    """Run Cellpose synchronously. Returns int32 mask."""
-    model = _get_model(params.model, use_gpu)
+def run_cellpose(image: np.ndarray, params: CellposeParams, use_gpu: bool = True,
+                 model_registry: dict | None = None) -> np.ndarray:
+    """Run Cellpose synchronously. Returns int32 mask.
+
+    Raises ModelUnavailable before doing any work if the profile's model is not
+    resolvable here.
+    """
+    model = _get_model(resolve_model(params.model, model_registry), use_gpu)
     # Cellpose 4 returns (masks, flows, styles)
     out = model.eval(
         image,
@@ -288,6 +374,7 @@ def run_for_image(
     params: CellposeParams,
     force: bool = False,
     use_gpu: bool = True,
+    model_registry: dict | None = None,
 ) -> np.ndarray:
     """Run-or-cache. Returns the mask, writes <stem>_masks.npy + .json."""
     if not force:
@@ -296,7 +383,9 @@ def run_for_image(
             if cached is not None:
                 return cached
 
-    masks = run_cellpose(image, params, use_gpu=use_gpu)
+    resolved = resolve_model(params.model, model_registry)
+    masks = run_cellpose(image, params, use_gpu=use_gpu,
+                         model_registry=model_registry)
 
     npy, meta = cache_paths(folder, image_path)
     save_mask(npy, masks)
@@ -311,6 +400,10 @@ def run_for_image(
         json.dump(
             {
                 **asdict(params),
+                # What actually ran, not what was asked for — the two can only
+                # differ via a bug now that resolve_model() raises, but the
+                # provenance belongs in the file either way.
+                "model_file": resolved,
                 "cellpose_version": cp_version,
                 "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
             },

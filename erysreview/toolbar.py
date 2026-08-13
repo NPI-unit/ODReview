@@ -16,6 +16,29 @@ from typing import Callable
 
 from .persistence import AppSettings, TOOL_ADD, TOOL_REMOVE, TOOL_TYPE
 from .profile import ProfileData
+from .theme import font
+
+
+# Toolbar glyphs, in one place so they are a one-line change.
+#
+# Chosen for a bold, filled look. Two carry a known risk, accepted deliberately:
+# ⛶ (U+26F6, Misc Symbols) and ⬇ (U+2B07, Misc Symbols and Arrows) sit in blocks
+# whose Windows coverage is patchy, so Windows may substitute them from another
+# font — or show a box. That cannot be checked from macOS; verify on the first
+# Windows run and swap here if they look wrong. Safe equivalents of the same
+# weight: ▣ (U+25A3) and ⇩ (U+21E9), both in well-covered blocks.
+#
+# ◉ (U+25C9) rather than ◐: ◐ is already the sidebar's "in progress" status
+# icon (theme.STATUS_ICONS_3), and one glyph must not mean two things in one
+# window.
+GLYPHS = {
+    "resegment":  "⟳",     # U+27F3
+    "overlay":    "◉",     # U+25C9
+    "reset_zoom": "⛶",     # U+26F6  — see the note above
+    "undo":       "↺",     # U+21BA
+    "info":       "ⓘ",     # U+24D8
+    "export":     "⬇",     # U+2B07  — see the note above
+}
 
 
 class Toolbar(tk.Frame):
@@ -36,7 +59,11 @@ class Toolbar(tk.Frame):
         on_info: Callable[[], None],
         on_export: Callable[[], None],
     ):
-        super().__init__(parent, bg=palette["toolbar_bg"], height=52)
+        # No fixed height + pack_propagate(False) here: the row has to grow with
+        # its buttons. It used to be pinned at 52 px, which silently clipped the
+        # buttons the moment their padding grew for WCAG 2.5.5 (45 px tall
+        # buttons rendered as 36), and would clip again at 125/150 % text size.
+        super().__init__(parent, bg=palette["toolbar_bg"])
         self.P = palette
         self.S = strings
         self.settings = settings
@@ -50,7 +77,6 @@ class Toolbar(tk.Frame):
         self._cb_info = on_info
         self._cb_export = on_export
 
-        self.pack_propagate(False)
         self._configure_styles()
         self._build()
 
@@ -70,8 +96,8 @@ class Toolbar(tk.Frame):
             background=P["panel_bg"], foreground=P["fg"],
             bordercolor=P["border"], lightcolor=P["panel_bg"],
             darkcolor=P["panel_bg"], focuscolor=P["accent_primary"],
-            padding=(12, 6), relief="flat",
-            font=("TkDefaultFont", 11),
+            padding=(14, 10), relief="flat",   # a11y 2.5.5: taller hit target
+            font=font(11),
         )
         style.map(
             "ErysTool.TButton",
@@ -81,23 +107,28 @@ class Toolbar(tk.Frame):
         )
         style.configure(
             "ErysToolActive.TButton",
-            background=P["accent_primary"], foreground=P["fg_inverse"],
+            # a11y 1.4.3: white on the light blue accent is 2.75:1 in the dark
+            # theme — and this style marks the ACTIVE tool. fg_on_accent is
+            # per-theme (dark text on dark theme) and reaches 5.75:1.
+            background=P["accent_primary"], foreground=P["fg_on_accent"],
             bordercolor=P["accent_primary"], lightcolor=P["accent_primary"],
-            darkcolor=P["accent_primary"], padding=(12, 6), relief="flat",
-            font=("TkDefaultFont", 11, "bold"),
+            darkcolor=P["accent_primary"], padding=(14, 10), relief="flat",
+            focuscolor=P["fg_on_accent"],   # a11y 2.4.7
+            font=font(11, "bold"),
         )
         style.map(
             "ErysToolActive.TButton",
             background=[("active", P["accent_primary_hover"]),
                         ("pressed", P["accent_primary_press"])],
-            foreground=[("active", P["fg_inverse"])],
+            foreground=[("active", P["fg_on_accent"])],
         )
         style.configure(
             "ErysAction.TButton",
             background=P["panel_bg"], foreground=P["fg"],
             bordercolor=P["border"], lightcolor=P["panel_bg"],
-            darkcolor=P["panel_bg"], padding=(10, 6), relief="flat",
-            font=("TkDefaultFont", 11),
+            darkcolor=P["panel_bg"], padding=(12, 10), relief="flat",
+            focuscolor=P["accent_primary"],   # a11y 2.4.7
+            font=font(11),
         )
         style.map(
             "ErysAction.TButton",
@@ -107,10 +138,11 @@ class Toolbar(tk.Frame):
         )
         style.configure(
             "ErysPrimary.TButton",
-            background=P["accent_primary"], foreground=P["fg_inverse"],
+            background=P["accent_primary"], foreground=P["fg_on_accent"],
             bordercolor=P["accent_primary"], lightcolor=P["accent_primary"],
-            darkcolor=P["accent_primary"], padding=(12, 6), relief="flat",
-            font=("TkDefaultFont", 11, "bold"),
+            darkcolor=P["accent_primary"], padding=(14, 10), relief="flat",
+            focuscolor=P["fg_on_accent"],   # a11y 2.4.7
+            font=font(11, "bold"),
         )
         style.map(
             "ErysPrimary.TButton",
@@ -128,7 +160,7 @@ class Toolbar(tk.Frame):
             darkcolor=P["accent_primary"],
             arrowcolor=P["accent_primary"],
             selectbackground=P["accent_primary"],
-            selectforeground=P["fg_inverse"],
+            selectforeground=P["fg_on_accent"],
             padding=(8, 5),
         )
         style.map(
@@ -146,9 +178,63 @@ class Toolbar(tk.Frame):
     # ─────────────────────────────────────────
     # Build
     # ─────────────────────────────────────────
+    # Below this window width the labels drop and only the icons remain.
+    # Measured with the auto-switching disabled and the parameter banner filled
+    # (an empty banner collapses to 1 px and hides the real need): labels want
+    # 1866 px, glyphs alone 968 px. Without this the *last-packed* widgets get
+    # squeezed out — the Export button and the banner (UI-10). A maximised
+    # 1920 px screen keeps the labels, anything narrower goes glyph-only.
+    COMPACT_WIDTH = 1870
+
+    def _add_tip(self, widget: tk.Misc, text: str) -> None:
+        """Plain tooltip — the only label an icon-only button still carries."""
+        state: dict = {"win": None, "after": None}
+
+        def show():
+            state["after"] = None
+            if state["win"] is not None or not text:
+                return
+            # Flat chip: no relief, no border, roomy padding, inverted against
+            # the theme so it separates on its own. Rounded corners would need a
+            # transparent toplevel, and the attribute for that differs between
+            # macOS (-transparent) and Windows (-transparentcolor) — a rectangle
+            # is the shape that renders identically on both.
+            tw = tk.Toplevel(widget)
+            tw.wm_overrideredirect(True)
+            tw.configure(bg=self.P["tooltip_bg"])       # no 1 px system frame
+            tk.Label(tw, text=text,
+                     bg=self.P["tooltip_bg"], fg=self.P["tooltip_fg"],
+                     bd=0, highlightthickness=0, padx=10, pady=6,
+                     font=font(10)).pack()
+            tw.update_idletasks()
+            # Centred under the button rather than aligned to its left edge.
+            x = (widget.winfo_rootx() + widget.winfo_width() // 2
+                 - tw.winfo_reqwidth() // 2)
+            y = widget.winfo_rooty() + widget.winfo_height() + 6
+            tw.wm_geometry(f"+{x}+{y}")
+            state["win"] = tw
+
+        def enter(_e=None):
+            state["after"] = widget.after(450, show)
+
+        def leave(_e=None):
+            if state["after"] is not None:
+                widget.after_cancel(state["after"]); state["after"] = None
+            if state["win"] is not None:
+                state["win"].destroy(); state["win"] = None
+
+        widget.bind("<Enter>", enter, add="+")
+        widget.bind("<Leave>", leave, add="+")
+        # Keyboard users get the same hint when the button takes focus.
+        widget.bind("<FocusIn>", enter, add="+")
+        widget.bind("<FocusOut>", leave, add="+")
+
     def _build(self) -> None:
         S = self.S
         P = self.P
+        # (widget, compact text, full text) for the width-driven relabelling
+        self._labels: list[tuple[ttk.Button, str, str]] = []
+        self._compact: bool | None = None
 
         # Tool palette
         self.tool_buttons: dict[str, ttk.Button] = {}
@@ -157,13 +243,18 @@ class Toolbar(tk.Frame):
             (TOOL_REMOVE, "tool_remove"),
             (TOOL_TYPE, "tool_type"),
         ], start=1):
+            full = f"{i}   {S[label_key]}"
             b = ttk.Button(
-                self, text=f"{i}   {S[label_key]}",
+                self, text=full,
                 style="ErysTool.TButton",
                 command=lambda k=key: self._cb_tool(k),
             )
             b.pack(side="left", padx=(6 if i == 1 else 3, 3), pady=8)
             self.tool_buttons[key] = b
+            # Compact keeps the shortcut digit — it is the shortest possible
+            # label and doubles as the hotkey hint.
+            self._labels.append((b, str(i), full))
+            self._add_tip(b, f"{S[label_key]}  ({i})")
 
         # Type dropdown
         self.type_var = tk.StringVar(value=self._type_display_name(self.profile.active_type_key))
@@ -178,60 +269,109 @@ class Toolbar(tk.Frame):
                  ).pack(side="left", padx=6, pady=12)
 
         # Action buttons
-        self.btn_resegment = ttk.Button(
-            self, text="⟳   " + S["tool_resegment"],
-            style="ErysAction.TButton", command=self._cb_resegment,
-        )
-        self.btn_resegment.pack(side="left", padx=3, pady=8)
-        self.btn_overlay = ttk.Button(
-            self, text="⊙   " + S["tool_overlay"],
-            style="ErysAction.TButton", command=self._cb_overlay,
-        )
-        self.btn_overlay.pack(side="left", padx=3, pady=8)
-        self.btn_reset = ttk.Button(
-            self, text="⌂   " + S["tool_reset_zoom"],
-            style="ErysAction.TButton", command=self._cb_reset,
-        )
-        self.btn_reset.pack(side="left", padx=3, pady=8)
-        self.btn_undo = ttk.Button(
-            self, text="↶   " + S["tool_undo"],
-            style="ErysAction.TButton", command=self._cb_undo,
-        )
-        self.btn_undo.pack(side="left", padx=3, pady=8)
-        self.btn_info = ttk.Button(
-            self, text="ⓘ   " + S["tool_info"],
-            style="ErysAction.TButton", command=self._cb_info,
-        )
-        self.btn_info.pack(side="left", padx=3, pady=8)
+        actions = [
+            ("btn_resegment", GLYPHS["resegment"],  "tool_resegment",  self._cb_resegment),
+            ("btn_overlay",   GLYPHS["overlay"],    "tool_overlay",    self._cb_overlay),
+            ("btn_reset",     GLYPHS["reset_zoom"], "tool_reset_zoom", self._cb_reset),
+            ("btn_undo",      GLYPHS["undo"],       "tool_undo",       self._cb_undo),
+            ("btn_info",      GLYPHS["info"],       "tool_info",       self._cb_info),
+        ]
+        for attr, glyph, key, cmd in actions:
+            full = f"{glyph}   {S[key]}"
+            b = ttk.Button(self, text=full, style="ErysAction.TButton", command=cmd)
+            b.pack(side="left", padx=3, pady=8)
+            setattr(self, attr, b)
+            self._labels.append((b, glyph, full))
+            self._add_tip(b, S[key])
 
         # Spacer
         spacer = tk.Frame(self, bg=P["toolbar_bg"])
         spacer.pack(side="left", fill="x", expand=True)
 
         # Primary CTA
+        export_full = f"{GLYPHS['export']}   " + S["tool_export"]
         self.btn_export = ttk.Button(
-            self, text="↓   " + S["tool_export"],
+            self, text=export_full,
             style="ErysPrimary.TButton", command=self._cb_export,
         )
         self.btn_export.pack(side="right", padx=(3, 10), pady=8)
+        self._labels.append((self.btn_export, GLYPHS["export"], export_full))
+        self._add_tip(self.btn_export, S["tool_export"])
 
         # Param mismatch banner
         self.param_banner = tk.Label(
             self, text="", bg=P["toolbar_bg"], fg=P["accent_warn"],
-            font=("TkDefaultFont", 10, "italic"), cursor="hand2",
+            font=font(10, "italic"), cursor="hand2",
         )
         self.param_banner.pack(side="right", padx=8)
         self.param_banner.bind("<Button-1>", lambda e: self._cb_resegment())
 
         # Initial highlight from current setting
         self.set_active_tool(self.settings.active_tool)
+        self.bind("<Configure>", self._on_configure)
+
+    # ─────────────────────────────────────────
+    # Width-driven relabelling
+    # ─────────────────────────────────────────
+    # Hysteresis band. Relabelling changes the toolbar's natural width, so a
+    # single threshold can flip back and forth on its own <Configure> events;
+    # switching back to full labels only well above the shrink point stops that.
+    # Small enough that a 1920 px window comes back to labels (1870+30).
+    COMPACT_HYSTERESIS = 30
+
+    def _on_configure(self, evt) -> None:
+        if evt.width < 50:
+            return                    # not mapped yet — width is meaningless
+        if self._compact:
+            if evt.width > self.COMPACT_WIDTH + self.COMPACT_HYSTERESIS:
+                self.set_compact(False)
+        elif evt.width < self.COMPACT_WIDTH:
+            self.set_compact(True)
+
+    def set_compact(self, compact: bool) -> None:
+        """Drop the button labels when the window is too narrow for them.
+
+        Every action stays visible and one click away — only its wording moves
+        into the tooltip. Without this the widgets packed last (Export, the
+        parameter banner) simply vanish off the right edge.
+        """
+        if compact == self._compact:
+            return
+        self._compact = compact
+        # The parameter banner carries the longest text in the row — unwrapped
+        # it alone adds 236 px, which is what pushed the row past its own 900 px
+        # minimum. Truncating a warning is the worst option, so it always wraps;
+        # the toolbar sizes to content and simply gets a little taller.
+        try:
+            self.param_banner.configure(wraplength=170 if compact else 260)
+        except (AttributeError, tk.TclError):
+            pass
+        # The type combobox is the single widest item in the row; letting it
+        # shrink with the labels is what makes the 900 px minimum reachable.
+        try:
+            self.type_combo.configure(width=12 if compact else 22)
+        except (AttributeError, tk.TclError):
+            pass
+        for widget, short, full in self._labels:
+            try:
+                # `width` matters: a ttk.Button keeps a ~144 px minimum on its
+                # own, so shortening only the text saves almost nothing. width
+                # is in characters; 0 restores the automatic sizing.
+                # `width` matters: a ttk.Button keeps a ~144 px minimum on its
+                # own, so shortening only the text saves almost nothing. width
+                # is in characters; 0 restores the automatic sizing.
+                widget.configure(text=short if compact else full,
+                                 width=3 if compact else 0)
+            except tk.TclError:
+                pass
 
     # ─────────────────────────────────────────
     # Public API
     # ─────────────────────────────────────────
     def set_active_tool(self, key: str) -> None:
         for k, btn in self.tool_buttons.items():
-            btn.configure(style="ErysToolActive.TButton" if k == key else "ErysTool.TButton")
+            btn.configure(
+                style="ErysToolActive.TButton" if k == key else "ErysTool.TButton")
 
     def set_param_mismatch(self, message: str | None) -> None:
         self.param_banner.config(text=message or "")

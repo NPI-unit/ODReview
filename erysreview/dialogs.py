@@ -11,10 +11,14 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, simpledialog, ttk
 from typing import Callable, Optional
 
-from .cellpose_runner import detect_gpu_backend, has_cache, load_image, run_for_image
+from .cellpose_runner import (
+    BUILTIN_MODEL, detect_gpu_backend, has_cache, known_builtins, load_image,
+    run_for_image,
+)
 from .persistence import AppSettings, CellposeParams, TypeDef
+from .theme import FONT_SCALE_CHOICES, OUTLINE_ORDER, font
 from .profile import (
-    DuplicateDetection, ProfileData,
+    ProfileData, SizeFilter,
     delete_profile, ensure_default_profile, list_profiles, load_profile, save_profile,
 )
 
@@ -53,44 +57,75 @@ def _sanitize_key(name: str, taken: set[str]) -> str:
 
 
 # ─────────────────────────────────────────────
-# Cellpose spinner
+# Busy modal (Cellpose inference, overview build, …)
 # ─────────────────────────────────────────────
-class CellposeSpinner:
-    def __init__(self, parent: tk.Misc, image_name: str, strings: dict):
-        self.parent = parent; self.image_name = image_name; self.S = strings
+class BusyDialog:
+    """Modal "please wait" window for a blocking job about to run on a worker
+    thread via run_in_thread_pumping().
+
+    Indeterminate on purpose: it reports "still working", not how far along — a
+    real progress bar needs the worker to report steps, which is tracked as UI-4
+    in docs/consistency-audit.md.
+
+    **Escape / the close button set `cancelled`** and say so on screen. They do
+    NOT interrupt the worker: neither Cellpose inference nor a workbook build
+    can be stopped mid-call, and pretending otherwise would be a lie. What they
+    remove is the dead end — previously WM_DELETE_WINDOW was bound to a no-op
+    and no key did anything, so a hung worker meant force-quitting the app
+    (WCAG 2.1.2). Callers decide what a requested cancel means for them.
+    """
+
+    def __init__(self, parent: tk.Misc, title: str, message: str,
+                 strings: dict | None = None, submessage: str = ""):
+        self.parent = parent
+        self.title = title
+        self.message = message
+        self.submessage = submessage
+        self.S = strings or {}
+        self.cancelled = False
         self.top: tk.Toplevel | None = None
-        self._dot_count = 0
+        self._dots = 0
         self._after_id: str | None = None
 
-    def __enter__(self) -> "CellposeSpinner":
+    def __enter__(self) -> "BusyDialog":
         self.top = tk.Toplevel(self.parent)
-        self.top.title(self.S["cp_running"])
+        self.top.title(self.title)
         self.top.transient(self.parent)
         self.top.resizable(False, False)
-        self.top.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.top.protocol("WM_DELETE_WINDOW", self.request_cancel)
+        self.top.bind("<Escape>", self.request_cancel)
         frm = tk.Frame(self.top, padx=24, pady=20); frm.pack()
-        self._lbl_main = tk.Label(frm, text=self.S["cp_running"],
-                                  font=("TkDefaultFont", 13, "bold"))
-        self._lbl_main.pack(pady=(0, 8))
-        tk.Label(frm, text=self.S["cp_running_image"].format(name=self.image_name),
-                 font=("TkDefaultFont", 11)).pack()
-        tk.Label(frm, text=self.S["cp_running_hint"], fg="#777",
-                 font=("TkDefaultFont", 10)).pack(pady=(4, 0))
+        self._lbl = tk.Label(frm, text=self.message, font=font(13, "bold"))
+        self._lbl.pack(pady=(0, 8))
+        if self.submessage:
+            tk.Label(frm, text=self.submessage, font=font(11)).pack()
+        self._hint = tk.Label(frm, text=self.S.get("busy_cancel_hint", ""),
+                              fg="#777", font=font(10))
+        self._hint.pack(pady=(6, 0))
         _center_on_parent(self.top, self.parent)
         self.top.grab_set()
+        self.top.focus_set()          # so Escape reaches this window
         self._tick(); self.top.update()
         return self
 
+    def request_cancel(self, _evt=None) -> None:
+        if self.cancelled or self.top is None:
+            return
+        self.cancelled = True
+        try:
+            self._hint.config(text=self.S.get("busy_cancelling", ""))
+        except tk.TclError:
+            pass
+
     def _tick(self) -> None:
-        if self.top is None: return
-        self._dot_count = (self._dot_count + 1) % 4
-        dots = "." * self._dot_count + " " * (3 - self._dot_count)
-        self._lbl_main.config(text=f"{self.S['cp_running']}{dots}")
-        # update_idletasks (not update): the inference runs in a worker thread
-        # while run_in_thread_pumping() pumps the full event loop, so here we
-        # only need a redraw — a nested full update() would be re-entrant.
-        try: self.top.update_idletasks()
-        except tk.TclError: return
+        if self.top is None:
+            return
+        self._dots = (self._dots + 1) % 4
+        self._lbl.config(text=f"{self.message}{'.' * self._dots}{' ' * (3 - self._dots)}")
+        try:
+            self.top.update_idletasks()      # not update() — the pump owns that
+        except tk.TclError:
+            return
         self._after_id = self.top.after(350, self._tick)
 
     def __exit__(self, *exc):
@@ -101,6 +136,19 @@ class CellposeSpinner:
             try: self.top.grab_release()
             except tk.TclError: pass
             self.top.destroy(); self.top = None
+
+
+class CellposeSpinner(BusyDialog):
+    """The busy modal, worded for a single segmentation run."""
+
+    def __init__(self, parent: tk.Misc, image_name: str, strings: dict):
+        super().__init__(
+            parent,
+            title=strings["cp_running"],
+            message=strings["cp_running"],
+            strings=strings,
+            submessage=strings["cp_running_image"].format(name=image_name),
+        )
 
 
 def run_in_thread_pumping(widget: tk.Misc, work_fn: Callable):
@@ -186,7 +234,7 @@ def profile_manager_dialog(parent: tk.Misc, strings: dict) -> ProfileData | None
     top.after(120, lambda: top.attributes("-topmost", False))
     top.focus_force()
 
-    tk.Label(top, text=S["pm_existing"], font=("TkDefaultFont", 11, "bold"),
+    tk.Label(top, text=S["pm_existing"], font=font(11, "bold"),
              anchor="w").pack(fill="x", padx=14, pady=(14, 4))
 
     listbox_frame = tk.Frame(top); listbox_frame.pack(fill="both", expand=True, padx=14)
@@ -268,7 +316,8 @@ def profile_manager_dialog(parent: tk.Misc, strings: dict) -> ProfileData | None
 # ─────────────────────────────────────────────
 # Profile Editor — replaces the old "Settings" study-fields dialog
 # ─────────────────────────────────────────────
-def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
+def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict,
+                          registry: dict | None = None
                           ) -> ProfileData | None:
     """Edit the active profile. Returns the new ProfileData or None on cancel."""
     S = strings
@@ -366,7 +415,7 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     role_vars: list[tk.StringVar] = []
 
     simple_preview = tk.Label(tab_r, text="", anchor="w", justify="left",
-                              font=("TkDefaultFont", 9))
+                              font=font(9))
     simple_preview.pack(anchor="w", padx=28, pady=(6, 8))
 
     def _selected_delims() -> list[str]:
@@ -421,7 +470,7 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     pattern_var = tk.StringVar(value=working.image_pattern)
     tk.Entry(tab_r, textvariable=pattern_var, width=72).pack(anchor="w", padx=14)
     tk.Label(tab_r, text=S["pe_pattern_help"], fg="#666", wraplength=620, justify="left",
-             font=("TkDefaultFont", 9)).pack(anchor="w", padx=14, pady=(4, 4))
+             font=font(9)).pack(anchor="w", padx=14, pady=(4, 4))
     test_result = tk.Label(tab_r, text="", fg="#0a0", anchor="w", justify="left",
                             font=("Menlo", 10))
     test_result.pack(anchor="w", padx=14, pady=(2, 0))
@@ -454,6 +503,24 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     flow_var = tk.DoubleVar(value=working.cellpose.flow_threshold)
     cellprob_var = tk.DoubleVar(value=working.cellpose.cellprob_threshold)
     use_gpu_var = tk.BooleanVar(value=working.use_gpu)
+    # Model choice. The profile stores a NAME; which file that name points to is
+    # a per-machine setting (Einstellungen -> Modelle), because a profile travels
+    # inside share packages and an absolute path would be meaningless there.
+    builtins = list(known_builtins())
+    known = builtins + sorted(k for k in (registry or {}) if k not in builtins)
+    current = working.cellpose.model or BUILTIN_MODEL
+    if current not in known:
+        known.append(current)          # keep an unavailable name visible, not silently reset
+    tk.Label(tab_cp, text=S["settings_cp_model"]).grid(row=row, column=0, sticky="w", **pad)
+    model_var = tk.StringVar(value=current)
+    ttk.Combobox(tab_cp, textvariable=model_var, values=known, state="readonly",
+                 width=24).grid(row=row, column=1, sticky="w", **pad); row += 1
+    missing = current not in builtins and current not in (registry or {})
+    tk.Label(tab_cp, fg="#B83A3A" if missing else "#888", justify="left", wraplength=430,
+             text=(S["settings_cp_model_missing"].format(name=current) if missing
+                   else S["settings_cp_model_hint"])
+             ).grid(row=row, column=0, columnspan=2, sticky="w", **pad); row += 1
+
     tk.Label(tab_cp, text=S["settings_cp_diameter"]).grid(row=row, column=0, sticky="w", **pad)
     tk.Spinbox(tab_cp, from_=5.0, to=500.0, increment=1.0, textvariable=diam_var, width=10
                ).grid(row=row, column=1, sticky="w", **pad); row += 1
@@ -468,7 +535,7 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     tk.Checkbutton(tab_cp, text=S["settings_use_gpu"], variable=use_gpu_var
                    ).grid(row=row, column=0, columnspan=2, sticky="w", padx=16); row += 1
     tk.Label(tab_cp, text=S["settings_gpu_detected"].format(backend=detect_gpu_backend().upper()),
-             fg="#888", font=("TkDefaultFont", 9)
+             fg="#888", font=font(9)
              ).grid(row=row, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 6))
 
     # ===== Tab: Types =====
@@ -523,9 +590,9 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     from .theme import COLOR_SCHEMES, apply_scheme_to_types
     scheme_frame = tk.Frame(left); scheme_frame.pack(fill="x", pady=(10, 0))
     tk.Label(scheme_frame, text=S["pe_color_scheme"], anchor="w",
-             font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
+             font=font(9, "bold")).pack(anchor="w")
     tk.Label(scheme_frame, text=S["pe_color_scheme_help"], anchor="w",
-             fg="#666", wraplength=440, font=("TkDefaultFont", 9),
+             fg="#666", wraplength=440, font=font(9),
              justify="left").pack(anchor="w", pady=(0, 4))
     scheme_label_key = "label_de" if S.get("settings_language") == "Sprache" else "label_de"
     # Build display-name → key mapping
@@ -569,6 +636,17 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     tk.Button(color_frame, text=S["settings_color_pick"], command=pick_color
               ).pack(side="left")
 
+    # Contour per type — the non-colour channel for this type (WCAG 1.4.1).
+    tk.Label(right, text=S["pe_type_outline"], anchor="w").pack(fill="x")
+    outline_var_t = tk.StringVar()
+    outline_labels = {k: S[f"pe_outline_{k or 'none'}"] for k in OUTLINE_ORDER}
+    label_to_key = {v: k for k, v in outline_labels.items()}
+    ttk.Combobox(right, textvariable=outline_var_t, state="readonly",
+                 values=[outline_labels[k] for k in OUTLINE_ORDER]
+                 ).pack(fill="x", pady=(2, 4))
+    tk.Label(right, text=S["pe_type_outline_hint"], fg="#888", justify="left",
+             wraplength=250, font=font(9)).pack(fill="x", pady=(0, 8))
+
     def save_current():
         i = type_state["selected_idx"]
         if not (0 <= i < len(type_state["types"])): return
@@ -578,6 +656,7 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
         if td.i18n_key and td.name != S.get(td.i18n_key, ""):
             td.i18n_key = None
         td.color = color_var_t.get()
+        td.outline = label_to_key.get(outline_var_t.get(), "")
         _populate(i)
     tk.Button(right, text=S["settings_type_save"], command=save_current
               ).pack(fill="x", pady=(8, 0))
@@ -597,6 +676,8 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
         td = type_state["types"][idx]
         disp = S.get(td.i18n_key, td.name) if td.i18n_key else (td.name or td.key)
         name_var_t.set(disp); color_var_t.set(td.color); color_swatch.configure(bg=td.color)
+        outline_var_t.set(outline_labels.get(getattr(td, "outline", "") or "",
+                                             outline_labels[""]))
 
     def _on_type_tree_select(_e):
         sel = type_tree.selection()
@@ -605,20 +686,37 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
     type_tree.bind("<<TreeviewSelect>>", _on_type_tree_select)
     _populate(0)
 
-    # ===== Tab: Duplicates =====
-    tab_d = tk.Frame(nb); nb.add(tab_d, text=S["pe_section_dups"])
-    dup_enabled_var = tk.BooleanVar(value=working.duplicate_detection.enabled)
-    dup_thresh_var = tk.DoubleVar(value=working.duplicate_detection.threshold_factor)
-    dup_policy_var = tk.StringVar(value=working.duplicate_detection.policy)
-    tk.Checkbutton(tab_d, text=S["pe_dup_enabled"], variable=dup_enabled_var
+    # ===== Tab: Size filter =====
+    tab_d = tk.Frame(nb); nb.add(tab_d, text=S["pe_section_size"])
+    sf_enabled_var = tk.BooleanVar(value=working.size_filter.enabled)
+    sf_min_var = tk.DoubleVar(value=working.size_filter.min_factor)
+    sf_max_var = tk.DoubleVar(value=working.size_filter.max_factor)
+    tk.Checkbutton(tab_d, text=S["pe_size_enabled"], variable=sf_enabled_var
                    ).grid(row=0, column=0, columnspan=2, sticky="w", padx=14, pady=8)
-    tk.Label(tab_d, text=S["pe_dup_threshold"]).grid(row=1, column=0, sticky="w", padx=14, pady=4)
-    tk.Spinbox(tab_d, from_=0.1, to=2.0, increment=0.05, textvariable=dup_thresh_var, width=10
+    tk.Label(tab_d, text=S["pe_size_min"]).grid(row=1, column=0, sticky="w", padx=14, pady=4)
+    tk.Spinbox(tab_d, from_=0.05, to=0.95, increment=0.05, textvariable=sf_min_var, width=10
                ).grid(row=1, column=1, sticky="w", padx=4, pady=4)
-    tk.Label(tab_d, text=S["pe_dup_policy"]).grid(row=2, column=0, sticky="w", padx=14, pady=4)
-    ttk.Combobox(tab_d, textvariable=dup_policy_var, state="readonly", width=22,
-                 values=[("remove_smaller"), ("remove_both")]
-                 ).grid(row=2, column=1, sticky="w", padx=4, pady=4)
+    tk.Label(tab_d, text=S["pe_size_max"]).grid(row=2, column=0, sticky="w", padx=14, pady=4)
+    tk.Spinbox(tab_d, from_=1.05, to=5.0, increment=0.05, textvariable=sf_max_var, width=10
+               ).grid(row=2, column=1, sticky="w", padx=4, pady=4)
+    tk.Label(tab_d, text=S["pe_size_hint"], fg="#888", justify="left", wraplength=460
+             ).grid(row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(10, 4))
+
+    ttk.Separator(tab_d, orient="horizontal").grid(row=4, column=0, columnspan=2,
+                                                   sticky="ew", padx=14, pady=12)
+    outlines_var = tk.BooleanVar(value=working.type_outlines_enabled)
+    tk.Checkbutton(tab_d, text=S["pe_outlines_enabled"], variable=outlines_var
+                   ).grid(row=5, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 2))
+    tk.Label(tab_d, text=S["pe_outlines_hint"], fg="#888", justify="left", wraplength=460
+             ).grid(row=6, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 10))
+    tk.Label(tab_d, text=S["pe_overlay_alpha"]).grid(row=7, column=0, sticky="w",
+                                                     padx=14, pady=4)
+    alpha_var = tk.DoubleVar(value=working.overlay_alpha)
+    tk.Spinbox(tab_d, from_=0.15, to=1.0, increment=0.05, textvariable=alpha_var,
+               width=10).grid(row=7, column=1, sticky="w", padx=4, pady=4)
+    tk.Label(tab_d, text=S["pe_overlay_alpha_hint"], fg="#888", justify="left",
+             wraplength=460).grid(row=8, column=0, columnspan=2, sticky="w",
+                                  padx=14, pady=(0, 4))
 
     # ===== Tab: Appearance =====
     tab_a = tk.Frame(nb); nb.add(tab_a, text=S["pe_section_appear"])
@@ -676,16 +774,20 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
             flow_threshold=_clampf(flow_var, 0.0, 3.0, working.cellpose.flow_threshold),
             cellprob_threshold=_clampf(
                 cellprob_var, -6.0, 6.0, working.cellpose.cellprob_threshold),
-            model=working.cellpose.model,
+            model=model_var.get() or BUILTIN_MODEL,
         ),
         use_gpu=bool(use_gpu_var.get()),
         margin_n=int(margin_var.get()),
         show_margin_overlay=bool(show_margin_var.get()),
-        duplicate_detection=DuplicateDetection(
-            enabled=bool(dup_enabled_var.get()),
-            threshold_factor=float(dup_thresh_var.get()),
-            policy=str(dup_policy_var.get()),
+        size_filter=SizeFilter(
+            enabled=bool(sf_enabled_var.get()),
+            # Clamped like the Cellpose params (EH-3): a typed-in nonsense value
+            # must not silently exclude every cell in the study.
+            min_factor=_clampf(sf_min_var, 0.05, 0.95, working.size_filter.min_factor),
+            max_factor=_clampf(sf_max_var, 1.05, 5.0, working.size_filter.max_factor),
         ),
+        overlay_alpha=_clampf(alpha_var, 0.15, 1.0, working.overlay_alpha),
+        type_outlines_enabled=bool(outlines_var.get()),
         sidebar_open_groups=working.sidebar_open_groups,
         details_collapsed=working.details_collapsed,
         recent_folders=working.recent_folders,
@@ -698,6 +800,78 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict
 # ─────────────────────────────────────────────
 # App-Tab Settings (globals only)
 # ─────────────────────────────────────────────
+def model_registry_dialog(parent: tk.Misc, registry: dict, strings: dict) -> dict | None:
+    """Map model names to files ON THIS MACHINE. Returns the new mapping, or None.
+
+    Cellpose 4 ships exactly one model (cpsam); everything else is a file the
+    user trained or downloaded. Naming those files means a profile can ask for
+    "the TRIBAL model" without carrying a path that only exists on one computer.
+    """
+    S = strings
+    reg = dict(registry or {})
+    result: dict = {"saved": False}
+    top = tk.Toplevel(parent); top.title(S["models_title"])
+    top.transient(parent); top.grab_set(); top.minsize(560, 320)
+    frm = tk.Frame(top, padx=14, pady=14); frm.pack(fill="both", expand=True)
+    tk.Label(frm, text=S["models_hint"], justify="left", wraplength=520, fg="#888"
+             ).pack(anchor="w", pady=(0, 10))
+
+    cols = ("name", "path")
+    tree = ttk.Treeview(frm, columns=cols, show="headings", height=8)
+    tree.heading("name", text=S["models_col_name"])
+    tree.heading("path", text=S["models_col_file"])
+    tree.column("name", width=150, stretch=False)
+    tree.column("path", width=380)
+    tree.pack(fill="both", expand=True)
+
+    def refresh():
+        for iid in tree.get_children():
+            tree.delete(iid)
+        for bi in known_builtins():
+            tree.insert("", "end", iid=bi, values=(bi, S["models_builtin"]))
+        for name in sorted(reg):
+            missing = "" if Path(reg[name]).is_file() else f"  ({S['models_file_missing']})"
+            tree.insert("", "end", iid=name, values=(name, reg[name] + missing))
+
+    def on_add():
+        path = filedialog.askopenfilename(
+            parent=top, title=S["models_pick_file"],
+            filetypes=[(S["models_filetype"], "*"), ])
+        if not path:
+            return
+        suggested = Path(path).stem
+        name = simpledialog.askstring(S["models_title"], S["models_name_prompt"],
+                                      initialvalue=suggested, parent=top)
+        if not name:
+            return
+        name = name.strip()
+        if not name or name in known_builtins():
+            info_dialog(top, S["models_title"], S["models_name_reserved"])
+            return
+        reg[name] = path
+        refresh()
+
+    def on_remove():
+        sel = tree.selection()
+        if not sel or sel[0] in known_builtins():
+            return
+        reg.pop(sel[0], None)
+        refresh()
+
+    btns = tk.Frame(frm); btns.pack(fill="x", pady=(10, 0))
+    tk.Button(btns, text=S["models_add"], command=on_add).pack(side="left")
+    tk.Button(btns, text=S["models_remove"], command=on_remove).pack(side="left", padx=6)
+    tk.Button(btns, text=S["settings_save"], width=12,
+              command=lambda: (result.__setitem__("saved", True), top.destroy())
+              ).pack(side="right", padx=4)
+    tk.Button(btns, text=S["settings_cancel"], width=12,
+              command=top.destroy).pack(side="right", padx=4)
+    top.bind("<Escape>", lambda _e: top.destroy())
+    refresh()
+    _center_on_parent(top, parent); parent.wait_window(top)
+    return reg if result["saved"] else None
+
+
 def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
                     ) -> tuple[Optional[AppSettings], bool, bool]:
     """Returns (new_settings_or_None, language_changed, theme_changed)."""
@@ -720,6 +894,18 @@ def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
     theme_var = tk.StringVar(value=theme_disp_inv.get(settings.theme, S["settings_theme_dark"]))
     ttk.Combobox(top, textvariable=theme_var,
                  values=[S["settings_theme_dark"], S["settings_theme_light"]],
+                 state="readonly", width=10
+                 ).grid(row=row, column=1, sticky="w", **pad)
+    row += 1
+
+    # WCAG 1.4.4 — the user must be able to enlarge the text. Applied at
+    # startup by theme.set_font_scale(), so it needs a restart like the theme.
+    tk.Label(top, text=S["settings_font_scale"]).grid(row=row, column=0, sticky="w", **pad)
+    font_disp = {S[f"settings_font_{int(v * 100)}"]: v for v in FONT_SCALE_CHOICES}
+    font_disp_inv = {v: k for k, v in font_disp.items()}
+    font_var = tk.StringVar(value=font_disp_inv.get(
+        settings.font_scale, S["settings_font_100"]))
+    ttk.Combobox(top, textvariable=font_var, values=list(font_disp.keys()),
                  state="readonly", width=10
                  ).grid(row=row, column=1, sticky="w", **pad)
     row += 1
@@ -750,8 +936,13 @@ def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
         active_tool=settings.active_tool,
         last_profile_name=settings.last_profile_name,
         reviewer_name=reviewer_var.get().strip(),
+        font_scale=font_disp.get(font_var.get(), settings.font_scale),
     )
-    return (new, new_lang != settings.language, new_theme != settings.theme)
+    # A font-size change needs the same restart notice as a theme change, so it
+    # rides on the third flag rather than adding a fourth to every caller.
+    needs_restart = (new_theme != settings.theme
+                     or new.font_scale != settings.font_scale)
+    return (new, new_lang != settings.language, needs_restart)
 
 
 # ─────────────────────────────────────────────
@@ -781,9 +972,44 @@ def overview_preview_dialog(parent: tk.Misc, header: list, rows: list,
     if len(rows) > max_rows:
         tk.Label(frm, text=S["overview_preview_more"].format(n=len(rows) - max_rows),
                  fg="#888").pack(anchor="w", pady=(4, 0))
-    tk.Button(frm, text="OK", width=12, command=top.destroy).pack(pady=(8, 0))
+    btn_row = tk.Frame(frm); btn_row.pack(pady=(8, 0))
+    # The workbook was written to `path` moments ago, so "save a copy" is a copy —
+    # no need to rebuild it here (the Auswertung menu entry does that for the
+    # any-time case).
+    tk.Button(btn_row, text=S["overview_save_as"], width=18,
+              command=lambda: save_overview_copy(top, Path(path), S)
+              ).pack(side="left", padx=6)
+    tk.Button(btn_row, text="OK", width=12, command=top.destroy).pack(side="left", padx=6)
     top.bind("<Escape>", lambda e: top.destroy())
     _center_on_parent(top, parent); parent.wait_window(top)
+
+
+def ask_overview_destination(parent: tk.Misc, strings: dict) -> Path | None:
+    """Save-as dialog for the overview workbook. None if the user cancels."""
+    chosen = filedialog.asksaveasfilename(
+        parent=parent,
+        title=strings["overview_save_as"],
+        initialfile="Uebersicht.xlsx",
+        defaultextension=".xlsx",
+        filetypes=[(strings["overview_filetype"], "*.xlsx")],
+    )
+    return Path(chosen) if chosen else None
+
+
+def save_overview_copy(parent: tk.Misc, src: Path, strings: dict) -> None:
+    """Copy an already-written workbook to a user-chosen location."""
+    dest = ask_overview_destination(parent, strings)
+    if dest is None:
+        return
+    import shutil
+    try:
+        shutil.copy2(src, dest)
+    except OSError as e:
+        info_dialog(parent, strings["overview_save_as"],
+                    strings["overview_save_err"].format(err=e))
+        return
+    info_dialog(parent, strings["overview_save_as"],
+                strings["overview_save_ok"].format(path=dest))
 
 
 def batch_dialog(
@@ -792,6 +1018,7 @@ def batch_dialog(
     image_status_fn: Callable[[Path], str],
     on_done: Callable[[], None],
     grouped=None,
+    model_registry: dict | None = None,
 ) -> None:
     S = strings
     from .grouping import (ImageGroupInfo, UNGROUPED_TIMEPOINT, UNGROUPED_SUBJECT)
@@ -993,7 +1220,7 @@ def batch_dialog(
     tk.Checkbutton(opts, text=S["batch_keep_awake"], variable=awake_var).pack(side="left", padx=(16, 0))
 
     footer = tk.Frame(container); footer.pack(fill="x", pady=(8, 0))
-    footer_left = tk.Label(footer, text="", fg="#888", anchor="w", font=("TkDefaultFont", 10))
+    footer_left = tk.Label(footer, text="", fg="#888", anchor="w", font=font(10))
     footer_left.pack(side="left", fill="x", expand=True)
     tk.Button(footer, text=S["batch_cancel"], width=12, command=top.destroy).pack(side="right", padx=4)
     start_btn = tk.Button(footer, text=S["batch_start"], width=12)
@@ -1007,7 +1234,17 @@ def batch_dialog(
     _rebuild_tree(); _refresh_footer()
 
     # ── Run machinery ──
-    state = {"cancel": False}
+    state = {"cancel": False, "running": False}
+
+    def _on_escape(_evt=None):
+        """a11y 2.1.2 — Escape must always lead out of the modal. While a batch
+        is running it requests the same cancel the button does (the loop stops
+        after the current image); before it starts it just closes the dialog."""
+        if state["running"]:
+            state["cancel"] = True
+        else:
+            top.destroy()
+    top.bind("<Escape>", _on_escape)
 
     def _start_awake():
         # Returns an opaque token for _stop_awake, or None. Cross-platform:
@@ -1046,10 +1283,11 @@ def batch_dialog(
             pass
 
     def _progress_ui(maximum):
+        state["running"] = True     # from here Escape means "cancel the run"
         for w in container.winfo_children(): w.destroy()
         tk.Label(container, text=S["batch_progress_title"],
-                 font=("TkDefaultFont", 13, "bold")).pack(pady=(0, 10))
-        lbl = tk.Label(container, text="", font=("TkDefaultFont", 11)); lbl.pack(pady=(0, 6))
+                 font=font(13, "bold")).pack(pady=(0, 10))
+        lbl = tk.Label(container, text="", font=font(11)); lbl.pack(pady=(0, 6))
         pb = ttk.Progressbar(container, orient="horizontal", mode="determinate",
                              length=460, maximum=max(1, maximum))
         pb.pack(pady=(0, 14))
@@ -1062,7 +1300,7 @@ def batch_dialog(
     def _summary(done, skipped, errors, extra=""):
         for w in container.winfo_children(): w.destroy()
         tk.Label(container, text=S["batch_summary_title"],
-                 font=("TkDefaultFont", 13, "bold")).pack(pady=(0, 10))
+                 font=font(13, "bold")).pack(pady=(0, 10))
         txt = (S["batch_summary_done"].format(n=done) + "\n"
                + S["batch_summary_skipped"].format(n=skipped))
         if extra: txt += "\n" + extra
@@ -1082,7 +1320,8 @@ def batch_dialog(
             top,
             lambda: run_for_image(folder, info.path, load_image(info.path),
                                   profile.cellpose, force=False,
-                                  use_gpu=profile.use_gpu),
+                                  use_gpu=profile.use_gpu,
+                                  model_registry=model_registry),
         )
 
     def _active_count(info):

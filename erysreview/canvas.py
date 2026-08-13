@@ -31,14 +31,14 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.patheffects import Stroke, Normal
 from skimage.draw import disk as sk_disk
-from skimage.measure import regionprops_table
+from skimage.measure import find_contours, regionprops_table
 
 from .persistence import (
     AppSettings, ManualCell, ReviewState,
     TOOL_ADD, TOOL_REMOVE, TOOL_TYPE,
 )
 from .profile import ProfileData
-from .theme import palette as _palette
+from .theme import OUTLINE_STYLES, palette as _palette
 
 
 @dataclass
@@ -101,16 +101,91 @@ def is_border_cell(info: CellInfo, h: int, w: int, margin_n: int) -> bool:
 # ─────────────────────────────────────────────
 # Colors
 # ─────────────────────────────────────────────
-def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
+def _hex_to_rgb_u8(hex_color: str) -> tuple[int, int, int]:
     h = hex_color.lstrip("#")
-    return (int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 # Unified visual scheme: one inactive color for both border + excluded (per design).
 # Light gray fill + higher alpha so it stays visible on dark images.
-COLOR_INACTIVE       = (0.80, 0.80, 0.80)
-ALPHA_ACTIVE         = 0.42
-ALPHA_INACTIVE       = 0.55
+# uint8 (0-255), not float — matplotlib reads RGBA uint8 natively and the array is
+# H*W*4 bytes instead of H*W*16: 9.2 MB instead of 36.9 MB for a 1920x1200 image.
+COLOR_INACTIVE_U8    = (204, 204, 204)
+_DEFAULT_COLOR_U8    = (255, 217, 0)
+
+# Fill opacity. The original 0.42 washed the type colours out against a bright
+# field — measured on real images (median grey 245/255) the smallest colour
+# distance between two types rose from ΔE 21.6 to 27.6 by going to 0.55.
+# Per profile via ProfileData.overlay_alpha; these are only the fallbacks.
+DEFAULT_OVERLAY_ALPHA = 0.55
+INACTIVE_ALPHA_BONUS  = 0.13     # excluded cells read as a more solid grey
+ALPHA_ACTIVE_U8       = round(DEFAULT_OVERLAY_ALPHA * 255)
+ALPHA_INACTIVE_U8     = round(min(1.0, DEFAULT_OVERLAY_ALPHA + INACTIVE_ALPHA_BONUS) * 255)
+
+RGBA = tuple[int, int, int, int]
+
+
+def cell_contours(masks: np.ndarray, info: CellInfo) -> list[np.ndarray]:
+    """Boundary polylines of one cell as (x, y) arrays in image coordinates.
+
+    Only the cell's own bounding box is scanned, so this stays cheap even though
+    it runs per marked cell. The box is padded by one pixel before tracing, so a
+    cell that reaches its own bbox edge still yields a closed loop.
+    """
+    h, w = masks.shape
+    y0, y1 = max(0, info.bbox_y0), min(h, info.bbox_y1)
+    x0, x1 = max(0, info.bbox_x0), min(w, info.bbox_x1)
+    if y0 >= y1 or x0 >= x1:
+        return []
+    sub = np.pad((masks[y0:y1, x0:x1] == info.cell_id).astype(np.float32), 1)
+    out = []
+    for c in find_contours(sub, 0.5):
+        out.append(np.column_stack([c[:, 1] - 1.0 + x0, c[:, 0] - 1.0 + y0]))
+    return out
+
+
+class OverlayColors:
+    """The ONLY place a cell's overlay color is decided.
+
+    Both the full rebuild (`build_overlay_rgba`) and the single-cell repaint
+    (`patch_overlay_cell`) resolve colors through this object, so an incremental
+    update cannot drift away from what a full rebuild would have produced.
+    `tests/test_overlay.py` asserts exactly that, pixel for pixel.
+
+    Cheap to construct (a few sets + one small dict), so callers build one per
+    operation rather than caching a stale view of the review state.
+    """
+
+    def __init__(self, review: ReviewState, profile: ProfileData,
+                 border_ids: set[int], duplicate_ids: set[int] | None = None):
+        self._excluded = set(review.force_excluded)
+        self._included = set(review.force_included)
+        self._types = review.types
+        self._border_ids = border_ids
+        self._duplicate_ids = duplicate_ids or set()
+        self._default_key = profile.default_type_key()
+        self._type_colors = {t.key: _hex_to_rgb_u8(t.color) for t in profile.cell_types}
+        self._default_color = self._type_colors.get(self._default_key, _DEFAULT_COLOR_U8)
+        a = float(getattr(profile, "overlay_alpha", DEFAULT_OVERLAY_ALPHA))
+        a = max(0.05, min(1.0, a))
+        self.alpha_active = round(a * 255)
+        self.alpha_inactive = round(min(1.0, a + INACTIVE_ALPHA_BONUS) * 255)
+
+    def is_active(self, cid: int) -> bool:
+        """Effective active state — the same rule the status bar counts by."""
+        if cid in self._excluded:
+            return False
+        auto_inactive = (cid in self._border_ids) or (cid in self._duplicate_ids)
+        return (not auto_inactive) or (cid in self._included)
+
+    def type_key(self, cid: int) -> str:
+        return self._types.get(str(cid), self._default_key)
+
+    def of(self, cid: int) -> RGBA:
+        if not self.is_active(cid):
+            return (*COLOR_INACTIVE_U8, self.alpha_inactive)
+        return (*self._type_colors.get(self.type_key(cid), self._default_color),
+                self.alpha_active)
 
 
 def build_overlay_rgba(
@@ -121,39 +196,40 @@ def build_overlay_rgba(
     border_ids: set[int],
     duplicate_ids: set[int] | None = None,
 ) -> np.ndarray:
-    """RGBA overlay: active cells = type color, inactive (border/excluded/duplicate)
-    = unified gray. Force_included cells render as active (their type color).
+    """Full RGBA overlay: active cells = type color, inactive (border/excluded/
+    duplicate) = unified gray. Force_included cells render as active.
 
-    Vectorized via color_table[masks] — ~5 ms for 300 cells on a 1920x1200 image.
+    Vectorized via color_table[masks]. Needed whenever *many* cells can change at
+    once (new image, margin change, profile swap); a single-cell edit should go
+    through patch_overlay_cell() instead.
     """
-    duplicate_ids = duplicate_ids or set()
+    colors = OverlayColors(review, profile, border_ids, duplicate_ids)
     max_id = int(masks.max())
-    color_table = np.zeros((max_id + 1, 4), dtype=np.float32)
-
-    excluded = set(review.force_excluded)
-    included = set(review.force_included)
-    type_colors = {t.key: _hex_to_rgb(t.color) for t in profile.cell_types}
-    default_key = profile.default_type_key()
-    default_color = type_colors.get(default_key, (1.0, 0.85, 0.0))
-
+    color_table = np.zeros((max_id + 1, 4), dtype=np.uint8)
     for cid in cell_infos:
         if cid <= 0 or cid > max_id:
             continue
-        is_auto_inactive = (cid in border_ids) or (cid in duplicate_ids)
-        is_inactive = (cid in excluded) or (is_auto_inactive and cid not in included)
-        if is_inactive:
-            color = COLOR_INACTIVE
-            alpha = ALPHA_INACTIVE
-        else:
-            type_key = review.types.get(str(cid), default_key)
-            color = type_colors.get(type_key, default_color)
-            alpha = ALPHA_ACTIVE
-        color_table[cid, 0] = color[0]
-        color_table[cid, 1] = color[1]
-        color_table[cid, 2] = color[2]
-        color_table[cid, 3] = alpha
-
+        color_table[cid] = colors.of(cid)
     return color_table[masks]
+
+
+def patch_overlay_cell(rgba: np.ndarray, masks: np.ndarray,
+                       info: CellInfo, value: RGBA) -> None:
+    """Repaint exactly one cell into an existing overlay, in place.
+
+    Touches only the cell's bounding box instead of re-deriving the whole
+    H*W*4 array — the difference between a few hundred bytes and ~9 MB per click.
+    The bbox is clamped: manual cells are stored as centre +/- radius
+    (see _act_add) and may stick out of the image, and a negative slice bound
+    would silently index from the far edge.
+    """
+    h, w = masks.shape
+    y0, y1 = max(0, info.bbox_y0), min(h, info.bbox_y1)
+    x0, x1 = max(0, info.bbox_x0), min(w, info.bbox_x1)
+    if y0 >= y1 or x0 >= x1:
+        return
+    window = rgba[y0:y1, x0:x1]                      # view, writes through
+    window[masks[y0:y1, x0:x1] == info.cell_id] = value
 
 
 def build_margin_rgba(h: int, w: int, margin_n: int) -> np.ndarray:
@@ -196,6 +272,9 @@ class EryCanvas(tk.Frame):
         super().__init__(parent, bg=P["canvas_bg"])
         self.settings = settings
         self.profile = profile
+        # Auto-excluded by the size filter. The name stays `duplicate_ids`
+        # because it maps 1:1 to the `is_duplicate` column of the exported
+        # stats CSV and erys.db, which downstream analysis relies on.
         self.duplicate_ids: set[int] = set()
         self.save_callback = save_callback
         self._theme_palette = P
@@ -230,7 +309,17 @@ class EryCanvas(tk.Frame):
         self._im_handle = None
         self._overlay_handle = None
         self._margin_handle = None
-        self._number_artists: list = []
+        # The live overlay array is kept so a single-cell edit can repaint just
+        # that cell's bbox instead of rebuilding all H*W*4 bytes.
+        self._overlay_rgba: np.ndarray | None = None
+        # cell_id -> Text artist, alive for as long as the image is. Cells come
+        # and go only via _act_add / undo; activity changes just flip visibility.
+        self._number_artists: dict[int, object] = {}
+        self._number_active: set[int] = set()
+        # cell_id -> the Line2D pair(s) drawing that cell's type contour. Only
+        # cells whose type defines an outline get an entry, which in practice is
+        # a handful per image (~0.2% of cells are not "normal").
+        self._outline_artists: dict[int, list] = {}
         self._image_shape: tuple[int, int] | None = None  # to detect re-init
 
         # mpl events
@@ -248,15 +337,25 @@ class EryCanvas(tk.Frame):
         self.image = self.image_norm = self.masks = self.review = None
         self.cell_infos = {}
         self.border_ids = set()
+        self.duplicate_ids = set()
         self.history.clear()
         self.selected_id = None
         self.ax.cla()
         self.ax.set_facecolor(self._theme_palette["canvas_bg"])
         self.ax.axis("off")
         self._im_handle = self._overlay_handle = self._margin_handle = None
-        self._number_artists = []
+        self._overlay_rgba = None
+        self._number_artists = {}
+        self._number_active = set()
+        self._outline_artists = {}
         self._image_shape = None
         self.canvas.draw_idle()
+
+    def _colors(self) -> OverlayColors:
+        """Current color/activity resolver. Cheap — rebuilt per operation so it
+        can never hold a stale view of the review state."""
+        return OverlayColors(self.review, self.profile, self.border_ids,
+                             self.duplicate_ids)
 
     def set_image(self, image: np.ndarray, masks: np.ndarray, review: ReviewState) -> None:
         self.image = image
@@ -281,6 +380,16 @@ class EryCanvas(tk.Frame):
 
         self.cell_infos = compute_cell_infos(self.masks, manual_ids)
         self._recompute_borders()
+        # Duplicates belong to the derived state of THIS image, exactly like
+        # border_ids — so they are resolved here, before anything renders.
+        # (They used to be computed by the app *after* set_image returned, which
+        # meant the first overlay was painted with the previous image's
+        # duplicates and a failure left those stale IDs feeding the status bar.)
+        # Local import: sizefilter.py imports CellInfo from this module.
+        from .sizefilter import detect_size_outliers
+        self.duplicate_ids = detect_size_outliers(
+            self.cell_infos, self.profile.size_filter,
+        )
 
         h, w = self.image.shape[:2]
         same_shape = (self._image_shape == (h, w)) and self._im_handle is not None
@@ -288,14 +397,16 @@ class EryCanvas(tk.Frame):
         if same_shape:
             self._im_handle.set_data(self.image_norm)
         else:
-            self.ax.cla()
+            self.ax.cla()          # drops every artist, including the numbers
             self.ax.set_facecolor(self._theme_palette["canvas_bg"])
             self.ax.axis("off")
             self._im_handle = self.ax.imshow(self.image_norm, interpolation="nearest", zorder=0)
-            blank_rgba = np.zeros((h, w, 4), dtype=np.float32)
-            self._overlay_handle = self.ax.imshow(blank_rgba, interpolation="nearest", zorder=1)
-            self._margin_handle = self.ax.imshow(blank_rgba, interpolation="nearest", zorder=2)
-            self._number_artists = []
+            blank_overlay = np.zeros((h, w, 4), dtype=np.uint8)
+            self._overlay_handle = self.ax.imshow(blank_overlay, interpolation="nearest", zorder=1)
+            self._margin_handle = self.ax.imshow(
+                np.zeros((h, w, 4), dtype=np.float32), interpolation="nearest", zorder=2)
+            self._number_artists = {}
+            self._number_active = set()
             self._image_shape = (h, w)
             self.ax.set_xlim(-0.5, w - 0.5)
             self.ax.set_ylim(h - 0.5, -0.5)
@@ -303,6 +414,7 @@ class EryCanvas(tk.Frame):
         self._refresh_overlay()
         self._refresh_margin()
         self._refresh_numbers()
+        self._refresh_outlines()
         self.canvas.draw_idle()
 
     def reset_zoom(self) -> None:
@@ -324,6 +436,7 @@ class EryCanvas(tk.Frame):
                 visible and self.profile.show_margin_overlay and self.profile.margin_n > 0
             )
         self._apply_number_visibility()
+        self._apply_outline_visibility()
         self.canvas.draw_idle()
 
     def set_margin_n(self, n: int) -> None:
@@ -331,15 +444,19 @@ class EryCanvas(tk.Frame):
         self._recompute_borders()
         self._refresh_overlay()
         self._refresh_margin()
+        self._refresh_numbers()   # borders moved -> which cells count moved with them
+        self._refresh_outlines()
         self.canvas.draw_idle()
 
     def set_profile(self, profile: ProfileData) -> None:
         """Swap to a different study profile. Re-renders with new colors/margin/types."""
         self.profile = profile
         self._recompute_borders()
+        self._recompute_duplicates()   # the profile carries the duplicate config
         self._refresh_overlay()
         self._refresh_margin()
         self._refresh_numbers()
+        self._refresh_outlines()
         self.canvas.draw_idle()
 
     def refresh_appearance(self) -> None:
@@ -352,6 +469,7 @@ class EryCanvas(tk.Frame):
         """Called externally if review data changed without going through canvas methods."""
         self._refresh_overlay()
         self._refresh_numbers()
+        self._refresh_outlines()
         self.canvas.draw_idle()
 
     # ─────────────────────────────────────────
@@ -383,8 +501,9 @@ class EryCanvas(tk.Frame):
             self.border_ids.add(new_id)
         self.history.append(("add", new_id))
         self.save_callback()
-        self._refresh_overlay()
-        self._refresh_numbers()
+        # One new cell -> one new artist and one patched bbox, not a full rebuild.
+        self._number_artists[new_id] = self._make_number(new_id, self.cell_infos[new_id])
+        self._patch_cell(new_id)
         self.canvas.draw_idle()
         return True
 
@@ -411,7 +530,9 @@ class EryCanvas(tk.Frame):
             self.review.force_excluded.append(cid)
         self.history.append(("remove_toggle", cid, prev))
         self.save_callback()
-        self._refresh_overlay()
+        # Patching also flips this cell's number — previously the number stayed
+        # on screen after the cell was switched inactive.
+        self._patch_cell(cid)
         self.canvas.draw_idle()
         return True
 
@@ -423,7 +544,7 @@ class EryCanvas(tk.Frame):
         self.review.types[str(cid)] = self.profile.active_type_key
         self.history.append(("type", cid, prev))
         self.save_callback()
-        self._refresh_overlay()
+        self._patch_cell(cid)
         self.canvas.draw_idle()
         return True
 
@@ -443,6 +564,8 @@ class EryCanvas(tk.Frame):
                 self.review.force_excluded.append(cid)
             if was_included:
                 self.review.force_included.append(cid)
+            self.save_callback()
+            self._patch_cell(cid)
         elif kind == "add":
             _, cid = action
             self.masks[self.masks == cid] = 0
@@ -451,15 +574,20 @@ class EryCanvas(tk.Frame):
             self.border_ids.discard(cid)
             self.next_id = max(1, self.next_id - 1)
             self.review.next_manual_id = self.next_id
+            self.save_callback()
+            # The label vanished from `masks`, so there is nothing left to patch
+            # against — and undoing an add is rare. Rebuild both layers.
+            self._refresh_overlay()
+            self._refresh_numbers()
+            self._refresh_outlines()
         elif kind == "type":
             _, cid, prev = action
             if prev is None:
                 self.review.types.pop(str(cid), None)
             else:
                 self.review.types[str(cid)] = prev
-        self.save_callback()
-        self._refresh_overlay()
-        self._refresh_numbers()
+            self.save_callback()
+            self._patch_cell(cid)
         self.canvas.draw_idle()
         return True
 
@@ -486,14 +614,37 @@ class EryCanvas(tk.Frame):
             if is_border_cell(info, h, w, n)
         }
 
+    def _recompute_duplicates(self) -> None:
+        # Local import: sizefilter.py imports CellInfo from this module.
+        from .sizefilter import detect_size_outliers
+        self.duplicate_ids = detect_size_outliers(
+            self.cell_infos, self.profile.size_filter,
+        )
+
     def _refresh_overlay(self) -> None:
+        """Full rebuild. Use when many cells can change at once (new image,
+        margin, profile); a single edited cell should go through _patch_cell."""
         if self.masks is None or self.review is None or self._overlay_handle is None:
             return
-        rgba = build_overlay_rgba(
+        self._overlay_rgba = build_overlay_rgba(
             self.masks, self.cell_infos, self.review, self.profile,
             self.border_ids, self.duplicate_ids,
         )
-        self._overlay_handle.set_data(rgba)
+        self._overlay_handle.set_data(self._overlay_rgba)
+
+    def _patch_cell(self, cid: int, colors: OverlayColors | None = None) -> None:
+        """Repaint exactly the one cell an edit touched, and sync its number."""
+        info = self.cell_infos.get(cid)
+        if info is None or self.masks is None or self._overlay_handle is None:
+            return
+        if self._overlay_rgba is None:      # nothing built yet — nothing to patch
+            self._refresh_overlay()
+            return
+        colors = colors or self._colors()
+        patch_overlay_cell(self._overlay_rgba, self.masks, info, colors.of(cid))
+        self._overlay_handle.set_data(self._overlay_rgba)
+        self._set_number_active(cid, colors.is_active(cid))
+        self._set_cell_outline(cid, colors)
 
     def _refresh_margin(self) -> None:
         if self.image is None or self._margin_handle is None:
@@ -511,40 +662,134 @@ class EryCanvas(tk.Frame):
     # LOD: numbers only show once the visible viewport is below this fraction of image width.
     LOD_VIEWPORT_FRACTION = 0.40
 
+    def _make_number(self, cid: int, info: CellInfo):
+        """One number artist. White text, thin black outline so it reads on any
+        background."""
+        t = self.ax.text(
+            info.cx, info.cy, str(cid),
+            color="white", fontsize=9, ha="center", va="center",
+            fontweight="bold", zorder=3,
+        )
+        t.set_path_effects([Stroke(linewidth=2.0, foreground="black"), Normal()])
+        return t
+
     def _refresh_numbers(self) -> None:
-        """Render cell numbers only on *active* cells (Frage 3a constraint).
-        Style: white text with thin black outline so it reads on any background.
-        Visibility is gated by zoom via _apply_number_visibility() (LOD).
+        """Rebuild every number artist — one per cell, kept for the life of the
+        image. *Which* of them show is decided by _apply_number_visibility.
+
+        Numbers appear on active cells only (Frage 3a). Activity now comes from
+        the same OverlayColors rule the fill color uses, so a duplicate-flagged
+        cell no longer keeps a number it isn't counted for.
         """
-        for a in self._number_artists:
-            a.remove()
-        self._number_artists = []
+        for a in self._number_artists.values():
+            try:
+                a.remove()
+            except (ValueError, NotImplementedError):
+                pass          # already gone with an ax.cla()
+        self._number_artists = {}
+        self._number_active = set()
         if self.review is None:
             return
-        excluded = set(self.review.force_excluded)
-        included = set(self.review.force_included)
+        colors = self._colors()
         for cid, info in self.cell_infos.items():
-            is_active = (cid not in excluded) and (cid not in self.border_ids or cid in included)
-            if not is_active:
-                continue
-            t = self.ax.text(
-                info.cx, info.cy, str(cid),
-                color="white", fontsize=9, ha="center", va="center",
-                fontweight="bold", zorder=3,
-            )
-            t.set_path_effects([Stroke(linewidth=2.0, foreground="black"), Normal()])
-            self._number_artists.append(t)
+            self._number_artists[cid] = self._make_number(cid, info)
+            if colors.is_active(cid):
+                self._number_active.add(cid)
         self._apply_number_visibility()
 
+    def _numbers_shown(self) -> bool:
+        overlay_on = self._overlay_handle is not None and self._overlay_handle.get_visible()
+        return overlay_on and self._is_zoomed_in()
+
+    def _set_number_active(self, cid: int, active: bool) -> None:
+        """Flip one cell's number without touching the other ~200 artists."""
+        if active:
+            self._number_active.add(cid)
+        else:
+            self._number_active.discard(cid)
+        a = self._number_artists.get(cid)
+        if a is not None:
+            a.set_visible(active and self._numbers_shown())
+
     def _apply_number_visibility(self) -> None:
-        """Hide numbers when overlay is off or when zoomed out beyond LOD threshold."""
+        """Hide numbers when the overlay is off, when zoomed out beyond the LOD
+        threshold, or on cells that don't count."""
         if not self._number_artists:
             return
-        overlay_on = self._overlay_handle is not None and self._overlay_handle.get_visible()
-        zoomed_in = self._is_zoomed_in()
-        visible = overlay_on and zoomed_in
-        for a in self._number_artists:
-            a.set_visible(visible)
+        shown = self._numbers_shown()
+        for cid, a in self._number_artists.items():
+            a.set_visible(shown and cid in self._number_active)
+
+    # ─────────────────────────────────────────
+    # Type contours (WCAG 1.4.1 — type not carried by fill colour alone)
+    # ─────────────────────────────────────────
+    OUTLINE_LW = 1.4          # white line; a black one sits under it, wider
+
+    def _outlines_shown(self) -> bool:
+        """Contours share the overlay switch — one toggle for the whole
+        annotation layer. Unlike the numbers they have NO zoom threshold: at
+        full-image view a cell is ~41 px across, which is exactly where the
+        reviewer needs to see at a glance which cells are not normal."""
+        return (self.profile.type_outlines_enabled
+                and self._overlay_handle is not None
+                and self._overlay_handle.get_visible())
+
+    def _outline_style_for(self, cid: int, colors: OverlayColors):
+        """Line style for this cell's type, or None if it should have no contour."""
+        if not self.profile.type_outlines_enabled:
+            return None       # switched off -> build no artists at all
+        if not colors.is_active(cid):
+            return None       # inactive cells render grey — their type is moot
+        td = self.profile.type_by_key(colors.type_key(cid))
+        return OUTLINE_STYLES.get(getattr(td, "outline", "") or "") if td else None
+
+    def _make_outline(self, cid: int, style) -> list:
+        """Black line under a white one, so the contour reads on any background."""
+        info = self.cell_infos.get(cid)
+        if info is None or self.masks is None:
+            return []
+        artists = []
+        visible = self._outlines_shown()
+        for c in cell_contours(self.masks, info):
+            for color, lw, z in (("black", self.OUTLINE_LW + 1.6, 3.5),
+                                 ("white", self.OUTLINE_LW, 3.6)):
+                (line,) = self.ax.plot(c[:, 0], c[:, 1], ls=style, color=color,
+                                       lw=lw, zorder=z, solid_capstyle="butt")
+                line.set_visible(visible)
+                artists.append(line)
+        return artists
+
+    def _drop_outline(self, cid: int) -> None:
+        for a in self._outline_artists.pop(cid, []):
+            try:
+                a.remove()
+            except (ValueError, NotImplementedError):
+                pass          # already gone with an ax.cla()
+
+    def _set_cell_outline(self, cid: int, colors: OverlayColors) -> None:
+        """Rebuild just this cell's contour after an edit."""
+        self._drop_outline(cid)
+        style = self._outline_style_for(cid, colors)
+        if style is not None:
+            self._outline_artists[cid] = self._make_outline(cid, style)
+
+    def _refresh_outlines(self) -> None:
+        """Rebuild every contour — after a new image, margin or profile change."""
+        for cid in list(self._outline_artists):
+            self._drop_outline(cid)
+        if self.review is None or self.masks is None:
+            return
+        colors = self._colors()
+        for cid in self.cell_infos:
+            style = self._outline_style_for(cid, colors)
+            if style is not None:
+                self._outline_artists[cid] = self._make_outline(cid, style)
+
+    def _apply_outline_visibility(self) -> None:
+        shown = self._outlines_shown()
+        for artists in self._outline_artists.values():
+            for a in artists:
+                a.set_visible(shown)
 
     def _is_zoomed_in(self) -> bool:
         if self.image is None:

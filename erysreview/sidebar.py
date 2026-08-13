@@ -23,7 +23,7 @@ from .grouping import (
 )
 from .persistence import ReviewState
 from .profile import ProfileData
-from .theme import STATUS_ICONS_3, STATUS_TO_COLOR
+from .theme import font, STATUS_ICONS_3, STATUS_TO_COLOR
 
 
 # 3-state mapping (Frage answer C earlier)
@@ -85,7 +85,7 @@ class Sidebar(tk.Frame):
         filt = tk.Frame(self, bg=P["sidebar_bg"])
         filt.pack(fill="x", padx=8, pady=(6, 4))
         tk.Label(filt, text=S["filter_label"], bg=P["sidebar_bg"], fg=P["fg_secondary"],
-                 font=("TkDefaultFont", 9)).pack(anchor="w")
+                 font=font(9)).pack(anchor="w")
         self.filter_var = tk.StringVar(value="all")
         for value, label_key in [
             ("all", "filter_all"),
@@ -97,7 +97,7 @@ class Sidebar(tk.Frame):
                 filt, text=S[label_key], value=value, variable=self.filter_var,
                 bg=P["sidebar_bg"], fg=P["fg"], selectcolor=P["toolbar_bg"],
                 activebackground=P["sidebar_bg"], activeforeground=P["fg"],
-                font=("TkDefaultFont", 9),
+                font=font(9),
                 command=self.refresh,
             ).pack(anchor="w")
 
@@ -112,7 +112,8 @@ class Sidebar(tk.Frame):
         style.configure(
             "Erys.Treeview",
             background=P["tree_bg"], foreground=P["fg"],
-            fieldbackground=P["tree_bg"], borderwidth=0, rowheight=22,
+            fieldbackground=P["tree_bg"], borderwidth=0,
+            rowheight=28,   # a11y 2.5.5: 22 px rows were a small target
         )
         style.map(
             "Erys.Treeview",
@@ -138,6 +139,7 @@ class Sidebar(tk.Frame):
         self.tree.bind("<<TreeviewOpen>>",  self._on_tree_open)
         self.tree.bind("<<TreeviewClose>>", self._on_tree_close)
         self.tree.bind("<Button-1>", self._on_tree_click, add="+")
+        self._claim_navigation_keys()
 
         # Folder label removed per user spec — sidebar is cleaner without it.
         # DetailPanel docked at bottom of sidebar, with collapse toggle
@@ -147,6 +149,26 @@ class Sidebar(tk.Frame):
             on_collapse_changed=self._on_details_collapse,
         )
         self.details.pack(fill="x", side="bottom", padx=8, pady=(4, 4), ipady=2)
+
+    # Keys the Treeview navigates with, which the main window ALSO binds
+    # (<Left>/<Right> step through images, <Home> resets the zoom).
+    _NAV_KEYS = ("<Left>", "<Right>", "<Up>", "<Down>",
+                 "<Home>", "<End>", "<Prior>", "<Next>")
+    _NAV_TAG = "ErysTreeNav"
+
+    def _claim_navigation_keys(self) -> None:
+        """Stop tree navigation keys from ALSO firing the window's shortcuts.
+
+        Measured before this: pressing Left on a focused tree collapsed the node
+        *and* stepped to the previous image in one keystroke. Tk delivers a key
+        to widget -> class -> toplevel -> all, so a plain widget binding that
+        returns "break" would also kill the class binding that does the actual
+        navigating. Splicing an extra bindtag BETWEEN the class and the toplevel
+        lets the Treeview do its job and stops the event right after.
+        """
+        self.tree.bindtags((str(self.tree), "Treeview", self._NAV_TAG, "all"))
+        for seq in self._NAV_KEYS:
+            self.tree.bind_class(self._NAV_TAG, seq, lambda _e: "break")
 
     # ─────────────────────────────────────────
     # Public API used by the App
@@ -301,27 +323,25 @@ class Sidebar(tk.Frame):
         return f"{label}  ·  {compact}   {SETTINGS_ICON}"
 
     def _group_counters(self, tp_key: str, sub_key: str) -> dict:
+        """Counters for one subject row. Only `n_active` costs disk, and only on
+        a cache miss — the row label is `{n_active}/{target}` and nothing else.
+
+        (There used to be a `n_done` loop here that re-read has_cache +
+        ReviewState for every image in the group on every refresh. No label
+        format ever interpolated it; the DetailPanel computes its own. Removed.)
+        """
         target = max(1, self.profile.target_cells)
         images = self.grouped.tree.get(tp_key, {}).get(sub_key, []) if self.grouped else []
-        n_total = len(images)
-        n_done = 0
         cache_key = (tp_key, sub_key)
         n_active = self._group_active_cache.get(cache_key)
-        compute_active = n_active is None
-        if compute_active:
+        if n_active is None:
             from .evaluation import group_eval_summary
             try:
-                summ = group_eval_summary(self.folder, images, self.profile)
-                n_active = summ["n_active"]
+                n_active = group_eval_summary(self.folder, images, self.profile)["n_active"]
             except Exception:
                 n_active = 0
             self._group_active_cache[cache_key] = n_active
-        for info in images:
-            if self.folder is None or not has_cache(self.folder, info.path):
-                continue
-            if ReviewState.load(self.folder, info.path.stem).is_finished:
-                n_done += 1
-        return {"n_total": n_total, "n_done": n_done, "n_active": n_active, "target": target}
+        return {"n_total": len(images), "n_active": n_active, "target": target}
 
     def eval_stems(self, tp_key: str, sub_key: str) -> set[str]:
         """Cached set of image stems that count toward the evaluation for a group."""
@@ -387,11 +407,11 @@ class Sidebar(tk.Frame):
             return False
         bx, _by, bw, _bh = bbox
         try:
-            font = tkfont.nametofont("TkDefaultFont")
+            tree_font = tkfont.nametofont("TkDefaultFont")
         except tk.TclError:
             return False
-        full_w = font.measure(text)
-        icon_w = font.measure(SETTINGS_ICON)
+        full_w = tree_font.measure(text)
+        icon_w = tree_font.measure(SETTINGS_ICON)
         pad = 6
         icon_left = bx + full_w - icon_w - pad
         # Anything from just left of the icon to the cell's right edge counts —

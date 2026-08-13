@@ -35,7 +35,7 @@ STRINGS = {
         "pe_section_grouping": "Gruppierung (Regex)",
         "pe_section_cellpose": "Cellpose",
         "pe_section_types":    "Typen",
-        "pe_section_dups":     "Duplikate",
+        "pe_section_size":     "Größenfilter",
         "pe_section_appear":   "Darstellung",
         "pe_name":             "Profil-Name",
         "pe_import_folder":    "Bilder-Ordner",
@@ -47,11 +47,14 @@ STRINGS = {
         "pe_pattern_test":     "Test gegen Beispiel-Dateinamen:",
         "pe_pattern_match":    "Match",
         "pe_pattern_nomatch":  "Kein Match",
-        "pe_dup_enabled":      "Duplikat-Erkennung aktiv",
-        "pe_dup_threshold":    "Schwellwert (× mittlerer Zellradius)",
-        "pe_dup_policy":       "Policy",
-        "pe_dup_policy_smaller": "Kleinere ausschließen",
-        "pe_dup_policy_both":  "Beide ausschließen",
+        "pe_size_enabled":     "Größenfilter aktiv",
+        "pe_size_min":         "Zu klein unter (× Medianfläche)",
+        "pe_size_max":         "Zu groß über (× Medianfläche)",
+        "pe_size_hint":        ("Zellen, deren Fläche zu weit von der Medianfläche des "
+                                "Bildes abweicht, zählen nicht mit: zu klein = Segmentierungs-"
+                                "Fragment, zu groß = zwei verschmolzene Zellen. Sie werden grau "
+                                "dargestellt und lassen sich mit „Zählen ein/aus\u201c einzeln "
+                                "wieder aufnehmen."),
         # Sidebar
         "sb_group_open_counter": "{n_active}/{target} Erys",
         "sb_group_closed_counter": "{n_active}/{target}",
@@ -85,6 +88,77 @@ STRINGS = {
         "menu_settings":       "Einstellungen",
         "menu_settings_open":  "Einstellungen …",
         "menu_help":           "Hilfe",
+        "pe_type_outline":     "Kontur (Zusatzmerkmal)",
+        "pe_type_outline_hint": ("Messung auf 41-px-Zellen: durchgezogen gegen unterbrochen "
+                                 "ist zuverlässig unterscheidbar, drei verschiedene "
+                                 "Unterbrechungsmuster nicht. Sparsam vergeben."),
+        "pe_outline_none":     "keine",
+        "pe_outline_solid":    "durchgezogen",
+        "pe_outline_dashed":   "gestrichelt",
+        "pe_outline_dotted":   "gepunktet",
+        "pe_outline_dashdot":  "strich-punkt",
+        "pe_outlines_enabled": "Typ-Konturen zeichnen",
+        "pe_outlines_hint":    ("Zeichnet die im Typ hinterlegte Kontur um passende Zellen, "
+                                "damit der Typ nicht allein an der Farbe hängt — wichtig bei "
+                                "Farbsehschwäche. Aus: reine Farbdarstellung wie bisher."),
+        "pe_overlay_alpha":    "Deckkraft der Füllung",
+        "pe_overlay_alpha_hint": ("Höher = kräftigere Typfarben, aber die Zellstruktur "
+                                  "darunter wird stärker verdeckt. 0,55 ist der Kompromiss."),
+        "settings_font_scale": "Schriftgröße",
+        "settings_font_100":   "100 %",
+        "settings_font_125":   "125 %",
+        "settings_font_150":   "150 %",
+        "busy_cancel_hint":    "Esc oder Fenster schließen: Abbruch anfordern",
+        "busy_cancelling":     "Abbruch angefordert – der laufende Rechenschritt wird noch beendet …",
+        "menu_training_export": "Trainingsdaten exportieren …",
+        "training_pick_folder": "Zielordner für die Trainingsdaten",
+        "training_running":     "Trainingsdaten werden geschrieben",
+        "training_done":        ("{n} Bild-Masken-Paare geschrieben nach:\n{path}\n\n"
+                                 "Übersprungen: {n_unfinished} nicht als fertig markiert, "
+                                 "{n_manual} mit manuell gesetzten Zellen, "
+                                 "{n_nomask} ohne Maske.\n\n"
+                                 "Manuell gesetzte Zellen sind Kreise fester Größe, keine "
+                                 "nachgezeichneten Umrisse — Bilder mit solchen Zellen bleiben "
+                                 "deshalb außen vor. Die Masken selbst sind unverändert: Rand- "
+                                 "und ausgeschlossene Zellen bleiben beschriftet, weil ein "
+                                 "unbeschriftetes Pixel beim Training als Hintergrund gilt."),
+        "menu_models":         "Cellpose-Modelle zuordnen …",
+        "settings_cp_model":   "Modell",
+        "settings_cp_model_hint": ("Cellpose 4 bringt nur „cpsam“ mit. Eigene oder fremde "
+                                   "Modelle werden unter Einstellungen → Cellpose-Modelle "
+                                   "zuordnen mit einem Namen hinterlegt; das Profil merkt "
+                                   "sich nur den Namen."),
+        "settings_cp_model_missing": ("Für „{name}“ ist auf diesem Rechner keine Datei "
+                                      "hinterlegt. Segmentieren ist gesperrt, bis die "
+                                      "Zuordnung ergänzt wurde."),
+        "models_title":        "Cellpose-Modelle zuordnen",
+        "models_hint":         ("Profile verlangen ein Modell über seinen Namen. Hier legst du "
+                                "fest, welche Datei auf DIESEM Rechner dahintersteht — so "
+                                "funktioniert ein geteiltes Paket auf jedem Arbeitsplatz, ohne "
+                                "dass Pfade angepasst werden müssen."),
+        "models_col_name":     "Name",
+        "models_col_file":     "Datei",
+        "models_builtin":      "in Cellpose enthalten",
+        "models_file_missing": "Datei fehlt",
+        "models_add":          "Modell hinzufügen …",
+        "models_remove":       "Entfernen",
+        "models_pick_file":    "Cellpose-Modelldatei wählen",
+        "models_filetype":     "Modelldatei",
+        "models_name_prompt":  "Name für dieses Modell:",
+        "models_name_reserved": "Dieser Name ist vergeben. Bitte einen anderen wählen.",
+        "model_missing_title": "Modell nicht verfügbar",
+        "model_missing_msg":   ("Dieses Profil verlangt das Cellpose-Modell „{name}“.\n\n"
+                                "Auf diesem Rechner ist dafür keine Datei hinterlegt. Es wird "
+                                "nicht ersatzweise mit cpsam gerechnet — sonst enthielte die "
+                                "Studie Zahlen aus zwei verschiedenen Modellen.\n\n"
+                                "Zuordnung jetzt ergänzen?"),
+        "model_missing_open":  "Modelle zuordnen …",
+        "menu_overview_xlsx":  "Übersicht als Excel speichern …",
+        "overview_save_as":    "Speichern unter …",
+        "overview_filetype":   "Excel-Arbeitsmappe",
+        "overview_building":   "Übersicht wird berechnet",
+        "overview_save_ok":    "Übersicht gespeichert:\n{path}",
+        "overview_save_err":   "Übersicht konnte nicht gespeichert werden:\n{err}",
         "menu_help_hotkeys":   "Tastenkürzel …",
         "menu_help_about":     "Über",
         # Sidebar
@@ -138,7 +212,7 @@ STRINGS = {
         "settings_theme":      "Theme",
         "settings_theme_dark": "Dunkel",
         "settings_theme_light": "Hell",
-        "settings_theme_restart": "Theme-Änderung wird nach App-Neustart wirksam.",
+        "settings_theme_restart": "Theme- und Schriftgrößen-Änderungen werden nach einem Neustart wirksam.",
         "tool_resegment_more": "Mehrere Bilder rechnen …",
         "tool_reset_zoom":     "Zoom zurücksetzen",
         "status_tool":         "Werkzeug",
@@ -373,7 +447,7 @@ STRINGS = {
         "pe_section_grouping": "Grouping (regex)",
         "pe_section_cellpose": "Cellpose",
         "pe_section_types":    "Types",
-        "pe_section_dups":     "Duplicates",
+        "pe_section_size":     "Size filter",
         "pe_section_appear":   "Appearance",
         "pe_name":             "Profile name",
         "pe_import_folder":    "Image folder",
@@ -385,11 +459,13 @@ STRINGS = {
         "pe_pattern_test":     "Test against an example filename:",
         "pe_pattern_match":    "Match",
         "pe_pattern_nomatch":  "No match",
-        "pe_dup_enabled":      "Duplicate detection on",
-        "pe_dup_threshold":    "Threshold (× mean cell radius)",
-        "pe_dup_policy":       "Policy",
-        "pe_dup_policy_smaller": "Exclude smaller",
-        "pe_dup_policy_both":  "Exclude both",
+        "pe_size_enabled":     "Size filter on",
+        "pe_size_min":         "Too small below (× median area)",
+        "pe_size_max":         "Too large above (× median area)",
+        "pe_size_hint":        ("Cells whose area deviates too far from the image's median "
+                                "do not count: too small = segmentation fragment, too large = "
+                                "two merged cells. They render gray and can be put back in "
+                                "individually with the Count on/off tool."),
         "sb_group_open_counter": "{n_active}/{target} erys",
         "sb_group_closed_counter": "{n_active}/{target}",
         "sb_ungrouped":        "Unassigned",
@@ -418,6 +494,73 @@ STRINGS = {
         "menu_settings":       "Settings",
         "menu_settings_open":  "Settings …",
         "menu_help":           "Help",
+        "pe_type_outline":     "Contour (extra cue)",
+        "pe_type_outline_hint": ("Measured on 41 px cells: solid versus broken reads "
+                                 "reliably, three different broken patterns do not. "
+                                 "Use sparingly."),
+        "pe_outline_none":     "none",
+        "pe_outline_solid":    "solid",
+        "pe_outline_dashed":   "dashed",
+        "pe_outline_dotted":   "dotted",
+        "pe_outline_dashdot":  "dash-dot",
+        "pe_outlines_enabled": "Draw type contours",
+        "pe_outlines_hint":    ("Draws each type's contour around matching cells so the type "
+                                "is not carried by colour alone — important for colour vision "
+                                "deficiency. Off: plain colour rendering as before."),
+        "pe_overlay_alpha":    "Fill opacity",
+        "pe_overlay_alpha_hint": ("Higher = stronger type colours, but more of the cell "
+                                  "structure underneath is hidden. 0.55 is the compromise."),
+        "settings_font_scale": "Text size",
+        "settings_font_100":   "100 %",
+        "settings_font_125":   "125 %",
+        "settings_font_150":   "150 %",
+        "busy_cancel_hint":    "Esc or close the window: request cancel",
+        "busy_cancelling":     "Cancel requested – finishing the current step …",
+        "menu_training_export": "Export training data …",
+        "training_pick_folder": "Destination folder for the training data",
+        "training_running":     "Writing training data",
+        "training_done":        ("{n} image/mask pairs written to:\n{path}\n\n"
+                                 "Skipped: {n_unfinished} not marked finished, "
+                                 "{n_manual} with manually drawn cells, "
+                                 "{n_nomask} without a mask.\n\n"
+                                 "Manually drawn cells are fixed-radius discs, not traced "
+                                 "outlines, so images containing them are left out. The masks "
+                                 "themselves are unchanged: border and excluded cells stay "
+                                 "labelled, because an unlabelled pixel counts as background "
+                                 "during training."),
+        "menu_models":         "Map Cellpose models …",
+        "settings_cp_model":   "Model",
+        "settings_cp_model_hint": ("Cellpose 4 ships only \"cpsam\". Your own or third-party "
+                                   "models are registered under Settings → Map Cellpose "
+                                   "models; the profile stores just the name."),
+        "settings_cp_model_missing": ("No file is registered for \"{name}\" on this machine. "
+                                      "Segmentation is blocked until it is."),
+        "models_title":        "Map Cellpose models",
+        "models_hint":         ("Profiles ask for a model by name. Here you decide which file "
+                                "that name means on THIS machine — so a shared package works "
+                                "on every workstation without editing paths."),
+        "models_col_name":     "Name",
+        "models_col_file":     "File",
+        "models_builtin":      "bundled with Cellpose",
+        "models_file_missing": "file missing",
+        "models_add":          "Add model …",
+        "models_remove":       "Remove",
+        "models_pick_file":    "Choose a Cellpose model file",
+        "models_filetype":     "Model file",
+        "models_name_prompt":  "Name for this model:",
+        "models_name_reserved": "That name is taken. Please choose another.",
+        "model_missing_title": "Model not available",
+        "model_missing_msg":   ("This profile asks for the Cellpose model \"{name}\".\n\n"
+                                "No file is registered for it on this machine. It will NOT "
+                                "quietly fall back to cpsam — that would put two models' "
+                                "numbers into one study.\n\nAdd the mapping now?"),
+        "model_missing_open":  "Map models …",
+        "menu_overview_xlsx":  "Save overview as Excel …",
+        "overview_save_as":    "Save as …",
+        "overview_filetype":   "Excel workbook",
+        "overview_building":   "Building overview",
+        "overview_save_ok":    "Overview saved:\n{path}",
+        "overview_save_err":   "Could not save the overview:\n{err}",
         "menu_help_hotkeys":   "Keyboard shortcuts …",
         "menu_help_about":     "About",
         "filter_label":        "Filter:",
@@ -464,7 +607,7 @@ STRINGS = {
         "settings_theme":      "Theme",
         "settings_theme_dark": "Dark",
         "settings_theme_light": "Light",
-        "settings_theme_restart": "Theme change takes effect after app restart.",
+        "settings_theme_restart": "Theme and text-size changes take effect after an app restart.",
         "tool_resegment_more": "Run multiple images …",
         "tool_reset_zoom":     "Reset zoom",
         "status_tool":         "Tool",

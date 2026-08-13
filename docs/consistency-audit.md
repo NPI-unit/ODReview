@@ -96,6 +96,7 @@ Severity legend:
 **Where:** e.g. [app.py:555](../erysreview/app.py), [app.py:592](../erysreview/app.py), [app.py:890](../erysreview/app.py), [detail_panel.py:90](../erysreview/detail_panel.py), [sidebar.py:272](../erysreview/sidebar.py)
 **What:** Several `except Exception: pass` blocks. Some are legitimately cosmetic (icon load, overlay redraw). Others sit around data computations (eval markers, group summaries) where a silent failure could mask wrong counts.
 **Fix:** Triage each: keep+comment the cosmetic ones; add at least a debug log to the data-path ones so failures aren't invisible.
+**Update 2026-08-12 — first site resolved (worst case of the pattern).** The duplicate-detection block in `_show_image_at` turned out to be exactly the feared kind: it wrapped the render calls too, `canvas.duplicate_ids` was never reset between images, and `_update_status()` derives `n_active` from that set — so a swallowed failure showed the *previous* image's duplicates as the current image's count. Resolved structurally (PF-2) rather than by logging: duplicate detection moved into `EryCanvas.set_image`, next to `border_ids`, with no `except` — the same shape `compute_image_state` already uses, so the interactive and the export path can no longer disagree. The remaining EH-4 sites are still open.
 
 ---
 
@@ -115,6 +116,7 @@ Severity legend:
 **Where:** [sidebar.py:340-347](../erysreview/sidebar.py) plus many `invalidate_group_cache()` call sites in `app.py`.
 **What:** The `_group_active_cache` / `_group_eval_cache` correctness depends on every mutating path remembering to invalidate. That's fragile.
 **Fix:** Centralize invalidation (e.g. invalidate from the same after-mutation helper in SR-2), or key the cache on a cheap content signature.
+**Update 2026-08-12 — the scattering had a measurable cost, one call site removed.** `_show_image_at` was clearing the cache for *every* group, so the first click after each arrow-key press recomputed `group_eval_summary` for the whole folder. Navigation changes no group's numbers, and all five paths that *do* (re-segment, batch, eval toggle, eval select, export) already invalidate themselves before landing there — so that call was pure loss. Removed; `refresh_current_group_counter()` still invalidates the group actually entered. The underlying fragility (correctness resting on "everyone remembers") is unchanged and still wants the SR-2 helper.
 
 ### ⚪ SR-4 Mask read precedence is a quiet footgun
 **Where:** [cellpose_runner.py:108-117](../erysreview/cellpose_runner.py)
@@ -149,6 +151,145 @@ Atomic JSON writes ([persistence.py:44-56](../erysreview/persistence.py)), the `
 
 ---
 
+## Axis 5 — Performance & GUI
+
+*Added 2026-08-12 from a code review focused on efficiency and the interface. Measurements come from `bench_click.py` (counts real `stat`/`exists`/`mkdir`/`open` syscalls) against a 20-image folder on a warm Mac SSD; per-image figures extrapolate linearly, which is a **floor** for a USB stick (exFAT has no directory index), not an estimate.*
+
+### Landed this round
+
+| ID | Sev | Finding | Result |
+|---|---|---|---|
+| **PF-1** | 🔴 | `_refresh_overlay()` rebuilt the whole `H*W*4` overlay on every click — 36.9 MB float32 per click at 1920×1200, though exactly one cell changed. | Single-cell `patch_overlay_cell()`; **15.49 ms → 0.045 ms** per click (×345). |
+| **PF-2** | 🔴 | Overlay **and** all number artists were built twice per image switch: once by `set_image`, once by the duplicate-detection block that followed it in `app.py`. Also the EH-4 instance above. | Duplicates resolved inside `set_image`; one build per switch, **30.98 → 16.46 ms**. |
+| **PF-3** | 🔴 | `sidebar._group_counters` ran a full `has_cache` + `ReviewState.load` pass per group to compute `n_done` — which no label format ever interpolated. | Deleted. **−220 ops/click** at 20 images. |
+| **PF-4** | 🔴 | `group_eval_summary` read every `_counts.json` and `_review.json` in the group **twice** (once via `effective_eval_stems`, once in its own aggregation loop). | One shared `_group_rows()` pass. **965 → 280 ops**. |
+| **PF-5** | 🟠 | Cache-wide invalidation on plain navigation — see SR-3 update. | Removed. |
+| **PF-6** | 🟠 | `has_cache` went through `mask_read_paths`, which also stats the *meta* path the caller discards. | Direct mask probe. **6 → 2 ops** per call. |
+| **PF-7** | 🟠 | `cache_dir_for` called `mkdir(parents=True, exist_ok=True)` (2 syscalls) on every `review_path` / `_counts_path` / `cache_paths`. | Memoized per folder. |
+| **UI-1** | 🟡 | `_act_remove_toggle` never refreshed the numbers, so a cell switched inactive went gray but **kept its number** until the next image switch. | Patching now flips that one number. |
+| **UI-2** | 🟡 | `_refresh_numbers` decided "active" with a rule that ignored `duplicate_ids`, contradicting both its own docstring and the status bar. | One `OverlayColors.is_active` for fill color, numbers and counts. *Visible change: duplicate-flagged cells no longer show a number.* |
+| **UI-3** | 🟡 | `set_profile` recomputed `border_ids` but not `duplicate_ids`, so editing the duplicate config left stale flags until the next image switch. | `_recompute_duplicates()` added. |
+
+Together: **2470 → 722 syscalls per click** (−71 %), and the per-click overlay cost is now independent of image size.
+
+### 🔴 PF-13 The duplicate detection was inert — replaced by a size filter *(landed)*
+**Where:** former `duplicates.py`, now [sizefilter.py](../erysreview/sizefilter.py); config in [profile.py](../erysreview/profile.py)
+**What:** `detect_duplicates` flagged two cells whose centroids were closer than `threshold_factor × mean cell radius` (default **0.7**). Verified against the TRIBAL folder — 20 images, 3164 cells: **0 flagged, 0.00 %**, and not by accident. The threshold sat at 27 px while the *closest* centroid pair in the entire set was 44.8 px; the minimum nearest-neighbour distance is **1.16 radii** against a 0.70-radius threshold. The premise cannot hold: a Cellpose mask is a **pixel partition**, so two labels never overlap, and two touching cells sit ~2 radii apart (measured median 2.22). A sweep confirmed there is no usable setting — nothing fires below 1.5, and at 2.0 it flags 11.5 % of cells, i.e. ordinary neighbours. The unit test proves the code itself was correct (it does fire on a synthetic concentric fragment); the *signal* was wrong for the data.
+**Fix (shipped):** area-based. Cells below `min_factor` (0.35) or above `max_factor` (1.70) times the **median** cell area of that image are excluded — fragment and merged-cell respectively. Median, not mean, so a fragment-heavy image doesn't lower its own threshold. Bounds are per-profile and clamped on save like the Cellpose params (EH-3).
+**Measured impact on real data:** 90 fragments exist, but **77 of them were already excluded as border cells** — the filter newly removes 13 fragments + 4 merged cells = **17 of 3164 (0.54 %)**. On the reported group: `n_active` 2119 → 2105 (−0.66 %), `%verändert` 0.189 → 0.190, i.e. **+0.001 percentage points**. The evaluation set stayed at 15 images.
+**Residual naming debt:** the exported `is_duplicate` column (stats CSV + `erys.db`) and the internal `duplicate_ids` that feeds it keep their names deliberately — they are a documented data contract (see [ML_DATASET.md](ML_DATASET.md)) and NS-1 is the standing decision not to rename user-facing columns without sign-off. The column now means "auto-excluded by the size filter".
+
+### 🟠 UI-13 The overview workbook was only reachable through a full export *(landed)*
+**Where:** [app.py](../erysreview/app.py) `_on_overview_xlsx`, [dialogs.py](../erysreview/dialogs.py) `ask_overview_destination` / `save_overview_copy`
+**What:** `Uebersicht.xlsx` was written only as a side effect of `export_folder_structured`, into a fixed path under `outputs/`. Getting a current copy meant running a full export.
+**Fix (shipped):** `Auswertung → Übersicht als Excel speichern …` rebuilds the workbook from the current review state and saves it wherever the user picks; the post-export preview window gained the same *Speichern unter …* button (which copies the file it just previewed, rather than rebuilding it). The rebuild walks every group — 577 ms for 20 images, so ~22 s at 780 — and therefore runs on a worker thread behind the new reusable `BusyDialog` instead of freezing the window. That dialog is the piece UI-4 needs; when the export and folder-open get their progress treatment, `CellposeSpinner` should fold into it.
+
+### Accessibility round (2026-08-12)
+
+*A WCAG 2.1 AA pass, adapted to a desktop app: contrast, keyboard, focus and labelling transfer directly; the ARIA/screen-reader criteria (4.1.2) do not — Tk exposes nothing useful to VoiceOver or Narrator, which is a property of the toolkit, not of this code. Measurements in `a11y.py`.*
+
+| ID | Sev | Finding | Result |
+|---|---|---|---|
+| **UI-13a** | 🔴 | **The cell type was conveyed by fill colour alone** — WCAG 1.4.1, Level A. Measured on the colours *as rendered* (fill blended over a 245/255 bright field): the default palette drops to ΔE 1.2 under tritanopia, and **no** palette at **any** opacity clears ΔE 20 under deuteranopia — even at 100 % the "colorblind-safe" Wong set only reaches 18.6. Colour alone cannot carry this. | Per-type contour (`TypeDef.outline`), drawn at every zoom level. |
+| **UI-6** | 🟠 | `fg_muted` at 2.58–2.62:1, warn colour at 3.22:1, sash at 1.42–1.57:1. | Palette fixed: **6/17 → 1/17** failing pairs (dark), **7/17 → 1/17** (light). |
+| **UI-13b** | 🟠 | White on `accent_primary` was **2.75:1** in the dark theme — and that pair labels the *active tool*. | New `fg_on_accent` token, per theme; 5.75:1. |
+| **UI-13c** | 🟠 | 15 font sizes ≤ 9 pt, hard-coded in 39 places, no way for the user to enlarge (1.4.4). | All 39 routed through `theme.font()`; a 100/125/150 % setting scales them. |
+| **UI-13d** | 🟠 | **Measured:** Left arrow on a focused sidebar tree collapsed the node *and* stepped to the previous image, in one keystroke (2.1.1/3.2.1). | Extra bindtag spliced between the Treeview class and the toplevel — verified 1 → 0 spurious firings. |
+| **UI-10** | 🟠 | Toolbar needs 1659 px, `minsize` allows 900 — Export and the param banner fell off the right edge. | Icon-only below 1700 px with tooltips and hysteresis: **1659 → 803 px**. |
+| **UI-13e** | 🟡 | Focus ring on one of four button styles (2.4.7). | `focuscolor` on all four. |
+| **UI-13f** | 🟡 | Click targets: buttons 37 px, tree rows 22 px (2.5.5 wants 44). | Buttons **45 px**, rows 28 px. |
+| **UI-13g** | 🟡 | Escape missing in 5 of 15 windows; the two busy modals had **no** way out at all — no key, and the close button bound to a no-op (2.1.2). | Escape everywhere; the busy modals now register a cancel request and say so. They still cannot interrupt the worker — neither Cellpose nor a workbook build can be stopped mid-call — but the dead end is gone. |
+| **PF-14** | 🟡 | `ProfileData.from_dict` did `TypeDef(**t)`, so a profile carrying a field this build doesn't know (e.g. inside a package from a newer version) raised `TypeError`. | Unknown keys are dropped. |
+
+Fill opacity went from 0.42 to a per-profile **0.55** (min ΔE between types 21.6 → 27.6 normal, 14.1 → 17.9 deuteranopia). `CellposeSpinner` folded into `BusyDialog`, which had been a near-copy of it.
+
+### Cellpose models + training data (2026-08-12)
+
+| ID | Sev | Finding | Result |
+|---|---|---|---|
+| **PF-15** | 🔴 | Cellpose, given a model path it cannot find, logs one line and **segments with cpsam anyway**. A profile referring to a missing model would have mixed two models' counts inside one study while the mask metadata still named the requested one. | `resolve_model()` raises `ModelUnavailable`; the app blocks before the destructive part of re-segment (which deletes mask + review *first*) and offers the mapping dialog. Gate: `tests/test_model_resolve.py`. |
+| **UI-16** | 🟠 | The Cellpose model was not editable at all — the profile editor passed `working.cellpose.model` straight through. Cellpose 4 ships exactly one model (`MODEL_NAMES == ["cpsam"]`; the v3 zoo is gone), so "another model" always means a file. | Model picker in the profile; the profile stores a **name**, and `AppSettings.cellpose_models` maps names to files per machine — a path inside a shared profile would be meaningless on the receiving computer. |
+| **PF-16** | 🟡 | Nothing in the export said whether a human had reviewed an image; `is_finished` never left the review JSON. | `reviewed` added to the stats CSV and to `images` in erys.db (schema 2, with a rebuild-on-stale migration since the DDL is all `IF NOT EXISTS`). |
+| **PF-17** | 🟡 | The export is not usable as segmentation training data (discs for manual cells, non-counted cells still labelled, originals not copied). | `export_training_data()` writes `<stem>.tif` + `<stem>_masks.tif` for finished, disc-free images only, verified loadable by `cellpose.io.load_train_test_data`. Rationale and limits in [ML_DATASET.md](ML_DATASET.md). |
+
+**CP-9 (2026-08-12, open): Cellpose 4.2 exists but only on PyPI.** Measured: PyPI carries 4.2.1.1 (adding `cpdino`, `cpdino-vitb` and an updated `cpsam_v2` that "predicts fewer spurious masks"), **conda-forge is still on 4.1.1**. `requirements.txt` (macOS/pip) and `install.bat` (Windows/conda-forge) share the pin `cellpose>=4.1.1,<5`, so a `pip install --upgrade` on the Mac would jump to 4.2 while every lab machine stays on 4.1.1 — masks from two segmentation regimes in one study. Also note `params_match()` compares diameter/flow/cellprob/model but **not** `cellpose_version`, so an upgrade does not invalidate existing masks and nothing in the UI would flag the mix. Do not upgrade before conda-forge follows, or pin both installers to the same version explicitly. `cpdino` additionally needs `pip install git+https://github.com/facebookresearch/dinov3`, i.e. git on every lab machine plus that model's own licence terms.
+
+**Not attempted, on purpose:** mask editing (delete a label, redraw a boundary, split merged cells). Without it the exported masks can only support *domain adaptation* — fine-tuning on this material — not learning from the reviewer's corrections. That is a deliberate scope boundary, not an oversight.
+
+### Still open
+
+### 🟠 PF-8 `list_images` walks the cache and the export folder — **blocked by CP-6**
+**Where:** [cellpose_runner.py:94-121](../erysreview/cellpose_runner.py)
+**What:** `sorted(folder.rglob("*"))` enumerates *everything* and filters afterwards, so every `.erys_cache` entry (4 files per image → ~3120 at 780 images, flat in one directory) and every copied TIF under `outputs/` is stat-ed on each folder open and each `F5`. Measured: 141 paths walked to return 20 images. `p.resolve()` per candidate adds more, and is expensive on Windows.
+**Fix:** `os.walk` with in-place `dirnames` pruning, so skipped directories are never descended into.
+**Why not now:** this is the exact function CP-6 hardened, and that fix is **still awaiting its one Windows run**. Rewriting it first would invalidate a verification that hasn't happened. Do CP-6's Windows run, *then* this.
+
+### 🟠 PF-9 Export makes at least four passes over the same images, on the Tk thread
+**Where:** [export.py:147-165](../erysreview/export.py), [summary.py:63](../erysreview/summary.py), [overview.py](../erysreview/overview.py), [db.py](../erysreview/db.py)
+**What:** `effective_eval_stems` runs once in `export_folder_structured` and again inside `write_proband_zeitpunkt_summary`; `_export_image` calls `compute_image_state`, then summary/overview/db each re-read the counts. No progress indication, no worker thread — ≥23 s frozen at 780 images.
+**Fix:** Compute the eval set and the per-image counts once per group and pass them down; wrap the run in the existing `run_in_thread_pumping` + a progress dialog (the batch dialog is the working model).
+**Why not now:** rewrites lab-critical CSV/XLSX output that can't be validated without a real export; same reasoning that parked erys.db Step 2.
+
+### 🟡 PF-10 `DetailPanel` destroys and rebuilds every widget per click
+**Where:** [detail_panel.py:208-210](../erysreview/detail_panel.py)
+**What:** `_clear_body()` `destroy()`s all children on every refresh, i.e. on every click. Besides the churn, the panel flickers.
+**Fix:** Build the rows once, then `config(text=…)`.
+
+### 🟡 PF-11 Time tracking invalidates the count cache on every image switch
+**Where:** [app.py:382-388](../erysreview/app.py), [counts.py:64-72](../erysreview/counts.py)
+**What:** `_flush_time()` rewrites the review JSON on each switch, which bumps its mtime — and `image_counts` keys its cache on that mtime. So the *next* read of that image forces a full `compute_image_state` (mask load + `regionprops`), although only a timer changed.
+**Fix:** Exclude `time_spent_s` from the cache signature, or store the time outside the review file.
+
+### ⚪ PF-12 `DetailPanel.show_image` re-parses the filename per click
+**Where:** [detail_panel.py:117](../erysreview/detail_panel.py) — `grouped.flat` already holds the parsed `ImageGroupInfo`.
+
+### 🟠 UI-4 The two long operations have no feedback at all
+**Where:** [app.py:503-518](../erysreview/app.py) (folder open), [app.py:885-920](../erysreview/app.py) (export)
+**What:** Cold folder open costs ~15 ms/image (≈4.5 s at 300 images) and export ≥23 s at 780 — both on the Tk thread, both painting "Not Responding" on Windows. Cellpose got a worker thread (EH-1) and the batch run got a progress bar; these two got neither.
+**Fix:** Same pattern as `batch_dialog`: `run_in_thread_pumping` + determinate progress + cancel.
+
+### 🟠 UI-5 The ⚙ hit-test measures text with the wrong font
+**Where:** [sidebar.py:375-399](../erysreview/sidebar.py)
+**What:** `_hit_settings_icon` measures the row string with `TkDefaultFont` and treats everything to its right as the icon — but the row renders in the `Erys.Treeview` style and the string mixes status icon, counter, `⊘` marker and padding. If the measurement is off, a click near the right edge either opens the eval dialog unintentionally or does nothing.
+**Fix:** A real Treeview column (`batch_dialog` already does this correctly with `identify_column(evt.x) != "#1"`), or a right-click context menu — which would also be more discoverable.
+
+### 🟠 UI-6 Hint text fails WCAG AA contrast in both themes
+**Where:** [theme.py](../erysreview/theme.py) `fg_muted`
+**What:** `#6B7384` on `#2A3447` (dark) and `#8B94A4` on `#E8ECF2` (light) both land at ≈**2.6:1**; AA wants 4.5:1 for body text. It is used at 9 pt italic — including `details_empty_hint`, the one string that explains the ⚙ feature.
+**Fix:** Use `fg_secondary` for hints, or darken/lighten `fg_muted` until it clears 4.5:1.
+
+### 🟡 UI-7 `q` quits and `s` exports without a modifier
+**Where:** [app.py:339-340](../erysreview/app.py)
+**What:** Both are bound bare on the root window, alongside the Cmd/Ctrl variants that already exist. A stray keypress closes the app or kicks off a full export (≈23 s frozen at 780 images).
+**Fix:** Drop the bare bindings; keep `Cmd/Ctrl+Q` and `Cmd/Ctrl+S`.
+
+### 🟡 UI-8 Theme and language only apply after a restart
+**Where:** [app.py:866-884](../erysreview/app.py)
+**What:** Both show a "restart required" dialog. For non-technical lab users this is a poor first impression. Language is the easier half — every string already goes through `self.S`.
+
+### 🟡 UI-9 `Enter` triggers the destructive choice
+**Where:** [dialogs.py:154](../erysreview/dialogs.py)
+**What:** `confirm_dialog` binds `<Return>` to Yes, including for the re-segmentation prompt that discards the image's whole review.
+**Fix:** Default to the safe option in destructive dialogs.
+
+### ⚪ UI-10 Toolbar may drop its primary CTA at the minimum window size
+**Where:** [toolbar.py:149-224](../erysreview/toolbar.py), `minsize(900, 600)` at [app.py:77](../erysreview/app.py)
+**What:** Three tool buttons, a 22-char combobox and five action buttons pack left; Export and the param banner pack last and are therefore the first to be squeezed out. Unverified — needs one look at 900 px.
+
+### ⚪ UI-11 The status line packs six values into one truncating label
+**Where:** [app.py:980-988](../erysreview/app.py)
+
+### 🟡 UI-15 Two toolbar glyphs may not render on Windows — **check on the first Windows run**
+**Where:** [toolbar.py](../erysreview/toolbar.py) `GLYPHS`
+**What:** The set was changed to a bolder look on 2026-08-12. Four of the six sit in blocks Windows covers reliably (Arrows U+21xx, Geometric Shapes U+25xx, Enclosed U+24xx). Two do not: **⛶** (U+26F6, Misc Symbols) and **⬇** (U+2B07, Misc Symbols and Arrows). Windows may substitute them from another font at a different weight, or show a box. Not checkable from macOS.
+**Fix if wrong:** swap in `GLYPHS` — ▣ (U+25A3) and ⇩ (U+21E9) have the same weight and sit in well-covered blocks. One line each.
+**Also note:** a Unicode glyph set can never be fully consistent — the six chosen are 12–17 px wide because they come from different blocks. Bundled PNG icons were considered and rejected in favour of zero new assets; if the toolbar ever needs to look truly uniform, that is the route (`ttk.Button` takes `image=`, verified).
+
+### ✅ UI-12 Good patterns (keep)
+Three-state status icons `○ ◐ ●` encode **shape as well as color**; the Wong colorblind-safe scheme is offered; number rendering has a zoom LOD; `batch_dialog` has progress, cancel, an ETA and self-cleaning keep-awake — it is the model the other long operations should follow.
+
+---
+
 ## Recommended sequencing (respects dependencies)
 
 1. **CP-1 + CP-2** — conda-forge install + Miniforge bootstrap. *Unblocks Windows entirely; everything else on Windows is untestable until this lands.*
@@ -157,6 +298,8 @@ Atomic JSON writes ([persistence.py:44-56](../erysreview/persistence.py)), the `
 4. **CP-4 + CP-5** — taskbar AppUserModelID + macOS `.app` bundle.
 5. **NS-3** — package image picker.
 6. **EH-3, NS-1, SR-2/SR-3, CP-3/CP-7, EH-4** — hygiene & consistency.
+
+7. **Axis 5** — PF-8 must wait for step 3's Windows run; PF-9 and UI-4 belong together (both need `run_in_thread_pumping` + a progress dialog); UI-6 and UI-7 are one-line fixes that can ride along with anything.
 
 **Deferred:** own "U-Segmentation" (custom/trained model or freehand drawing) — not in this round.
 
@@ -170,6 +313,12 @@ Atomic JSON writes ([persistence.py:44-56](../erysreview/persistence.py)), the `
 - **2026-06-17 — #4 (CP-4/CP-5) shipped.** Windows: `EryApp._set_app_user_model_id()` called before the root window (taskbar identity). macOS: generated `assets/icon.icns`; `install.command` now builds a Desktop `ErysReview.app` bundle (Info.plist `CFBundleName`, `.icns`, launcher → repo `.venv` python). Bundle structure + plist validated on macOS. Visual Dock/taskbar confirmation pending on each OS.
 - **2026-06-17 — #5 (NS-3) shipped.** `create_package` gained `selected_stems` (None = all, back-compat); `package_create_dialog` now shows a hierarchical timepoint→subject→image checklist (group rows toggle children, All/None buttons, live count, default all-checked). End-to-end tested: only selected stems land in the ZIP/manifest. 3 i18n keys added (DE+EN).
 - **2026-06-17 — #6 partial (EH-3) shipped.** `_clampf()` clamps the three Cellpose params to their spinbox bounds (diameter 5–500, flow 0–3, cellprob −6–6) on save, robust to non-numeric input. Unit-tested.
+
+- **2026-08-12 — Axis 5 first batch shipped (PF-1…PF-7, UI-1…UI-3), incl. one EH-4 and one SR-3 site.** Two independent causes of the click latency, fixed separately. *(a) Size-independent:* the overlay is now `uint8` instead of `float32` (36.9 → 9.2 MB at 1920×1200 — memory only, the rebuild time is unchanged since it is gather-bound), a single-cell edit repaints just that cell's clamped bbox (15.49 → 0.045 ms), duplicates moved into `set_image` so overlay and numbers build once per switch instead of twice, and number artists now live for the image with visibility toggled per cell. *(b) Folder-size-dependent:* dead `n_done` loop deleted, `group_eval_summary` down to one disk pass, `has_cache` 6 → 2 ops, `cache_dir_for` memoized, cache-wide invalidation dropped from navigation. Net **2470 → 722 syscalls per click** at 20 images (−71 %). All color/activity decisions were consolidated into a single `OverlayColors` class shared by the full rebuild and the patch. **Verification:** new `tests/test_overlay.py` asserts patch == full rebuild pixel-for-pixel across all seven mutations (incl. force-included border cells, duplicate flags and a manual cell whose bbox sticks out of the image) and pins the uint8 scheme; `tests/test_export_db.py` stays green; a widget-level smoke run drove the real `EryCanvas` through every click path on a real 179-cell image with no drift. Mac-verified; nothing platform-specific was touched.
+
+- **2026-08-12 — PF-13 + UI-13 shipped.** *PF-13:* the centroid-distance duplicate detection was verified inert on real data (0 of 3164 cells, with a 1.66× gap between the threshold and the closest pair that exists) and replaced by an area-based size filter against the image median; `duplicates.py` → `sizefilter.py`, `DuplicateDetection` → `SizeFilter` (profile JSON key `size_filter`, old `duplicate_detection` block still read for the on/off choice so existing profiles keep working), profile-editor tab and DE/EN strings rewritten, `profile_signature` prefix changed `d` → `s` so every `counts.json` written under the old rule recomputes once. New `tests/test_sizefilter.py` pins the bounds, the median-vs-mean choice and the disable switch. Measured effect on the TRIBAL folder: −17 cells of 3164 (0.54 %), `%verändert` +0.001 pp. *UI-13:* overview workbook now saveable at any time from the Auswertung menu and from the export preview, built on a worker thread behind the new reusable `BusyDialog`. Verified: both gates plus the size-filter gate green, profile editor builds in DE and EN, workbook writes 9 sheets to an arbitrary path, widget smoke run clean, app starts without error. Mac only — nothing platform-specific touched.
+
+- **2026-08-12 — accessibility round shipped (UI-6, UI-10, UI-13a…g, PF-14).** Perceivable: palette reworked (`fg_muted`, `accent_warn`, `sash`, new `fg_on_accent`) — failing contrast pairs 6/17 → 1/17 dark and 7/17 → 1/17 light, the remaining one being the purely decorative hairline, which 1.4.11 does not cover; fill opacity 0.42 → 0.55 per profile; all 39 font specs routed through `theme.font()` behind a 100/125/150 % setting. The Level A finding — type carried by colour alone — is answered with a per-type contour (`TypeDef.outline`: none/solid/dashed/dotted/dash-dot, plus a profile-wide on/off), deliberately **not** gated by the numbers' zoom threshold, since at full-image view a cell is ~41 px and only ~0.2 % of cells carry a mark. A rendered comparison on real cells showed solid-vs-broken is reliable while three broken patterns are not, so the field defaults to none and profiles are expected to use few styles. Operable: sidebar navigation keys no longer double-fire the window shortcuts (verified 1 → 0), toolbar goes icon-only with tooltips below 1700 px (1659 → 803 px, fits the 900 px minimum), focus ring on all four button styles, buttons 45 px and tree rows 28 px, Escape in every window, and the busy modals register a cancel request instead of being a dead end. **Verification:** three gates green (`test_export_db`, `test_overlay` — extended with profile-opacity and contour checks — and `test_sizefilter`), widget smoke run clean, profile editor and settings build in DE and EN, contrast re-measured, contour behaviour verified against a real 179-cell image across type/exclude/toggle/profile-switch, app starts without error. Mac only.
 
 ### Deliberately deferred from #6 (regression / outward-facing risk)
 - **NS-1 (rename the `2000` keys/columns)** — the `%verändert_2000` etc. are **user-facing Excel column names**; renaming them silently could break downstream analysis the user has built on those names. Needs explicit sign-off on the new names before changing.

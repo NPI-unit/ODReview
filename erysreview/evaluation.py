@@ -25,29 +25,41 @@ from .persistence import ReviewState
 from .profile import ProfileData
 
 
-def _active_count(folder: Path, info: ImageGroupInfo, profile: ProfileData) -> int | None:
-    """Active (counted) cells for one image, or None if not segmented yet."""
-    c = image_counts(folder, info, profile)
-    return None if c is None else c["rbc"]
-
-
-def effective_eval_stems(
+def _group_rows(
     folder: Path, images_in_group: list[ImageGroupInfo], profile: ProfileData,
-) -> set[str]:
-    """Image stems in this group that count toward the target, in image order."""
-    target = max(1, profile.target_cells)
-    included: set[str] = set()
-    cumulative = 0
-    auto_reached = False
+) -> list[tuple[str, dict | None, ReviewState]]:
+    """ONE disk pass over a group: (stem, counts-or-None, review) per segmented image.
 
+    Both public functions below derive from this list. Previously
+    group_eval_summary() called effective_eval_stems() and then walked the same
+    images again, so every `<stem>_counts.json` and `<stem>_review.json` in the
+    group was read twice per call — on a folder-sized sidebar refresh that is the
+    single largest source of I/O.
+
+    `counts` stays None for an image whose mask is cached but unreadable (corrupt
+    .npy). Such an image is excluded from the evaluation but its review — and
+    therefore its accrued time — still counts, matching the previous behaviour.
+    """
+    rows: list[tuple[str, dict | None, ReviewState]] = []
     for info in images_in_group:
         if folder is None or not has_cache(folder, info.path):
             continue
         stem = info.path.stem
-        n = _active_count(folder, info, profile)
-        if n is None:
+        rows.append((stem, image_counts(folder, info, profile),
+                     ReviewState.load(folder, stem)))
+    return rows
+
+
+def _stems_from_rows(rows: list[tuple[str, dict | None, ReviewState]],
+                     target: int) -> set[str]:
+    """Cap logic — pure, no I/O. See the module docstring for the rules."""
+    included: set[str] = set()
+    cumulative = 0
+    auto_reached = False
+    for stem, c, review in rows:
+        if c is None:
             continue
-        review = ReviewState.load(folder, stem)
+        n = c["rbc"]
         if review.eval_include is True:
             included.add(stem)
             cumulative += n
@@ -63,25 +75,29 @@ def effective_eval_stems(
     return included
 
 
+def effective_eval_stems(
+    folder: Path, images_in_group: list[ImageGroupInfo], profile: ProfileData,
+) -> set[str]:
+    """Image stems in this group that count toward the target, in image order."""
+    target = max(1, profile.target_cells)
+    return _stems_from_rows(_group_rows(folder, images_in_group, profile), target)
+
+
 def group_eval_summary(
     folder: Path, images_in_group: list[ImageGroupInfo], profile: ProfileData,
 ) -> dict:
     """Aggregate counts restricted to the effective evaluation set of one group."""
     target = max(1, profile.target_cells)
-    stems = effective_eval_stems(folder, images_in_group, profile)
+    rows = _group_rows(folder, images_in_group, profile)
+    stems = _stems_from_rows(rows, target)
     n_active = 0
     by_type: dict[str, int] = {t.key: 0 for t in profile.cell_types}
     n_images = 0
     time_s = 0.0
-    for info in images_in_group:
-        if folder is None or not has_cache(folder, info.path):
-            continue
+    for stem, c, review in rows:
         # Time accrues for every reviewed image so timing reflects all work.
-        time_s += ReviewState.load(folder, info.path.stem).time_spent_s
-        if info.path.stem not in stems:
-            continue
-        c = image_counts(folder, info, profile)
-        if c is None:
+        time_s += review.time_spent_s
+        if stem not in stems or c is None:
             continue
         n_images += 1
         n_active += c["rbc"]

@@ -1,7 +1,7 @@
 """Study profile module.
 
 A profile bundles everything study-specific: how filenames map to (timepoint, subject),
-the cell types, Cellpose parameters, target cell count, duplicate detection rules,
+the cell types, Cellpose parameters, target cell count, size-filter rules,
 and the persisted Treeview-open-state.
 
 Profiles live globally at:
@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from .persistence import (
@@ -43,10 +43,28 @@ DEFAULT_TYPES_TRIBAL = [
 
 
 @dataclass
-class DuplicateDetection:
+class SizeFilter:
+    """Flags cells whose area is implausible for a single erythrocyte.
+
+    Both bounds are factors of the **median** cell area *of that image*, so the
+    filter adapts to magnification and needs no absolute pixel values. Median,
+    not mean: the fragments we are looking for drag a mean down and would raise
+    their own detection threshold.
+
+      area <  min_factor * median  -> segmentation fragment / spurious detection
+      area >  max_factor * median  -> two cells merged into one label
+
+    Flagged cells render gray and drop out of the count exactly like border
+    cells, and a click with the *Zählen ein/aus* tool puts any of them back in.
+
+    Replaces the former centroid-distance "duplicate detection" (see
+    docs/consistency-audit.md PF-13): Cellpose masks are a pixel partition, so
+    two labels can never overlap, and measured on real data no threshold existed
+    that flagged anything before it started flagging ordinary neighbours.
+    """
     enabled: bool = True
-    threshold_factor: float = 0.7   # multiplied by mean cell radius
-    policy: str = "remove_smaller"  # or "remove_both"
+    min_factor: float = 0.35
+    max_factor: float = 1.70
 
 
 @dataclass
@@ -81,7 +99,14 @@ class ProfileData:
     use_gpu: bool = True
     margin_n: int = 0
     show_margin_overlay: bool = True
-    duplicate_detection: DuplicateDetection = field(default_factory=DuplicateDetection)
+    size_filter: SizeFilter = field(default_factory=SizeFilter)
+    # Opacity of the type-colour fill over the image. Raised from the original
+    # 0.42 because at that value the colours wash out against a bright field
+    # (measured: min ΔE between types 21.6 -> 27.6 going from 0.42 to 0.55).
+    overlay_alpha: float = 0.55
+    # Draw each type's contour (TypeDef.outline) so the type is not conveyed by
+    # colour alone — WCAG 1.4.1. Off restores the pure colour rendering.
+    type_outlines_enabled: bool = True
     # Per-profile UI state (persisted)
     sidebar_open_groups: list[str] = field(default_factory=list)  # "timepoint/subject" keys
     details_collapsed: bool = False
@@ -100,13 +125,26 @@ class ProfileData:
     def from_dict(cls, raw: dict) -> "ProfileData":
         cp = CellposeParams(**raw.get("cellpose", {}))
         types_raw = raw.get("cell_types") or []
-        types = [TypeDef(**t) for t in types_raw] if types_raw else list(DEFAULT_TYPES_TRIBAL)
-        dup_raw = raw.get("duplicate_detection") or {}
-        dup = DuplicateDetection(
-            enabled=bool(dup_raw.get("enabled", True)),
-            threshold_factor=float(dup_raw.get("threshold_factor", 0.7)),
-            policy=str(dup_raw.get("policy", "remove_smaller")),
-        )
+        # Drop unknown keys instead of raising: a profile written by a NEWER
+        # version (or arriving inside a shared package) must not break the app
+        # with a TypeError over a field this build doesn't know yet.
+        known = {f.name for f in fields(TypeDef)}
+        types = ([TypeDef(**{k: v for k, v in t.items() if k in known})
+                  for t in types_raw]
+                 if types_raw else list(DEFAULT_TYPES_TRIBAL))
+        # Back-compat: profiles written before the size filter carry a
+        # `duplicate_detection` block. Its thresholds are meaningless now (a
+        # different criterion), but the user's on/off choice is honoured.
+        sf_raw = raw.get("size_filter")
+        if sf_raw is None:
+            legacy = raw.get("duplicate_detection") or {}
+            sf = SizeFilter(enabled=bool(legacy.get("enabled", True)))
+        else:
+            sf = SizeFilter(
+                enabled=bool(sf_raw.get("enabled", True)),
+                min_factor=float(sf_raw.get("min_factor", 0.35)),
+                max_factor=float(sf_raw.get("max_factor", 1.70)),
+            )
         return cls(
             name=raw.get("name", DEFAULT_PROFILE_NAME),
             import_folder=raw.get("import_folder"),
@@ -125,7 +163,9 @@ class ProfileData:
             use_gpu=bool(raw.get("use_gpu", True)),
             margin_n=int(raw.get("margin_n", 0)),
             show_margin_overlay=bool(raw.get("show_margin_overlay", True)),
-            duplicate_detection=dup,
+            size_filter=sf,
+            overlay_alpha=float(raw.get("overlay_alpha", 0.55)),
+            type_outlines_enabled=bool(raw.get("type_outlines_enabled", True)),
             sidebar_open_groups=list(raw.get("sidebar_open_groups", [])),
             details_collapsed=bool(raw.get("details_collapsed", False)),
             recent_folders=list(raw.get("recent_folders", [])),
@@ -153,7 +193,9 @@ class ProfileData:
             "use_gpu": self.use_gpu,
             "margin_n": self.margin_n,
             "show_margin_overlay": self.show_margin_overlay,
-            "duplicate_detection": asdict(self.duplicate_detection),
+            "size_filter": asdict(self.size_filter),
+            "overlay_alpha": self.overlay_alpha,
+            "type_outlines_enabled": self.type_outlines_enabled,
             "sidebar_open_groups": self.sidebar_open_groups,
             "details_collapsed": self.details_collapsed,
             "recent_folders": self.recent_folders,

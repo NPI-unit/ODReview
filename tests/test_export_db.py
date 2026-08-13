@@ -26,7 +26,7 @@ from erysreview.evaluation import group_eval_summary
 from erysreview.grouping import GroupedFolder, ImageGroupInfo
 from erysreview.persistence import ReviewState
 from erysreview.profile import ProfileData
-from erysreview.profile import DuplicateDetection
+from erysreview.profile import SizeFilter
 
 
 def _make_mask(k: int, H: int = 60, W: int = 60) -> np.ndarray:
@@ -66,7 +66,7 @@ def main() -> int:
     profile = ProfileData()
     profile.target_cells = 5                       # small, so the eval-cap kicks in
     profile.margin_n = 0
-    profile.duplicate_detection = DuplicateDetection(enabled=False)
+    profile.size_filter = SizeFilter(enabled=False)
 
     # Two groups under one timepoint, plus a second timepoint.
     # Group (T0,S1): 3 images; cap=5 should select the first two only.

@@ -19,7 +19,8 @@ canvas_bg           matplotlib figure background
 fg                  primary text
 fg_secondary        less important text (labels, captions)
 fg_muted            very subtle text (hints)
-fg_inverse          text on accent surfaces (usually white)
+fg_inverse          text on a dark accent surface (usually white)
+fg_on_accent        text on accent_primary — differs per theme, see below
 
 border              hairline divider color
 sash                paned-window separator color
@@ -56,21 +57,33 @@ PALETTES = {
 
         "fg":              "#1A2233",
         "fg_secondary":    "#5A6577",
-        "fg_muted":        "#8B94A4",
+        # a11y: was #8B94A4 = 2.58:1 on sidebar_alt_bg — below the 4.5:1 that
+        # WCAG 1.4.3 wants for body text. #616B7C clears it on all three
+        # surfaces it is used over (status_bg, sidebar_alt_bg, panel_bg).
+        "fg_muted":        "#616B7C",
         "fg_inverse":      "#FFFFFF",
+        "fg_on_accent":    "#FFFFFF",     # on #2161D9 = 5.56:1, fine as is
 
-        "border":          "#E3E7EE",
-        "sash":            "#CFD5DF",
+        "border":          "#E3E7EE",     # decorative hairline, not a control
+        # a11y: the sash IS a draggable control, so 1.4.11 applies (>=3:1).
+        "sash":            "#8291AB",
+
+        # Tooltip chip. Rule: it inverts against the theme, so a borderless chip
+        # still separates from whatever it floats over — 10.99:1 against the
+        # lightest surface here, 13.03:1 text.
+        "tooltip_bg":      "#2A3140",
+        "tooltip_fg":      "#FFFFFF",
 
         "accent_primary":        "#2161D9",
         "accent_primary_hover":  "#2F73EB",
         "accent_primary_press":  "#194FB3",
         "accent_positive":       "#1B7A4D",
-        "accent_warn":           "#B8730F",
+        # a11y: was #B8730F = 3.22:1 on sidebar_alt_bg (warn banner, % verändert).
+        "accent_warn":           "#975E0C",
         "accent_error":          "#B83A3A",
 
         "state_unsegmented": "#B83A3A",
-        "state_in_progress": "#B8730F",
+        "state_in_progress": "#975E0C",
         "state_finished":    "#1B7A4D",
     },
 
@@ -82,7 +95,7 @@ PALETTES = {
         "sidebar_bg":      "#232C3B",
         "sidebar_alt_bg":  "#2A3447",
         "toolbar_bg":      "#2A3445",
-        "status_bg":       "#15192B" if False else "#181F2B",
+        "status_bg":       "#181F2B",
         "panel_bg":        "#1F2837",
         "tree_bg":         "#1B2330",
         "tree_alt_bg":     "#202938",
@@ -90,11 +103,24 @@ PALETTES = {
 
         "fg":              "#E8ECF2",
         "fg_secondary":    "#98A2B3",
-        "fg_muted":        "#6B7384",
+        # a11y: was #6B7384 = 2.62:1 on sidebar_alt_bg (WCAG 1.4.3 wants 4.5:1).
+        "fg_muted":        "#969DAA",
         "fg_inverse":      "#FFFFFF",
+        # a11y: white on the light blue accent_primary is only 2.75:1 — and that
+        # combination labels the ACTIVE tool, the most important state in the
+        # toolbar. Dark text on the same blue reaches 5.75:1.
+        "fg_on_accent":    "#1B2330",
 
-        "border":          "#364152",
-        "sash":            "#384258",
+        "border":          "#364152",     # decorative hairline, not a control
+        # a11y: the sash IS a draggable control, so 1.4.11 applies (>=3:1).
+        "sash":            "#5C6C90",
+
+        # Tooltip chip — inverted here too, i.e. light on the dark theme:
+        # 10.57:1 against the darkest surface, 13.32:1 text. A dark chip on a
+        # dark UI measured 1.47:1 against the toolbar and would have blurred
+        # into it, which a borderless chip cannot afford.
+        "tooltip_bg":      "#E8ECF2",
+        "tooltip_fg":      "#1B2330",
 
         "accent_primary":        "#5B9CFF",
         "accent_primary_hover":  "#73AEFF",
@@ -112,6 +138,54 @@ PALETTES = {
 
 def palette(name: str) -> dict:
     return PALETTES.get(name, PALETTES["dark"])
+
+
+# ─────────────────────────────────────────────
+# Text size (WCAG 1.4.4 — the user must be able to enlarge text)
+# ─────────────────────────────────────────────
+# Every font spec in the UI goes through font() so a single setting scales all
+# of them. Set once from AppSettings.font_scale before the widgets are built;
+# changing it takes effect on restart, like the theme.
+_FONT_SCALE = 1.0
+FONT_SCALE_CHOICES = (1.0, 1.25, 1.5)
+
+
+def set_font_scale(scale: float) -> None:
+    global _FONT_SCALE
+    try:
+        _FONT_SCALE = max(1.0, min(2.0, float(scale)))
+    except (TypeError, ValueError):
+        _FONT_SCALE = 1.0
+
+
+def get_font_scale() -> float:
+    return _FONT_SCALE
+
+
+def font(size: int, *styles: str) -> tuple:
+    """Tk font spec at the user's chosen text size.
+
+    `font(9)` -> ("TkDefaultFont", 9); `font(10, "bold")` -> (..., 10, "bold").
+    """
+    s = max(7, int(round(size * _FONT_SCALE)))
+    return ("TkDefaultFont", s, *styles) if styles else ("TkDefaultFont", s)
+
+
+# ─────────────────────────────────────────────
+# Cell-type outline styles (WCAG 1.4.1 — not by color alone)
+# ─────────────────────────────────────────────
+# A per-type contour drawn around cells of that type, so the type does not rest
+# on fill color alone. Measured on real 41 px cells: solid vs. broken reads
+# reliably, three different broken patterns do not — so a profile should use
+# few of these, not all five. "" = no outline (the default for "normal").
+OUTLINE_STYLES: dict[str, object] = {
+    "":        None,
+    "solid":   "-",
+    "dashed":  (0, (5, 3)),
+    "dotted":  (0, (1, 2)),
+    "dashdot": (0, (7, 2, 1, 2)),
+}
+OUTLINE_ORDER = ["", "solid", "dashed", "dotted", "dashdot"]
 
 
 # Mapping consumed by app.py for sidebar tree row colors.

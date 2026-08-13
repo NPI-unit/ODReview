@@ -32,9 +32,21 @@ def app_support_dir() -> Path:
     return d
 
 
+# Memoized per folder: `mkdir(parents=True, exist_ok=True)` costs two syscalls on
+# the (overwhelmingly common) already-exists path, and cache_dir_for sits under
+# review_path / _counts_path / cache_paths — i.e. under every hot loop that walks
+# a folder. Creating it once per folder is enough; write_json_atomic still does
+# its own parent mkdir, so a cache dir deleted underneath us can't break writes.
+_CACHE_DIRS: dict[Path, Path] = {}
+
+
 def cache_dir_for(folder: Path) -> Path:
+    d = _CACHE_DIRS.get(folder)
+    if d is not None:
+        return d
     d = folder / ".erys_cache"
     d.mkdir(parents=True, exist_ok=True)
+    _CACHE_DIRS[folder] = d
     return d
 
 
@@ -86,6 +98,10 @@ class TypeDef:
     name: str = ""             # display name (used when i18n_key is None)
     color: str = "#FFD000"     # hex
     hotkey: str = "1"          # "1".."5"
+    # Contour drawn around cells of this type so the type is not carried by
+    # color alone (WCAG 1.4.1). One of theme.OUTLINE_ORDER; "" = none.
+    # Old profiles simply lack the key and fall back to "".
+    outline: str = ""
 
 
 # Built-in default types (translated via i18n_key)
@@ -118,6 +134,15 @@ class AppSettings:
     active_tool: str = TOOL_ADD
     last_profile_name: str | None = None
     reviewer_name: str = ""           # stamped into shared packages + import logs
+    # WCAG 1.4.4: multiplies every font size in the UI. Applied at startup via
+    # theme.set_font_scale(); a change takes effect on restart, like the theme.
+    font_scale: float = 1.0
+    # Cellpose models available ON THIS MACHINE: display name -> model file.
+    # Profiles reference a model by NAME only, because a profile travels inside
+    # share packages and an absolute path from another machine is meaningless
+    # there (Cellpose would silently fall back to cpsam). "cpsam" is built in
+    # and never needs an entry.
+    cellpose_models: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> "AppSettings":
@@ -142,6 +167,8 @@ class AppSettings:
                 active_tool=active_tool,
                 last_profile_name=raw.get("last_profile_name"),
                 reviewer_name=str(raw.get("reviewer_name", "")),
+                font_scale=float(raw.get("font_scale", 1.0)),
+                cellpose_models=dict(raw.get("cellpose_models") or {}),
             )
         except (TypeError, ValueError):
             return cls()
@@ -158,6 +185,8 @@ class AppSettings:
             "active_tool": self.active_tool,
             "last_profile_name": self.last_profile_name,
             "reviewer_name": self.reviewer_name,
+            "font_scale": self.font_scale,
+            "cellpose_models": self.cellpose_models,
         })
 
 

@@ -14,7 +14,7 @@ For every reviewed image, `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/` contains:
 |---|---|
 | `<stem>.tif` | the raw image (input), copied losslessly |
 | `<stem>_masks.npy` | an **instance segmentation mask** — each cell is a distinct integer label |
-| `<stem>_stats.csv` | one **row per cell**: `cell_id` (= mask label), `type`, `type_name`, `label_source`, `image_in_evaluation`, `is_active`, `is_border`, `is_duplicate`, `is_manual`, `area`, `centroid_x/y` |
+| `<stem>_stats.csv` | one **row per cell**: `cell_id` (= mask label), `type`, `type_name`, `label_source`, `image_in_evaluation`, `reviewed`, `is_active`, `is_border`, `is_duplicate`, `is_manual`, `area`, `centroid_x/y` |
 | `<stem>_overlay.png` | human QA only |
 | `<Zeitpunkt>_<Proband>_summary.csv` | aggregate counts (not needed for training) |
 | `manifest.json` | Cellpose version + parameters + profile snapshot (provenance) |
@@ -32,8 +32,17 @@ exactly an instance-segmentation-plus-classification dataset.
 
 2. **Train only on active, clean cells.** Filter rows to
    `is_active == True and is_border == False and is_duplicate == False`. Border
-   and duplicate cells are deliberately excluded from counts and make noisy
-   training examples. `label_source == "reviewer"` marks cells a human explicitly
+   and auto-rejected cells are deliberately excluded from counts and make noisy
+   training examples.
+
+   > **`is_duplicate` since 2026-08-12:** the column name is kept for
+   > compatibility, but the criterion behind it changed. It used to mean "another
+   > detection's centroid is very close" — a rule measured to never fire on
+   > Cellpose output. It now means **"implausible cell area"**: below 0.35× or
+   > above 1.70× the median cell area of that image (per-profile bounds), i.e. a
+   > segmentation fragment or two merged cells. Either way it marks *auto-rejected,
+   > don't train on this*, so the filter above is unchanged. See
+   > [consistency-audit.md](consistency-audit.md) PF-13. `label_source == "reviewer"` marks cells a human explicitly
    typed; `"auto"` means the default (`Normal`) fallback — useful if you want to
    weight or audit labels.
 
@@ -90,3 +99,51 @@ Add an **"ML-Datensatz exportieren"** action that performs the consolidation
 above automatically: one `erys_cells.parquet` + `class_map.json` + optional
 `crops/` tree. The current per-cell columns were chosen so this can be added
 without re-reviewing anything.
+
+
+---
+
+## Is this data suitable for training a *segmentation* model?
+
+**For a type classifier: yes.** Cell crops plus reviewer labels, with
+`label_source` separating human decisions from the `Normal` default, is exactly
+what such a model needs.
+
+**For segmentation: not from the normal export, and the reason is structural.**
+ErysReview is a counting and typing tool, not an annotation tool. A reviewer can
+add a cell and exclude a cell from the count — but cannot redraw a boundary,
+delete a false detection, or split two cells Cellpose merged. So the exported
+mask is, in substance, Cellpose's own output. Four specifics:
+
+1. **Manually added cells are discs, not outlines.** `_act_add` stamps a
+   fixed-radius circle (`canvas.py`, `sk_disk`) and `compute_image_state` burns
+   it into the exported mask. They carry `is_manual = True`, so they are at
+   least identifiable.
+2. **Excluded cells stay in the mask.** `is_border`, `is_duplicate` (the size
+   filter) and `is_force_excluded` mean *does not count towards the target* —
+   not *wrongly segmented*. Border cells in particular are usually segmented
+   correctly.
+3. **`reviewed` (since 2026-08-12) tells you whether a human looked at all.**
+   Before that column existed, raw batch output and human-checked masks were
+   indistinguishable in the export.
+4. **The originals are not copied by default** (`copy_originals_to_outputs`), so
+   the normal export alone is not an (image, mask) pair set.
+
+### Use `Auswertung → Trainingsdaten exportieren …` instead
+
+It writes `<stem>.tif` + `<stem>_masks.tif` (uint16 labels) into a folder of your
+choice, loadable directly by
+`cellpose.io.load_train_test_data(dir, mask_filter="_masks")`, plus a
+`manifest.json` recording what was included and what was skipped.
+
+- **Included:** only images marked *fertig* **and** free of manually drawn cells.
+- **Masks go out unchanged** — every label stays, border and excluded ones
+  included. During Cellpose training an unlabelled pixel counts as background,
+  so removing a correctly segmented cell teaches the model to miss it. That is
+  the most expensive mistake available in this area, and the reason the export
+  does not "clean" the mask.
+
+What this gives you is **domain adaptation**, not error correction: fine-tuning
+cpsam on your own staining, microscope and magnification, using masks a human
+inspected and accepted. Teaching the model to fix its mistakes would require
+mask editing that the app does not have.

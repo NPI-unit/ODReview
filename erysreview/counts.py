@@ -11,7 +11,7 @@ recomputes when the inputs that affect the numbers change:
 
   * the mask file (mtime)
   * the review file (mtime)
-  * the relevant profile settings (margin, duplicate detection, type keys) — a
+  * the relevant profile settings (margin, size filter, type keys) — a
     short signature string
 
 Cheap consumers read a tiny JSON; the expensive `compute_image_state` runs only
@@ -35,9 +35,11 @@ def _counts_path(folder: Path, stem: str) -> Path:
 
 def profile_signature(profile: ProfileData) -> str:
     """Everything in the profile that changes per-image active/by-type counts."""
-    dup = profile.duplicate_detection
+    sf = profile.size_filter
     type_keys = ",".join(t.key for t in profile.cell_types)
-    return (f"m{profile.margin_n}|d{int(dup.enabled)}:{dup.threshold_factor}:{dup.policy}"
+    # "s" (not the old "d") so every counts.json written under the previous
+    # duplicate-detection rule is treated as stale and recomputed once.
+    return (f"m{profile.margin_n}|s{int(sf.enabled)}:{sf.min_factor}:{sf.max_factor}"
             f"|t{type_keys}")
 
 

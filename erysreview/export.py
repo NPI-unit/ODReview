@@ -96,6 +96,10 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
             "type_name": type_name_by_key.get(type_key, type_key),
             "label_source": "reviewer" if str(cid) in state.review.types else "auto",
             "image_in_evaluation": bool(in_eval),
+            # Per-image, repeated on every row like image_in_evaluation: was a
+            # human done with this image, or is the mask still raw Cellpose?
+            # Without it a consumer cannot tell reviewed from unreviewed data.
+            "reviewed": bool(state.review.is_finished),
             "is_active": is_active, "is_border": is_border,
             "is_duplicate": is_dup,
             "is_force_included": cid in state.included,
@@ -131,6 +135,83 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
         fig.savefig(dest / f"{stem}_overlay.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
     return True
+
+
+def export_training_data(folder: Path, profile: ProfileData,
+                         grouped: GroupedFolder | None, dest: Path) -> dict:
+    """Write (image, mask) pairs for fine-tuning Cellpose on this material.
+
+    Layout is what `cellpose.io.load_train_test_data` expects out of the box:
+    `<stem>.tif` next to `<stem>_masks.tif`, mask as a uint16 label image.
+
+    **Which images.** Only those a human marked *fertig* AND that contain no
+    manually drawn cells. A manual cell is a fixed-radius disc (canvas.py draws
+    it with sk_disk), not a traced outline — training on those teaches the model
+    to predict discs. Excluding whole images is the honest option; there is no
+    way to recover the true boundary after the fact.
+
+    **Which cells.** All of them, unchanged: border cells, size-filter rejects
+    and manually excluded ones stay in the mask. Those flags mean "does not
+    count towards the target", NOT "wrongly segmented". In Cellpose training an
+    unlabelled pixel is background, so dropping a correctly segmented cell would
+    actively teach the model to miss it — the single most expensive mistake
+    available here.
+
+    Returns a summary dict; writes `manifest.json` alongside the pairs.
+    """
+    import tifffile
+    from .cellpose_runner import load_cached_masks
+    from .persistence import ReviewState
+
+    dest.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    skipped_unfinished: list[str] = []
+    skipped_manual: list[str] = []
+    skipped_nomask: list[str] = []
+
+    for info in (grouped.flat if grouped else []):
+        stem = info.path.stem
+        masks = load_cached_masks(folder, info.path)
+        if masks is None:
+            skipped_nomask.append(stem)
+            continue
+        review = ReviewState.load(folder, stem)
+        if not review.is_finished:
+            skipped_unfinished.append(stem)
+            continue
+        if review.manual_cells:
+            skipped_manual.append(stem)
+            continue
+        shutil.copy2(info.path, dest / f"{stem}{info.path.suffix}")
+        tifffile.imwrite(dest / f"{stem}_masks.tif",
+                         masks.astype(np.uint16), compression="zlib")
+        written.append(stem)
+
+    summary = {
+        "app_version": __version__,
+        "exported_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "source_folder": str(folder),
+        "profile_name": profile.name,
+        "cellpose": asdict(profile.cellpose),
+        "n_written": len(written),
+        "written": written,
+        "skipped": {
+            "not_finished": skipped_unfinished,
+            "has_manual_cells": skipped_manual,
+            "no_mask": skipped_nomask,
+        },
+        "notes": [
+            "Masks are unmodified Cellpose output that a reviewer inspected and "
+            "accepted; border, size-filtered and manually excluded cells are all "
+            "still labelled on purpose.",
+            "Images containing manually drawn cells are omitted: those are "
+            "fixed-radius discs, not traced outlines.",
+            "Layout matches cellpose.io.load_train_test_data(mask_filter='_masks').",
+        ],
+    }
+    with (dest / "manifest.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    return summary
 
 
 def export_folder_structured(folder: Path, profile: ProfileData,

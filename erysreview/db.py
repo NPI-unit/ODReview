@@ -36,7 +36,8 @@ from .grouping import GroupedFolder, ImageGroupInfo, UNGROUPED_TIMEPOINT
 from .image_state import compute_image_state
 from .profile import ProfileData
 
-SCHEMA_VERSION = 1
+# 2: images gained `reviewed` (was the human done with this image?).
+SCHEMA_VERSION = 2
 
 
 # ─────────────────────────────────────────────
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS images (
     cellprob_threshold REAL,
     model              TEXT,
     cellpose_version   TEXT,
+    reviewed           INTEGER,       -- image marked "fertig" by a human (ReviewState.is_finished)
     source_mtime       REAL,          -- max(mask, review) mtime for incremental upsert
     exported_at        TEXT
 );
@@ -199,7 +201,26 @@ GROUP BY im.timepoint, im.subject, c.type_counted_as;
 
 
 def _connect(dest: Path) -> sqlite3.Connection:
+    """Open the store, rebuilding it from scratch if it predates SCHEMA_VERSION.
+
+    The DDL is all CREATE TABLE IF NOT EXISTS, so an older file would keep its
+    old columns and the next INSERT would fail on the new one. Dropping is safe:
+    this database is a derived snapshot, regenerated in full from .erys_cache on
+    every export — no original data lives here.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        try:
+            probe = sqlite3.connect(str(dest))
+            row = probe.execute(
+                "SELECT schema_version FROM run_meta WHERE id = 1").fetchone()
+            probe.close()
+            stale = row is None or int(row[0]) < SCHEMA_VERSION
+        except sqlite3.Error:
+            stale = True          # unreadable or no run_meta yet -> rebuild
+        if stale:
+            print(f"[db] {dest.name}: older schema, rebuilding", flush=True)
+            dest.unlink()
     conn = sqlite3.connect(str(dest))
     conn.row_factory = sqlite3.Row
     conn.executescript(_DDL_TABLES)
@@ -257,6 +278,7 @@ def write_db(folder: Path, profile: ProfileData, grouped: GroupedFolder,
     from . import __version__
     from .cellpose_runner import cached_params, has_cache
     from .evaluation import effective_eval_stems
+    from .persistence import ReviewState
 
     if grouped is None or not grouped.tree:
         return None
@@ -328,14 +350,16 @@ def write_db(folder: Path, profile: ProfileData, grouped: GroupedFolder,
                     conn.execute(
                         "INSERT INTO images (stem, timepoint, subject, image_num, "
                         "in_eval, eval_override, n_active, diameter, flow_threshold, "
-                        "cellprob_threshold, model, cellpose_version, source_mtime, "
-                        "exported_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "cellprob_threshold, model, cellpose_version, reviewed, "
+                        "source_mtime, exported_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (stem, tp, sub, info.image_num,
                          1 if stem in eval_stems else 0,
                          _eval_override(folder, stem), int(state.n_active),
                          params.get("diameter"), params.get("flow_threshold"),
                          params.get("cellprob_threshold"), params.get("model"),
-                         params.get("cellpose_version"), src_mtime, now),
+                         params.get("cellpose_version"),
+                         1 if ReviewState.load(folder, stem).is_finished else 0,
+                         src_mtime, now),
                     )
                     conn.executemany(
                         "INSERT INTO cells (stem, cell_id, type_key, type_counted_as, "

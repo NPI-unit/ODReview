@@ -23,13 +23,15 @@ from .canvas import EryCanvas
 from .cellpose_runner import (
     has_cache, list_images, load_cached_masks, load_image,
     params_match, run_for_image, discard_cache,
+    ModelUnavailable, resolve_model,
 )
 from .dialogs import (
-    CellposeSpinner, batch_dialog, confirm_dialog, info_dialog,
-    overview_preview_dialog, profile_editor_dialog, profile_manager_dialog,
-    run_in_thread_pumping, settings_dialog,
+    BusyDialog, CellposeSpinner, ask_overview_destination, batch_dialog,
+    confirm_dialog, info_dialog, overview_preview_dialog, profile_editor_dialog,
+    model_registry_dialog, profile_manager_dialog, run_in_thread_pumping,
+    settings_dialog,
 )
-from .export import export_folder_structured
+from .export import export_folder_structured, export_training_data
 from .extras import (
     dashboard_window, eval_select_dialog, package_create_dialog,
     package_import_dialog, stats_window,
@@ -42,7 +44,7 @@ from .persistence import (
 )
 from .profile import ProfileData, ensure_default_profile, load_profile, save_profile
 from .sidebar import Sidebar
-from .theme import palette
+from .theme import font, palette, set_font_scale
 from .toolbar import Toolbar
 
 
@@ -55,6 +57,9 @@ class EryApp:
         import sys
         print("ErysReview: loading settings ...", flush=True)
         self.settings = AppSettings.load()
+        # Must run before ANY widget exists — every font spec in the UI goes
+        # through theme.font(), which reads this once (WCAG 1.4.4).
+        set_font_scale(self.settings.font_scale)
         self.S = get_strings(self.settings.language)
         self.P = palette(self.settings.theme)
 
@@ -74,7 +79,10 @@ class EryApp:
         self.root.geometry(self._safe_geometry(
             self.settings.window_w, self.settings.window_h,
         ))
-        self.root.minsize(900, 600)
+        # 980, not 900: measured, the toolbar needs 968 px to show every button
+        # plus the longest parameter banner without truncating anything. A cut-off
+        # warning is worse than a slightly larger minimum window.
+        self.root.minsize(980, 600)
         self.root.configure(bg=self.P["bg"])
         self._apply_window_icon()
 
@@ -83,7 +91,7 @@ class EryApp:
         loading = tk.Label(
             self.root, text="ErysReview\n\nLoading …",
             bg=self.P["bg"], fg=self.P["fg_secondary"],
-            font=("TkDefaultFont", 16, "bold"), justify="center",
+            font=font(16, "bold"), justify="center",
         )
         loading.place(relx=0.5, rely=0.5, anchor="center")
         self.root.update()
@@ -234,13 +242,19 @@ class EryApp:
         m_analysis = tk.Menu(menubar, tearoff=0)
         m_analysis.add_command(label=S["menu_stats"], command=self._on_stats)
         m_analysis.add_command(label=S["menu_dashboard"], command=self._on_dashboard)
+        m_analysis.add_separator()
+        m_analysis.add_command(label=S["menu_overview_xlsx"],
+                               command=self._on_overview_xlsx)
+        m_analysis.add_command(label=S["menu_training_export"],
+                               command=self._on_training_export)
         menubar.add_cascade(label=S["menu_analysis"], menu=m_analysis)
         self.m_analysis = m_analysis
-        self._stats_menu_index = 0  # stats(0), dashboard(1)
+        self._stats_menu_index = 0  # stats(0), dashboard(1), sep(2), overview(3)
         self._apply_stats_menu_state()
 
         m_settings = tk.Menu(menubar, tearoff=0)
         m_settings.add_command(label=S["menu_settings_open"], command=self._on_settings)
+        m_settings.add_command(label=S["menu_models"], command=self._on_model_registry)
         menubar.add_cascade(label=S["menu_settings"], menu=m_settings)
 
         m_help = tk.Menu(menubar, tearoff=0)
@@ -269,23 +283,25 @@ class EryApp:
         tk.Frame(self.root, bg=P["border"], height=1).pack(fill="x", side="top")
 
         # ─── Status bar (bottom) ───
-        self.status = tk.Frame(self.root, bg=P["status_bg"], height=26)
+        # Same reason as the toolbar: a pinned height clips its own labels once
+        # the text size grows (settings offer 125 % and 150 %). Let it size to
+        # content; the padx/pady on the labels keep it from looking cramped.
+        self.status = tk.Frame(self.root, bg=P["status_bg"])
         self.status.pack(fill="x", side="bottom")
-        self.status.pack_propagate(False)
         self.status_label = tk.Label(
             self.status, text=self.S["status_ready"], anchor="w",
             fg=P["fg_muted"], bg=P["status_bg"], padx=10,
-            font=("TkDefaultFont", 10),
+            font=font(10),
         )
         self.status_label.pack(side="left", fill="both", expand=True)
         self.tool_label = tk.Label(
             self.status, text="", fg=P["accent_primary"], bg=P["status_bg"],
-            padx=10, font=("TkDefaultFont", 10, "bold"),
+            padx=10, font=font(10, "bold"),
         )
         self.tool_label.pack(side="right")
         self.saved_label = tk.Label(
             self.status, text="", fg=P["accent_positive"], bg=P["status_bg"], padx=10,
-            font=("TkDefaultFont", 10),
+            font=font(10),
         )
         self.saved_label.pack(side="right")
 
@@ -320,7 +336,7 @@ class EryApp:
 
         self.empty_btn = tk.Button(
             center, text=self.S["btn_open_folder"],
-            font=("TkDefaultFont", 14), padx=24, pady=14,
+            font=font(14), padx=24, pady=14,
             command=self._on_open_folder,
         )
         self._show_empty_state(True)
@@ -560,22 +576,18 @@ class EryApp:
             self.toolbar.set_param_mismatch(
                 self.S["status_param_mismatch"] if mismatch else None
             )
+        # set_image() now resolves duplicates itself, before it paints — so the
+        # overlay and the numbers are built exactly once per image switch, and a
+        # failure can no longer leave the previous image's duplicate ids feeding
+        # _update_status() from behind a swallowed exception.
         self.canvas.set_image(img, masks, review)
-        # Per-image duplicate detection on the freshly loaded mask
-        try:
-            from .duplicates import detect_duplicates
-            self.canvas.duplicate_ids = detect_duplicates(
-                self.canvas.cell_infos, self.profile.duplicate_detection,
-            )
-            self.canvas._refresh_overlay()
-            self.canvas._refresh_numbers()
-            self.canvas.canvas.draw_idle()
-        except Exception:
-            pass
         self.canvas.reset_zoom()
         self._update_status()
         self.sidebar.refresh_statuses()
-        self.sidebar.invalidate_group_cache()
+        # Only the group we moved into needs recomputing; navigating changes no
+        # other group's numbers. Every path that DOES change them (re-segment,
+        # batch, eval toggle/select, export) calls invalidate_group_cache()
+        # itself before landing here.
         self.sidebar.refresh_current_group_counter()
         self._refresh_tool_indicator()
         if self.sidebar.details.mode == "image":
@@ -636,6 +648,11 @@ class EryApp:
         discards the review)."""
         if self.folder is None or not self.images:
             return
+        # BEFORE the confirm + discard below: a re-segment deletes the existing
+        # mask and review first, so an unresolvable model discovered afterwards
+        # would destroy work and put nothing back.
+        if not self._model_available():
+            return
         path = self.images[self.idx]
         is_new = not has_cache(self.folder, path)
         if not is_new:
@@ -661,8 +678,12 @@ class EryApp:
                     lambda: run_for_image(
                         self.folder, path, load_image(path),
                         self.profile.cellpose, force=True,
-                        use_gpu=self.profile.use_gpu),
+                        use_gpu=self.profile.use_gpu,
+                        model_registry=self.settings.cellpose_models),
                 )
+        except ModelUnavailable as e:
+            self._report_missing_model(e.name)
+            return
         except Exception as e:
             info_dialog(self.root, self.S["title"],
                         self.S["err_cellpose"].format(err=e))
@@ -671,8 +692,34 @@ class EryApp:
         self.sidebar.invalidate_group_cache()
         self._show_image_at(self.idx)
 
+    def _model_available(self) -> bool:
+        """True if this machine can supply the profile's model; otherwise show
+        the explanation and return False."""
+        try:
+            resolve_model(self.profile.cellpose.model, self.settings.cellpose_models)
+            return True
+        except ModelUnavailable as e:
+            self._report_missing_model(e.name)
+            return False
+
+    def _report_missing_model(self, name: str) -> None:
+        """The profile asks for a model this machine has no file for.
+
+        Deliberately a dead stop rather than a fallback: segmenting with cpsam
+        instead would put two models' counts into one study, and nothing in the
+        exported numbers would show it.
+        """
+        if confirm_dialog(
+            self.root, self.S["model_missing_title"],
+            self.S["model_missing_msg"].format(name=name),
+            yes_text=self.S["model_missing_open"], no_text=self.S["confirm_no"],
+        ):
+            self._on_model_registry()
+
     def _on_batch(self) -> None:
         if self.folder is None or not self.images:
+            return
+        if not self._model_available():
             return
         batch_dialog(
             parent=self.root, folder=self.folder, images=self.images,
@@ -680,6 +727,7 @@ class EryApp:
             image_status_fn=self.sidebar._image_status,
             on_done=self._after_batch,
             grouped=self.grouped,
+            model_registry=self.settings.cellpose_models,
         )
 
     def _after_batch(self) -> None:
@@ -767,6 +815,41 @@ class EryApp:
         self._flush_time()
         dashboard_window(self.root, self.folder, self.profile, self.grouped, self.S)
 
+    def _on_overview_xlsx(self) -> None:
+        """Build the overview workbook from the CURRENT review state and save it
+        wherever the user wants — without having to run a full export first.
+
+        The build walks every group (the same multi-pass path as the export, see
+        audit item PF-9), so it runs on a worker thread behind a busy dialog
+        rather than freezing the window on a large folder.
+        """
+        if self.folder is None or self.grouped is None:
+            info_dialog(self.root, self.S["menu_overview_xlsx"], self.S["stats_no_data"])
+            return
+        self._flush_time()
+        dest = ask_overview_destination(self.root, self.S)
+        if dest is None:
+            return
+        try:
+            from .overview import write_overview_xlsx
+            with BusyDialog(self.root, self.S["menu_overview_xlsx"],
+                            self.S["overview_building"], strings=self.S) as busy:
+                written = run_in_thread_pumping(
+                    busy.top,
+                    lambda: write_overview_xlsx(
+                        self.folder, self.profile, self.grouped, dest),
+                )
+        except Exception as e:
+            info_dialog(self.root, self.S["menu_overview_xlsx"],
+                        self.S["overview_save_err"].format(err=e))
+            return
+        if written is None:
+            # No group has a cached mask yet — nothing to tabulate.
+            info_dialog(self.root, self.S["menu_overview_xlsx"], self.S["stats_no_data"])
+            return
+        info_dialog(self.root, self.S["menu_overview_xlsx"],
+                    self.S["overview_save_ok"].format(path=written))
+
     def _apply_stats_menu_state(self) -> None:
         """Grey out the statistics entry when the profile disables it."""
         try:
@@ -829,7 +912,8 @@ class EryApp:
                 self._open_folder(p, restore_index=True)
 
     def _on_profile_edit(self) -> None:
-        result = profile_editor_dialog(self.root, self.profile, self.S)
+        result = profile_editor_dialog(self.root, self.profile, self.S,
+                                       registry=self.settings.cellpose_models)
         if result is None:
             return
         old_margin = self.profile.margin_n
@@ -881,6 +965,47 @@ class EryApp:
                         self.S["settings_theme_restart"])
         self._update_status()
         self._refresh_tool_indicator()
+
+    def _on_training_export(self) -> None:
+        """Write (image, mask) pairs for fine-tuning Cellpose on this material."""
+        if self.folder is None or self.grouped is None:
+            info_dialog(self.root, self.S["menu_training_export"], self.S["stats_no_data"])
+            return
+        self._flush_time()
+        chosen = filedialog.askdirectory(
+            parent=self.root, title=self.S["training_pick_folder"])
+        if not chosen:
+            return
+        dest = Path(chosen)
+        try:
+            with BusyDialog(self.root, self.S["menu_training_export"],
+                            self.S["training_running"], strings=self.S) as busy:
+                summary = run_in_thread_pumping(
+                    busy.top,
+                    lambda: export_training_data(
+                        self.folder, self.profile, self.grouped, dest),
+                )
+        except Exception as e:
+            info_dialog(self.root, self.S["menu_training_export"],
+                        self.S["overview_save_err"].format(err=e))
+            return
+        sk = summary["skipped"]
+        info_dialog(
+            self.root, self.S["menu_training_export"],
+            self.S["training_done"].format(
+                n=summary["n_written"], path=dest,
+                n_unfinished=len(sk["not_finished"]),
+                n_manual=len(sk["has_manual_cells"]),
+                n_nomask=len(sk["no_mask"]),
+            ))
+
+    def _on_model_registry(self) -> None:
+        """Map model names to files on this machine (Einstellungen -> Modelle)."""
+        reg = model_registry_dialog(self.root, self.settings.cellpose_models, self.S)
+        if reg is None:
+            return
+        self.settings.cellpose_models = reg
+        self.settings.save()
 
     def _on_export(self) -> None:
         if self.folder is None:

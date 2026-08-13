@@ -22,6 +22,7 @@ from .grouping import (
 )
 from .persistence import ReviewState
 from .profile import ProfileData
+from .theme import font
 
 
 def _eval_compute(images, counts, overrides, target):
@@ -101,7 +102,7 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
     tree.configure(yscrollcommand=sb.set); sb.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
 
     footer = tk.Frame(top); footer.pack(fill="x", padx=12, pady=8)
-    summary = tk.Label(footer, text="", anchor="w", font=("TkDefaultFont", 11, "bold"))
+    summary = tk.Label(footer, text="", anchor="w", font=font(11, "bold"))
     summary.pack(side="left")
 
     def _refresh():
@@ -198,7 +199,7 @@ def package_create_dialog(parent, folder: Path, grouped: GroupedFolder,
 
     hdr = tk.Frame(frm); hdr.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
     tk.Label(hdr, text=S["pkg_pick_images"], fg="#888",
-             font=("TkDefaultFont", 9)).pack(side="left")
+             font=font(9)).pack(side="left")
     tk.Button(hdr, text=S["pkg_select_none"], padx=4,
               command=lambda: _set_all(False)).pack(side="right")
     tk.Button(hdr, text=S["pkg_select_all"], padx=4,
@@ -286,7 +287,7 @@ def package_create_dialog(parent, folder: Path, grouped: GroupedFolder,
         _redraw()
     tv.bind("<Button-1>", _on_click, add="+")
 
-    count_lbl = tk.Label(frm, text="", fg="#888", font=("TkDefaultFont", 9))
+    count_lbl = tk.Label(frm, text="", fg="#888", font=font(9))
     count_lbl.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
     frm.rowconfigure(3, weight=1); frm.columnconfigure(1, weight=1)
     _redraw()
@@ -308,7 +309,7 @@ def package_create_dialog(parent, folder: Path, grouped: GroupedFolder,
         reviewer = reviewer_var.get().strip()
         for w in frm.winfo_children():
             w.destroy()
-        tk.Label(frm, text=S["pkg_creating"], font=("TkDefaultFont", 12, "bold")
+        tk.Label(frm, text=S["pkg_creating"], font=font(12, "bold")
                  ).pack(pady=(0, 10))
         lbl = tk.Label(frm, text=""); lbl.pack()
         bar = ttk.Progressbar(frm, length=360, mode="determinate",
@@ -368,6 +369,9 @@ def _conflict_resolver_factory(parent, strings: dict) -> Callable[[str], str]:
                   command=lambda: pick(pkg.IMPORT_ALL)).grid(row=1, column=0, padx=4, pady=2)
         tk.Button(btns, text=S["pkg_conflict_keep_all"], width=14,
                   command=lambda: pick(pkg.KEEP_ALL)).grid(row=1, column=1, padx=4, pady=2)
+        # a11y 2.1.2: Escape picks the SAFE default (keep the local review),
+        # never the destructive one — result already defaults to pkg.KEEP.
+        top.bind("<Escape>", lambda _e: pick(pkg.KEEP))
         _center_on_parent(top, parent); parent.wait_window(top)
         return result["v"]
 
@@ -422,7 +426,7 @@ def package_import_dialog(parent, active_profile: ProfileData | None,
     top = tk.Toplevel(parent); top.title(S["pkg_importing"])
     top.transient(parent); top.grab_set(); top.resizable(False, False)
     frm = tk.Frame(top, padx=20, pady=16); frm.pack()
-    lbl = tk.Label(frm, text=S["pkg_importing"], font=("TkDefaultFont", 12, "bold"))
+    lbl = tk.Label(frm, text=S["pkg_importing"], font=font(12, "bold"))
     lbl.pack(pady=(0, 8))
     detail = tk.Label(frm, text=""); detail.pack()
     bar = ttk.Progressbar(frm, length=360, mode="determinate",
@@ -470,6 +474,7 @@ def stats_window(parent, folder: Path, profile: ProfileData,
     records = holder["records"]
 
     top = tk.Toplevel(parent); top.title(S["stats_title"])
+    top.bind("<Escape>", lambda _e: top.destroy())   # a11y 2.1.2
     top.transient(parent); top.minsize(720, 560)
 
     if not records:
@@ -569,6 +574,7 @@ def dashboard_window(parent, folder: Path, profile: ProfileData,
     target = max(1, profile.target_cells)
 
     top = tk.Toplevel(parent); top.title(S["dash_title"])
+    top.bind("<Escape>", lambda _e: top.destroy())   # a11y 2.1.2
     top.transient(parent); top.minsize(640, 460)
 
     barbar = tk.Frame(top); barbar.pack(fill="x", padx=12, pady=(10, 0))
@@ -590,7 +596,7 @@ def dashboard_window(parent, folder: Path, profile: ProfileData,
     info = tk.Frame(top); info.pack(fill="x", padx=12, pady=(0, 6))
     subj_label = tk.Label(info, text="", anchor="w", justify="left", wraplength=600, fg="#888")
     subj_label.pack(anchor="w")
-    total_label = tk.Label(info, text="", anchor="w", font=("TkDefaultFont", 11, "bold"))
+    total_label = tk.Label(info, text="", anchor="w", font=font(11, "bold"))
     total_label.pack(anchor="w", pady=(4, 0))
 
     def _populate():

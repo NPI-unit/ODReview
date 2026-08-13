@@ -16,6 +16,7 @@ from tkinter import ttk
 
 from .grouping import GroupedFolder, ImageGroupInfo, UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT
 from .profile import ProfileData
+from .theme import font
 
 
 class DetailPanel(tk.Frame):
@@ -44,14 +45,14 @@ class DetailPanel(tk.Frame):
             self.header,
             text="▸" if self.collapsed else "▾",
             bg=P["sidebar_alt_bg"], fg=P["fg_secondary"],
-            font=("TkDefaultFont", 10, "bold"),
+            font=font(10, "bold"),
             cursor="hand2",
         )
         self._chevron.pack(side="left", padx=(0, 6))
         self.header_label = tk.Label(
             self.header, text=self.S["details_title"],
             bg=P["sidebar_alt_bg"], fg=P["fg_secondary"],
-            font=("TkDefaultFont", 9, "bold"),
+            font=font(9, "bold"),
             cursor="hand2",
         )
         self.header_label.pack(side="left")
@@ -67,7 +68,7 @@ class DetailPanel(tk.Frame):
             self.body, text=self.S["details_empty_hint"],
             bg=P["sidebar_alt_bg"], fg=P["fg_muted"],
             wraplength=240, justify="left",
-            font=("TkDefaultFont", 9, "italic"),
+            font=font(9, "italic"),
         )
         self.empty_label.pack(anchor="w", pady=8)
 
@@ -100,7 +101,7 @@ class DetailPanel(tk.Frame):
             self.body, text=self.S["details_empty_hint"],
             bg=self.P["sidebar_alt_bg"], fg=self.P["fg_muted"],
             wraplength=240, justify="left",
-            font=("TkDefaultFont", 9, "italic"),
+            font=font(9, "italic"),
         )
         self.empty_label.pack(anchor="w", pady=8)
 
@@ -212,14 +213,14 @@ class DetailPanel(tk.Frame):
     def _title(self, text: str) -> None:
         tk.Label(
             self.body, text=text, bg=self.P["sidebar_alt_bg"],
-            fg=self.P["fg"], font=("TkDefaultFont", 10, "bold"),
+            fg=self.P["fg"], font=font(10, "bold"),
             anchor="w", justify="left", wraplength=240,
         ).pack(anchor="w", pady=(0, 6))
 
     def _section(self, text: str) -> None:
         tk.Label(
             self.body, text=text.upper(), bg=self.P["sidebar_alt_bg"],
-            fg=self.P["fg_muted"], font=("TkDefaultFont", 8, "bold"),
+            fg=self.P["fg_muted"], font=font(8, "bold"),
             anchor="w",
         ).pack(anchor="w", pady=(2, 2))
 
@@ -231,7 +232,7 @@ class DetailPanel(tk.Frame):
         fg_v = value_color or (self.P["fg"] if not muted else self.P["fg_muted"])
         weight = "bold" if bold else "normal"
         tk.Label(row, text=label, bg=self.P["sidebar_alt_bg"], fg=fg_l,
-                 font=("TkDefaultFont", 9), anchor="w"
+                 font=font(9), anchor="w"
                  ).pack(side="left", anchor="w")
         tk.Label(row, text=value, bg=self.P["sidebar_alt_bg"], fg=fg_v,
                  font=("TkDefaultFont", 9, weight), anchor="e"
