@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .grouping import UNGROUPED_TIMEPOINT, UNGROUPED_SUBJECT
+from .grouping import UNGROUPED_TIMEPOINT, UNGROUPED_SUBJECT, natural_key
 
 
 def _split_tp(tp: str) -> tuple[str, str]:
@@ -73,9 +73,9 @@ def build_overview(folder: Path, profile, grouped) -> dict:
 
     # Matrix axes.
     timepoints = sorted({tp for tp, _, _ in records},
-                        key=lambda k: (k == UNGROUPED_TIMEPOINT, k))
+                        key=lambda k: (k == UNGROUPED_TIMEPOINT, natural_key(k)))
     subjects = sorted({sub for _, sub, _ in records},
-                      key=lambda k: (k == UNGROUPED_SUBJECT, k))
+                      key=lambda k: (k == UNGROUPED_SUBJECT, natural_key(k)))
     lookup = {(tp, sub): s for tp, sub, s in records}
 
     def matrix(valfn) -> list[list]:

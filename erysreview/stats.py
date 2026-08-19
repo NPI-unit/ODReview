@@ -11,7 +11,7 @@ import statistics
 from pathlib import Path
 
 from .evaluation import group_eval_summary
-from .grouping import GroupedFolder, UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT
+from .grouping import GroupedFolder, UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT, natural_key
 from .profile import ProfileData
 
 # Metric keys that are always available.
@@ -113,4 +113,4 @@ def grouped_values(records: list[dict], by: str, metric_key: str
     for r in records:
         key = r[by]
         out.setdefault(key, []).append(metric_value(r, metric_key))
-    return dict(sorted(out.items()))
+    return dict(sorted(out.items(), key=lambda kv: natural_key(kv[0])))

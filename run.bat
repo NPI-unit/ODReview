@@ -4,11 +4,10 @@ REM Double-click to start the app. Use install.bat first to set things up.
 setlocal
 cd /d "%~dp0"
 
-REM Locate conda (capture the FULL path so we can derive the conda root below)
+REM Locate conda. Capture the FULL path from `where` (not the literal "conda"):
+REM we later derive the conda root via %%~dpI, which only works on a real path.
 set "CONDA_EXE="
-for /f "delims=" %%i in ('where conda 2^>nul') do (
-    if not defined CONDA_EXE set "CONDA_EXE=%%i"
-)
+for /f "delims=" %%P in ('where conda 2^>nul') do if not defined CONDA_EXE set "CONDA_EXE=%%P"
 if "%CONDA_EXE%"=="" (
     for %%P in (
         "%USERPROFILE%\miniforge3\Scripts\conda.exe"

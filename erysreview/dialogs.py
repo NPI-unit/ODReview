@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import re
 import threading
 import time
@@ -1312,64 +1313,120 @@ def batch_dialog(
                   command=lambda: (on_done(), top.destroy())).pack()
 
     def _compute_one(info):
-        # Off the main thread so the progress bar + Cancel button stay
-        # responsive during each (CPU-only on Windows, so potentially slow)
-        # segmentation. Cancel registers immediately; it takes effect once the
-        # current image finishes (torch inference can't be interrupted mid-run).
-        run_in_thread_pumping(
-            top,
-            lambda: run_for_image(folder, info.path, load_image(info.path),
-                                  profile.cellpose, force=False,
-                                  use_gpu=profile.use_gpu,
-                                  model_registry=model_registry),
-        )
+        """Segment one image. Called from inside work(), i.e. ALREADY on the
+        worker thread that _run_worker starts — so it must not touch Tk at all.
+
+        Merge note: this used to wrap the call in run_in_thread_pumping(), which
+        pumps the Tk event loop. Combined with the queue-based runner below that
+        would have meant calling widget.update() from a background thread, which
+        tkinter does not support. The pumping helper is still right for the
+        single-image path in app.py, where the caller IS the main thread.
+        """
+        run_for_image(folder, info.path, load_image(info.path),
+                      profile.cellpose, force=False,
+                      use_gpu=profile.use_gpu,
+                      model_registry=model_registry)
 
     def _active_count(info):
         c = image_counts(folder, info, profile)
         return (c or {}).get("rbc", 0) or 0
 
-    def _enter_progress_normal(sel_infos):
-        lbl, pb = _progress_ui(len(sel_infos))
+    # ── Threaded batch runner ────────────────────────────────────────────
+    # Cellpose runs for many seconds per image. Doing that on the Tk main
+    # thread freezes the window — on Windows it goes grey with "(keine
+    # Rückmeldung)" / "Not Responding" and looks like a crash. Instead the
+    # heavy loop runs in a worker thread that only ever touches a queue; the
+    # main thread drains that queue from a periodic after()-poll and is the
+    # only thread that talks to Tk (tkinter is not thread-safe).
+    def _run_worker(total, work):
+        """`work(progress, is_cancelled)` runs in a background thread and must
+        NOT touch Tk (tkinter is not thread-safe). It pushes updates through a
+        queue; the main thread drains the queue from a periodic after()-poll
+        and is the only one that talks to widgets. Returns (done, skipped,
+        errors[, extra])."""
+        lbl, pb = _progress_ui(total)
         proc = _start_awake()
-        errors, skipped, done = [], 0, 0
-        try:
+        q: "queue.Queue" = queue.Queue()
+
+        def progress(value, text=None):
+            q.put(("progress", value, text))
+
+        def runner():
+            try:
+                result = work(progress, lambda: state["cancel"])
+            except Exception as e:  # never let a worker exception vanish silently
+                result = (0, 0, [("batch", f"{type(e).__name__}: {e}")])
+            q.put(("done", result))
+
+        def poll():
+            try:
+                while True:
+                    item = q.get_nowait()
+                    if item[0] == "progress":
+                        _, value, text = item
+                        try:
+                            if value is not None:
+                                pb["value"] = value
+                            if text is not None:
+                                lbl.config(text=text)
+                        except tk.TclError:
+                            return  # dialog closed mid-run
+                    else:  # ("done", result)
+                        _stop_awake(proc)
+                        result = item[1]
+                        done, skipped, errors = result[0], result[1], result[2]
+                        extra = result[3] if len(result) > 3 else ""
+                        try:
+                            _summary(done, skipped, errors, extra=extra)
+                        except tk.TclError:
+                            pass
+                        return
+            except queue.Empty:
+                pass
+            try:
+                top.after(80, poll)
+            except tk.TclError:
+                _stop_awake(proc)
+
+        threading.Thread(target=runner, daemon=True).start()
+        top.after(80, poll)  # scheduled from the main thread — safe
+
+    def _enter_progress_normal(sel_infos):
+        n = len(sel_infos)
+
+        def work(progress, is_cancelled):
+            errors, skipped, done = [], 0, 0
             for idx, info in enumerate(sel_infos, start=1):
-                if state["cancel"]: break
-                lbl.config(text=S["batch_progress_running"].format(
-                    i=idx, n=len(sel_infos), name=info.path.name))
-                pb["value"] = idx - 1
-                container.update_idletasks(); container.update()
+                if is_cancelled(): break
+                progress(idx - 1, S["batch_progress_running"].format(
+                    i=idx, n=n, name=info.path.name))
                 if has_cache(folder, info.path):
-                    skipped += 1; pb["value"] = idx; continue
+                    skipped += 1; progress(idx); continue
                 try:
                     _compute_one(info); done += 1
                 except Exception as e:
                     errors.append((info.path.name, str(e)))
-                pb["value"] = idx
-                container.update_idletasks(); container.update()
-        finally:
-            _stop_awake(proc)
-        _summary(done, skipped, errors)
+                progress(idx)
+            return done, skipped, errors
+
+        _run_worker(n, work)
 
     def _enter_progress_target(sel_groups):
         total = sum(len(infos) for _, _, infos in sel_groups)
-        lbl, pb = _progress_ui(total)
-        proc = _start_awake()
-        errors, skipped, done, touched, n_groups = [], 0, 0, 0, 0
-        try:
+
+        def work(progress, is_cancelled):
+            errors, skipped, done, touched, n_groups = [], 0, 0, 0, 0
             for tp, sub, infos in sel_groups:
-                if state["cancel"]: break
+                if is_cancelled(): break
                 n_groups += 1
                 cumulative = 0
                 for info in infos:                      # image_num order
-                    if state["cancel"]: break
+                    if is_cancelled(): break
                     if cumulative >= target:
                         break                            # group target reached
                     touched += 1
-                    pb["value"] = touched
-                    lbl.config(text=S["batch_progress_target"].format(
+                    progress(touched, S["batch_progress_target"].format(
                         tp=_disp_tp(tp), sub=_disp_sub(sub), cum=cumulative, target=target))
-                    container.update_idletasks(); container.update()
                     if has_cache(folder, info.path):
                         skipped += 1
                     else:
@@ -1378,10 +1435,9 @@ def batch_dialog(
                         except Exception as e:
                             errors.append((info.path.name, str(e))); continue
                     cumulative += _active_count(info)
-        finally:
-            _stop_awake(proc)
-        _summary(done, skipped, errors,
-                 extra=S["batch_summary_groups"].format(g=n_groups))
+            return done, skipped, errors, S["batch_summary_groups"].format(g=n_groups)
+
+        _run_worker(total, work)
 
     def _on_start():
         if target_mode_var.get():

@@ -108,7 +108,11 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
             "area": info.area,
             "centroid_x": round(info.cx, 2), "centroid_y": round(info.cy, 2),
         })
-    df = pd.DataFrame(rows).sort_values("cell_id")
+    # rows can be empty when Cellpose found no cells in this image; sorting an
+    # empty frame by "cell_id" would raise KeyError, so only sort when present.
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("cell_id")
 
     # Copy original (off by default — avoids duplicating the source TIFs).
     if getattr(profile, "copy_originals_to_outputs", False):

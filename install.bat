@@ -101,6 +101,33 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ─── 3b. GPU acceleration (NVIDIA only) ────────────────────────────────
+REM The conda-forge solve above installs the CPU build of PyTorch, so on a
+REM machine with an NVIDIA GPU Cellpose crawls (minutes per image) while the
+REM GPU sits idle — audit item CP-3. Detection is taken from origin/main
+REM (commit 1a4968c), the INSTALL is not: that used
+REM   pip install --force-reinstall --index-url .../cu124 torch torchvision
+REM which puts a pip torch next to conda's MKL numpy. That is exactly the
+REM two-libiomp5md.dll combination CP-1 diagnosed as the OMP Error #15 hang.
+REM Staying inside one conda-forge solve keeps a single OpenMP runtime.
+REM NOT yet verified on a Windows machine with an NVIDIA GPU.
+echo [3b/4] Checking for an NVIDIA GPU ...
+where nvidia-smi >nul 2>&1
+if errorlevel 1 (
+    echo     No NVIDIA GPU detected - using CPU PyTorch.
+) else (
+    python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo     NVIDIA GPU found - installing the CUDA build from conda-forge ^(one-time, large download^) ...
+        call "%CONDA_EXE%" install -n erys -c conda-forge -y "pytorch-gpu"
+        if errorlevel 1 (
+            echo     [!] CUDA PyTorch install failed - keeping CPU PyTorch ^(app still works, just slower^).
+        )
+    ) else (
+        echo     CUDA PyTorch already active.
+    )
+)
+
 REM ─── 4. Generate a Desktop shortcut ────────────────────────────────────
 echo [4/4] Creating Desktop shortcut ...
 set "SHORTCUT=%USERPROFILE%\Desktop\ErysReview.lnk"

@@ -11,12 +11,18 @@ state: folder, images, idx, profile, settings, current ReviewState.
 
 from __future__ import annotations
 
+import sys
 import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
 
 import numpy as np
+
+# Menu accelerator labels are display-only (the real key bindings wire both
+# Command and Control — see _bind_hotkeys). Show the right one per platform:
+# "Cmd" on macOS, "Ctrl" on Windows/Linux where "Cmd" is meaningless.
+_ACCEL_MOD = "Cmd" if sys.platform == "darwin" else "Ctrl"
 
 from . import __version__
 from .canvas import EryCanvas
@@ -217,7 +223,7 @@ class EryApp:
         S = self.S
         menubar = tk.Menu(self.root)
         m_file = tk.Menu(menubar, tearoff=0)
-        m_file.add_command(label=S["menu_open_folder"], command=self._on_open_folder, accelerator="Cmd+O")
+        m_file.add_command(label=S["menu_open_folder"], command=self._on_open_folder, accelerator=f"{_ACCEL_MOD}+O")
         # Recent folders submenu (rebuilt on demand from profile.recent_folders)
         self.m_recent = tk.Menu(m_file, tearoff=0)
         m_file.add_cascade(label=S["menu_recent_folders"], menu=self.m_recent)
@@ -229,9 +235,9 @@ class EryApp:
         m_file.add_command(label=S["menu_package_create"], command=self._on_package_create)
         m_file.add_command(label=S["menu_package_import"], command=self._on_package_import)
         m_file.add_separator()
-        m_file.add_command(label=S["menu_export"], command=self._on_export, accelerator="Cmd+S")
+        m_file.add_command(label=S["menu_export"], command=self._on_export, accelerator=f"{_ACCEL_MOD}+S")
         m_file.add_separator()
-        m_file.add_command(label=S["menu_quit"], command=self._on_close, accelerator="Cmd+Q")
+        m_file.add_command(label=S["menu_quit"], command=self._on_close, accelerator=f"{_ACCEL_MOD}+Q")
         menubar.add_cascade(label=S["menu_file"], menu=m_file)
 
         m_prof = tk.Menu(menubar, tearoff=0)
@@ -672,6 +678,10 @@ class EryApp:
             # Inference runs on a worker thread (load + segment) while the
             # spinner pumps the event loop, so the window stays responsive
             # instead of freezing — critical on Windows where it's CPU-only.
+            #
+            # Merge note: origin/main had this very technique written inline
+            # here. Keeping the extracted helper instead, so this path, the
+            # batch run and the overview build share one implementation.
             with CellposeSpinner(self.root, path.name, self.S) as spin:
                 run_in_thread_pumping(
                     spin.top,
@@ -1145,7 +1155,55 @@ class EryApp:
         self.root.mainloop()
 
 
+def _enable_windows_dpi_awareness() -> None:
+    """Windows: render the Tk UI crisply and at the correct size on scaled /
+    high-DPI displays. No-op on macOS and Linux, where the OS already hands Tk
+    a DPI-correct surface — so this keeps the Mac behavior exactly as-is.
+
+    Without this, Windows bitmap-stretches the whole window on any display set
+    above 100 % scaling (the default on most modern laptops), so text and the
+    matplotlib canvas look blurry and oversized. We request *System* DPI
+    awareness (level 1), not Per-Monitor: Tk sizes its fonts from the system
+    DPI, so system awareness gives a crisp, correctly-scaled UI, whereas
+    per-monitor would leave everything tiny unless we also drove Tk's scaling
+    factor by hand. Must run before the Tk root is created.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        # PROCESS_SYSTEM_DPI_AWARE = 1  (Windows 8.1+)
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        return
+    except (AttributeError, OSError):
+        pass
+    try:
+        # Vista+ fallback.
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass
+
+
+def _harden_stdio_encoding() -> None:
+    """Windows: make stdout/stderr tolerant of non-ASCII so logging can never
+    crash the app. The launcher console uses a legacy code page (e.g. cp850 /
+    cp1252); printing a character outside it raises UnicodeEncodeError, which
+    on Windows can take the whole app down. Reconfiguring to UTF-8 with
+    ``errors='replace'`` makes prints safe. No-op on macOS/Linux, whose stdio
+    is already UTF-8 — Mac behavior is unchanged.
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> None:
+    _enable_windows_dpi_awareness()
+    _harden_stdio_encoding()
     EryApp().run()
 
 
