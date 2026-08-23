@@ -29,13 +29,14 @@ import numpy as np
 import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.patches import Ellipse
 from matplotlib.patheffects import Stroke, Normal
 from skimage.draw import disk as sk_disk
 from skimage.measure import find_contours, regionprops_table
 
 from .persistence import (
     AppSettings, ManualCell, ReviewState,
-    TOOL_ADD, TOOL_REMOVE, TOOL_TYPE,
+    TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE,
 )
 from .profile import ProfileData
 from .theme import OUTLINE_STYLES, palette as _palette
@@ -266,6 +267,8 @@ class EryCanvas(tk.Frame):
         profile: ProfileData,
         save_callback: Callable[[], None],
         status_callback: Callable[[str], None] | None = None,
+        note_callback: Callable[[int], None] | None = None,
+        on_overlay_autoshown: Callable[[], None] | None = None,
         new_circle_radius: int = 17,
     ):
         P = _palette(settings.theme)
@@ -277,6 +280,11 @@ class EryCanvas(tk.Frame):
         # stats CSV and erys.db, which downstream analysis relies on.
         self.duplicate_ids: set[int] = set()
         self.save_callback = save_callback
+        # Right-click on a cell -> the app opens the remark editor for it.
+        self.note_callback = note_callback or (lambda _cid: None)
+        # Fired after an edit had to reveal a hidden overlay, so the app can
+        # persist the setting and say why the view changed.
+        self.on_overlay_autoshown = on_overlay_autoshown or (lambda: None)
         self._theme_palette = P
         self.status_callback = status_callback or (lambda s: None)
         self.new_circle_radius = new_circle_radius
@@ -320,6 +328,9 @@ class EryCanvas(tk.Frame):
         # cells whose type defines an outline get an entry, which in practice is
         # a handful per image (~0.2% of cells are not "normal").
         self._outline_artists: dict[int, list] = {}
+        # cell_id -> marker Text for cells carrying a remark. Same bookkeeping as
+        # the numbers: created per image, individually removable.
+        self._note_artists: dict[int, object] = {}
         self._image_shape: tuple[int, int] | None = None  # to detect re-init
 
         # mpl events
@@ -348,6 +359,7 @@ class EryCanvas(tk.Frame):
         self._number_artists = {}
         self._number_active = set()
         self._outline_artists = {}
+        self._note_artists = {}
         self._image_shape = None
         self.canvas.draw_idle()
 
@@ -407,6 +419,7 @@ class EryCanvas(tk.Frame):
                 np.zeros((h, w, 4), dtype=np.float32), interpolation="nearest", zorder=2)
             self._number_artists = {}
             self._number_active = set()
+            self._note_artists = {}
             self._image_shape = (h, w)
             self.ax.set_xlim(-0.5, w - 0.5)
             self.ax.set_ylim(h - 0.5, -0.5)
@@ -415,6 +428,7 @@ class EryCanvas(tk.Frame):
         self._refresh_margin()
         self._refresh_numbers()
         self._refresh_outlines()
+        self._refresh_notes()
         self.canvas.draw_idle()
 
     def reset_zoom(self) -> None:
@@ -437,6 +451,7 @@ class EryCanvas(tk.Frame):
             )
         self._apply_number_visibility()
         self._apply_outline_visibility()
+        self._apply_note_visibility()
         self.canvas.draw_idle()
 
     def set_margin_n(self, n: int) -> None:
@@ -697,6 +712,88 @@ class EryCanvas(tk.Frame):
                 self._number_active.add(cid)
         self._apply_number_visibility()
 
+    # ─────────────────────────────────────────
+    # Remark markers
+    # ─────────────────────────────────────────
+    NOTE_GLYPH = "❝"          # U+275D — the same mark the tool carries, so
+                              # button and marker read as one thing
+    NOTE_COLOR = "#5B9CFF"    # accent_primary; see _make_note_marker()
+
+    def _refresh_notes(self) -> None:
+        """Rebuild the remark markers from review.notes."""
+        for artists in self._note_artists.values():
+            for a in artists:
+                try:
+                    a.remove()
+                except (ValueError, NotImplementedError):
+                    pass
+        self._note_artists = {}
+        if self.review is None:
+            return
+        for key in self.review.notes:
+            try:
+                cid = int(key)
+            except (TypeError, ValueError):
+                continue
+            if self.review.notes[key].strip():
+                self._make_note_marker(cid)
+        self._apply_note_visibility()
+
+    def _make_note_marker(self, cid: int) -> None:
+        """Blue ring plus the ✎ glyph on one annotated cell.
+
+        Blue, not red: the cell type `stechapfel` is #FF6B6B and the error
+        accent #F26B6B, so a red ring would be indistinguishable from a cell
+        typed as an echinocyte. Blue is unused by every type and is the safest
+        signal under red-green deficiency.
+
+        A ring rather than an arrow to the centre: a field holds ~271 cells, and
+        a dozen arrows cross each other and cover the neighbours they point past.
+        The ring scales with the zoom and hides nothing.
+        """
+        info = self.cell_infos.get(cid)
+        if info is None:
+            return
+        w = max(info.bbox_x1 - info.bbox_x0, 6)
+        h = max(info.bbox_y1 - info.bbox_y0, 6)
+        ring = Ellipse(
+            (info.cx, info.cy), width=w * 1.45, height=h * 1.45,
+            fill=False, edgecolor=self.NOTE_COLOR, linewidth=1.8, zorder=4,
+        )
+        ring.set_path_effects([Stroke(linewidth=3.2, foreground="black"), Normal()])
+        self.ax.add_patch(ring)
+        t = self.ax.text(
+            info.cx + w * 0.32, info.cy - h * 0.32,
+            self.NOTE_GLYPH, color=self.NOTE_COLOR, fontsize=11, ha="center",
+            va="center", fontweight="bold", zorder=5,
+        )
+        t.set_path_effects([Stroke(linewidth=2.4, foreground="black"), Normal()])
+        for a in (ring, t):
+            a.set_visible(self._notes_shown())
+        self._note_artists[cid] = [ring, t]
+
+    def set_cell_note_marker(self, cid: int, has_note: bool) -> None:
+        """Add or drop one cell's marker after its remark changed."""
+        for a in self._note_artists.pop(cid, []) or []:
+            try:
+                a.remove()
+            except (ValueError, NotImplementedError):
+                pass
+        if has_note:
+            self._make_note_marker(cid)
+        self.canvas.draw_idle()
+
+    def _notes_shown(self) -> bool:
+        """Markers ride the overlay switch, like the numbers and the contours —
+        one toggle for the whole annotation layer."""
+        return self._overlay_handle is not None and self._overlay_handle.get_visible()
+
+    def _apply_note_visibility(self) -> None:
+        shown = self._notes_shown()
+        for artists in self._note_artists.values():
+            for a in artists:
+                a.set_visible(shown)
+
     def _numbers_shown(self) -> bool:
         overlay_on = self._overlay_handle is not None and self._overlay_handle.get_visible()
         return overlay_on and self._is_zoomed_in()
@@ -802,6 +899,24 @@ class EryCanvas(tk.Frame):
     # ─────────────────────────────────────────
     # Mouse handlers
     # ─────────────────────────────────────────
+    def _autoshow_overlay(self) -> bool:
+        """Reveal a hidden overlay before an edit. True if it had been hidden.
+
+        Every editing gesture draws its result *into* the overlay — the cell
+        colour, the number, the outline, the ✎ marker. `set_overlay_visible`
+        hides all four together, so with the overlay off a click still lands
+        and still saves, but nothing on screen moves. That is indistinguishable
+        from a broken click, and it is exactly how this was first reported.
+        Picking a tool and clicking a cell is unambiguous intent to edit, so
+        the view follows the intent; `o` stays available for looking at the
+        raw image.
+        """
+        if self.settings.overlay_visible:
+            return False
+        self.settings.overlay_visible = True
+        self.set_overlay_visible(True)
+        return True
+
     def _on_button_press(self, event):
         if event.inaxes != self.ax or self.image is None:
             return
@@ -809,6 +924,7 @@ class EryCanvas(tk.Frame):
         if x is None or y is None:
             return
         if event.button == 1:
+            revealed = self._autoshow_overlay()
             tool = self.settings.active_tool
             if tool == TOOL_ADD:
                 self._act_add(x, y)
@@ -816,6 +932,35 @@ class EryCanvas(tk.Frame):
                 self._act_remove_toggle(x, y)
             elif tool == TOOL_TYPE:
                 self._act_type(x, y)
+            elif tool == TOOL_NOTE:
+                # None means "no cell here" — the app reads that as the remark
+                # for the whole image, so one tool covers both targets and the
+                # user never has to hunt for a second entry point.
+                self.note_callback(self._find_cell_at(x, y))
+            elif tool == TOOL_CURSOR:
+                # Read-only mode: only a cell that already carries a remark
+                # responds, and it only opens that remark. Everything else is
+                # inert on purpose — this is the one mode where a stray click
+                # cannot alter the review.
+                cid = self._find_cell_at(x, y)
+                if cid is not None and self.review is not None \
+                        and self.review.notes.get(str(cid), "").strip():
+                    self.note_callback(cid)
+            # After the dispatch: the edit runs save_callback -> _update_status,
+            # which rewrites the status line and would swallow an earlier note.
+            if revealed:
+                self.on_overlay_autoshown()
+        elif event.button == 3:
+            # Remarks are occasional, so they get their own gesture instead of a
+            # fourth tool: no mode switch, available whatever tool is active.
+            # matplotlib normalises button numbers (3 = right) on every platform,
+            # unlike raw Tk where macOS reports right-click as Button-2.
+            cid = self._find_cell_at(x, y)
+            if cid is not None:
+                revealed = self._autoshow_overlay()
+                self.note_callback(cid)
+                if revealed:
+                    self.on_overlay_autoshown()
         elif event.button == 2:
             self._pan_start = (
                 event.x, event.y, *self.ax.get_xlim(), *self.ax.get_ylim(),

@@ -14,7 +14,10 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
-from .persistence import AppSettings, TOOL_ADD, TOOL_REMOVE, TOOL_TYPE
+from .persistence import (
+    AppSettings, TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE,
+    TOOLS_ORDER,
+)
 from .profile import ProfileData
 from .theme import font
 
@@ -37,6 +40,9 @@ GLYPHS = {
     "reset_zoom": "⛶",     # U+26F6  — see the note above
     "undo":       "↺",     # U+21BA
     "info":       "ⓘ",     # U+24D8
+    "note":       "❝",     # U+275D — reads as "remark"; present in Segoe UI
+                           # Symbol, which UI-15 showed is worth checking.
+    "cursor":     "↖",     # U+2196
     "export":     "⬇",     # U+2B07  — see the note above
 }
 
@@ -267,6 +273,21 @@ class Toolbar(tk.Frame):
 
         tk.Frame(self, bg=P["border"], width=1, height=28
                  ).pack(side="left", padx=6, pady=12)
+
+        # Annotate and cursor: modes, so they keep the tool style and its active
+        # highlight, but shown by glyph without a digit and placed ahead of the
+        # actions. They stay in TOOLS_ORDER, so keys 4 and 5 still reach them —
+        # the tooltip carries that hint now that the label no longer can.
+        for key, label_key in ((TOOL_NOTE, "tool_note"), (TOOL_CURSOR, "tool_cursor")):
+            glyph = GLYPHS["note"] if key == TOOL_NOTE else GLYPHS["cursor"]
+            full = f"{glyph}   {S[label_key]}"
+            b = ttk.Button(self, text=full, style="ErysTool.TButton",
+                           command=lambda k=key: self._cb_tool(k))
+            b.pack(side="left", padx=3, pady=8)
+            self.tool_buttons[key] = b
+            self._labels.append((b, glyph, full))
+            hot = TOOLS_ORDER.index(key) + 1
+            self._add_tip(b, f"{S[label_key]}  ({hot})")
 
         # Action buttons
         actions = [

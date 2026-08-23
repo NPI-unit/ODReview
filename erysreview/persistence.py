@@ -68,13 +68,39 @@ def write_json_atomic(path: Path, data) -> None:
         raise
 
 
+_UNREADABLE_JSON: set[str] = set()
+_UNWRITABLE_FOLDERS: set[str] = set()
+
+
 def read_json(path: Path, default=None):
+    """Read a JSON sidecar, or return `default` if it cannot be read.
+
+    `ValueError`, not `json.JSONDecodeError`: a file whose *bytes* are not
+    valid UTF-8 raises `UnicodeDecodeError`, which is a ValueError but NOT a
+    JSONDecodeError, so it escaped this handler entirely. One such file — from
+    a cloud folder handing back a partial read, or a review written by an older
+    build under a Windows code page — then propagated out of
+    `Sidebar.populate()` and aborted `_open_folder` halfway: folder and images
+    set, empty state cleared, but `_show_image_at` never reached. The window
+    looked loaded while the canvas held no image, so every click returned at
+    the `self.image is None` guard and the app appeared dead to the mouse.
+
+    Reported once per path rather than swallowed: returning the default for a
+    review silently discards work somebody typed.
+    """
     if not path.exists():
         return default
     try:
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError) as e:
+        key = str(path)
+        if key not in _UNREADABLE_JSON:
+            _UNREADABLE_JSON.add(key)
+            print(f"[JSON unlesbar] {path.name}: {type(e).__name__} — {path}. "
+                  f"Datei wird als leer behandelt; gespeicherte Angaben darin "
+                  f"sind nicht sichtbar (Cloud-Auslagerung? Fremde Kodierung?).",
+                  flush=True)
         return default
 
 
@@ -118,7 +144,14 @@ DEFAULT_TYPES = [
 TOOL_ADD     = "add"
 TOOL_REMOVE  = "remove"
 TOOL_TYPE    = "type"
-TOOLS_ORDER  = [TOOL_ADD, TOOL_REMOVE, TOOL_TYPE]
+# A mode, not an action: it needs the active highlight the other tools have,
+# and listing it here is what gives it hotkey 4 (app.py enumerates this).
+TOOL_NOTE    = "note"
+# The neutral mode: a click changes nothing. Appended rather than put first so
+# the digits 1-3 keep meaning what they have always meant — renumbering the
+# tools everyone already knows would cost more than the tidier ordering is worth.
+TOOL_CURSOR  = "cursor"
+TOOLS_ORDER  = [TOOL_ADD, TOOL_REMOVE, TOOL_TYPE, TOOL_NOTE, TOOL_CURSOR]
 
 
 @dataclass
@@ -129,6 +162,22 @@ class AppSettings:
     theme: str = "dark"               # "dark" or "light"
     window_w: int = 1400
     window_h: int = 900
+    # Screen the size above was measured on. Without it the saved pixel
+    # size is meaningless on any other display — see _safe_geometry().
+    screen_w: int = 0
+    screen_h: int = 0
+    # Unix time of the last update check. Throttles the silent startup
+    # check to once a day: GitHub allows 60 unauthenticated requests per
+    # hour per IP, and a lab shares one NAT address.
+    last_update_check: float = 0.0
+    # False, solange das Release-Repo nicht existiert. Siehe app._build_menu().
+    update_check_enabled: bool = False
+    # Position and size of the floating remark editor. One box for the whole
+    # app, so one remembered geometry — see notebox.py.
+    notebox_x: int = 40
+    notebox_y: int = 40
+    notebox_w: int = 320
+    notebox_h: int = 180
     sidebar_width: int = 270
     overlay_visible: bool = True
     active_tool: str = TOOL_ADD
@@ -162,6 +211,14 @@ class AppSettings:
                 theme=theme,
                 window_w=int(raw.get("window_w", 1400)),
                 window_h=int(raw.get("window_h", 900)),
+                screen_w=int(raw.get("screen_w", 0)),
+                screen_h=int(raw.get("screen_h", 0)),
+                last_update_check=float(raw.get("last_update_check", 0.0)),
+                update_check_enabled=bool(raw.get("update_check_enabled", False)),
+                notebox_x=int(raw.get("notebox_x", 40)),
+                notebox_y=int(raw.get("notebox_y", 40)),
+                notebox_w=int(raw.get("notebox_w", 320)),
+                notebox_h=int(raw.get("notebox_h", 180)),
                 sidebar_width=int(raw.get("sidebar_width", 270)),
                 overlay_visible=bool(raw.get("overlay_visible", True)),
                 active_tool=active_tool,
@@ -180,6 +237,12 @@ class AppSettings:
             "theme": self.theme,
             "window_w": self.window_w,
             "window_h": self.window_h,
+            "screen_w": self.screen_w,
+            "screen_h": self.screen_h,
+            "last_update_check": self.last_update_check,
+            "update_check_enabled": self.update_check_enabled,
+            "notebox_x": self.notebox_x, "notebox_y": self.notebox_y,
+            "notebox_w": self.notebox_w, "notebox_h": self.notebox_h,
             "sidebar_width": self.sidebar_width,
             "overlay_visible": self.overlay_visible,
             "active_tool": self.active_tool,
@@ -208,10 +271,27 @@ class FolderState:
             return cls()
 
     def save(self, folder: Path) -> None:
-        write_json_atomic(
-            cache_dir_for(folder) / "folder_state.json",
-            {"last_index": self.last_index},
-        )
+        """Remember which image was open. Never fatal — this is a convenience.
+
+        Reported once per folder rather than swallowed or raised: when a study
+        sits on a removable drive and the drive is ejected mid-session, every
+        image switch walked into `mkdir` on a path that no longer exists and
+        threw out of the Tk callback. The app kept running but printed a
+        traceback per click. Losing the remembered index costs nothing; losing
+        a review would, and ReviewState.save deliberately still reports.
+        """
+        try:
+            write_json_atomic(
+                cache_dir_for(folder) / "folder_state.json",
+                {"last_index": self.last_index},
+            )
+        except OSError as e:
+            key = str(folder)
+            if key not in _UNWRITABLE_FOLDERS:
+                _UNWRITABLE_FOLDERS.add(key)
+                print(f"[Ordner nicht beschreibbar] {folder}: {type(e).__name__} — "
+                      f"zuletzt geöffnetes Bild wird nicht gemerkt. Datenträger "
+                      f"ausgeworfen oder Ordner verschoben?", flush=True)
 
 
 # ─────────────────────────────────────────────
@@ -242,6 +322,12 @@ class ReviewState:
     next_manual_id: int = 0
     # Active review time accumulated on this image (seconds), idle-paused.
     time_spent_s: float = 0.0
+    # Free-text remarks for discussion. `notes` is cell_id (str) -> text, `note`
+    # belongs to the whole image. Kept in the review JSON only, deliberately NOT
+    # exported: the export files get shared, and free text invites content that
+    # should not travel. Old review files simply lack both keys.
+    notes: dict[str, str] = field(default_factory=dict)
+    note: str = ""
     # Whether this image counts toward the per-group target (2000) evaluation:
     #   None  -> automatic (auto-fill by image order until target exceeded)
     #   True  -> user forced INTO the evaluation
@@ -274,6 +360,8 @@ class ReviewState:
                 is_finished=bool(raw.get("is_finished", False)),
                 next_manual_id=int(raw.get("next_manual_id", 0)),
                 time_spent_s=float(raw.get("time_spent_s", 0.0)),
+                notes={str(k): str(v) for k, v in (raw.get("notes") or {}).items()},
+                note=str(raw.get("note", "")),
                 eval_include=eval_include,
             )
         except (TypeError, ValueError):
@@ -290,6 +378,8 @@ class ReviewState:
                 "is_finished": self.is_finished,
                 "next_manual_id": self.next_manual_id,
                 "time_spent_s": round(self.time_spent_s, 1),
+                "notes": self.notes,
+                "note": self.note,
                 "eval_include": self.eval_include,
             },
         )
@@ -298,5 +388,6 @@ class ReviewState:
         return bool(
             self.force_excluded or self.force_included
             or self.types or self.manual_cells or self.is_finished
+            or self.notes or self.note
             or self.eval_include is not None
         )

@@ -24,7 +24,8 @@ class DetailPanel(tk.Frame):
 
     def __init__(self, parent: tk.Misc, palette: dict, strings: dict,
                  collapsed: bool = False,
-                 on_collapse_changed=None):
+                 on_collapse_changed=None,
+                 on_edit_image_note=None):
         super().__init__(parent, bg=palette["sidebar_alt_bg"])
         self.P = palette
         self.S = strings
@@ -33,6 +34,7 @@ class DetailPanel(tk.Frame):
         self.current_subject: tuple[str, str] | None = None
         self.collapsed: bool = collapsed
         self._on_collapse_changed = on_collapse_changed
+        self._on_edit_image_note = on_edit_image_note
         self._build()
 
     # ─── Build ───
@@ -106,8 +108,12 @@ class DetailPanel(tk.Frame):
         self.empty_label.pack(anchor="w", pady=8)
 
     def show_image(self, folder: Path, image_path: Path,
-                   profile: ProfileData) -> None:
-        """Render stats for a single image. Loads from cache + review state."""
+                   profile: ProfileData, review=None) -> None:
+        """Render stats for a single image. Loads from cache + review state.
+
+        `review` is passed in by the app for the *current* image so this does not
+        re-read the review JSON on every click — this method runs on every save.
+        """
         self.mode = "image"
         self.current_image = image_path
         self.current_subject = None
@@ -146,6 +152,32 @@ class DetailPanel(tk.Frame):
             self._row(self.S["details_pct_changed"],
                       f"{n_changed}  ({pct_changed:.2f}%)", bold=True,
                       value_color=self.P["accent_warn"])
+        self._notes_block(folder, image_path, review)
+
+    def _notes_block(self, folder: Path, image_path: Path, review) -> None:
+        """Image remark (editable) plus a roll-up of the cell remarks."""
+        if review is None:
+            from .persistence import ReviewState
+            review = ReviewState.load(folder, image_path.stem)
+        self._spacer()
+        self._section(self.S["details_notes"])
+        note = (review.note or "").strip()
+        row = tk.Frame(self.body, bg=self.P["sidebar_alt_bg"])
+        row.pack(fill="x")
+        tk.Label(row, text=note or self.S["note_none"],
+                 bg=self.P["sidebar_alt_bg"],
+                 fg=self.P["fg"] if note else self.P["fg_muted"],
+                 font=font(9, "italic") if not note else font(9),
+                 anchor="w", justify="left", wraplength=190
+                 ).pack(side="left", anchor="w")
+        if self._on_edit_image_note is not None:
+            tk.Button(row, text="…", width=2, command=self._on_edit_image_note
+                      ).pack(side="right")
+        cells = {k: v for k, v in (review.notes or {}).items() if v.strip()}
+        if cells:
+            self._spacer()
+            for key in sorted(cells, key=lambda k: int(k) if k.isdigit() else 0):
+                self._row(f"#{key}", cells[key][:28] + ("…" if len(cells[key]) > 28 else ""))
 
     def show_subject(self, folder: Path, tp_key: str, sub_key: str,
                      profile: ProfileData, grouped: GroupedFolder) -> None:

@@ -12,6 +12,7 @@ state: folder, images, idx, profile, settings, current ReviewState.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -34,19 +35,21 @@ from .cellpose_runner import (
 from .dialogs import (
     BusyDialog, CellposeSpinner, ask_overview_destination, batch_dialog,
     confirm_dialog, info_dialog, overview_preview_dialog, profile_editor_dialog,
-    model_registry_dialog, profile_manager_dialog, run_in_thread_pumping,
-    settings_dialog,
+    export_scope_dialog, model_registry_dialog, note_dialog,
+    profile_manager_dialog,
+    run_in_thread_pumping, settings_dialog,
 )
 from .export import export_folder_structured, export_training_data
 from .extras import (
-    dashboard_window, eval_select_dialog, package_create_dialog,
+    areas_window, dashboard_window, eval_select_dialog, package_create_dialog,
     package_import_dialog, stats_window,
 )
 from .grouping import group_images
+from .notebox import NoteBox
 from .i18n import get_strings
 from .persistence import (
     AppSettings, FolderState, ReviewState,
-    TOOL_ADD, TOOL_REMOVE, TOOL_TYPE, TOOLS_ORDER,
+    TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE, TOOLS_ORDER,
 )
 from .profile import ProfileData, ensure_default_profile, load_profile, save_profile
 from .sidebar import Sidebar
@@ -133,6 +136,9 @@ class EryApp:
         self._bind_hotkeys()
         self._refresh_tool_indicator()
         self._start_time_tracking()
+        # Deferred: never let a network call sit between the user and the window.
+        # Inaktiv, solange das Repo privat ist — siehe _build_menu().
+        # self.root.after(3000, self._maybe_check_updates)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -212,6 +218,21 @@ class EryApp:
             sh = self.root.winfo_screenheight() if hasattr(self, "root") else 1000
         except tk.TclError:
             sw, sh = 1600, 1000
+        # The saved size was measured on `screen_w x screen_h`. Restoring those
+        # pixels verbatim on a different display is what makes the window look
+        # tiny on a big external monitor: a 1512x982 laptop-sized window on a
+        # 2560-wide screen leaves a third of the desktop empty, every session.
+        # Carry the *proportion* across instead, then clamp as before.
+        ow, oh = self.settings.screen_w, self.settings.screen_h
+        if ow > 0 and oh > 0 and (ow, oh) != (sw, sh):
+            w = int(w * sw / ow)
+            h = int(h * sh / oh)
+        elif not ow and sw >= w * 1.3:
+            # Settings written before screen_w existed: the reference display is
+            # unknown, but a window barely two-thirds of the screen was never a
+            # deliberate choice on a monitor this size. Open near-full once; the
+            # proportion is recorded on close and honoured from then on.
+            w, h = int(sw * 0.92), int(sh * 0.92)
         w = max(900, min(int(w), sw - 40))
         h = max(600, min(int(h), sh - 40))
         return f"{w}x{h}"
@@ -251,6 +272,7 @@ class EryApp:
         m_analysis.add_separator()
         m_analysis.add_command(label=S["menu_overview_xlsx"],
                                command=self._on_overview_xlsx)
+        m_analysis.add_command(label=S["menu_areas"], command=self._on_areas)
         m_analysis.add_command(label=S["menu_training_export"],
                                command=self._on_training_export)
         menubar.add_cascade(label=S["menu_analysis"], menu=m_analysis)
@@ -265,6 +287,18 @@ class EryApp:
 
         m_help = tk.Menu(menubar, tearoff=0)
         m_help.add_command(label=S["menu_help_hotkeys"], command=self._on_help_hotkeys)
+        # ── Update-Prüfung: fertig gebaut, bewusst INAKTIV ──────────────
+        # Sie fragt ein ÖFFENTLICHES Release-Repo ab. Solange der Quellcode
+        # privat ist, antwortet GitHub unangemeldet mit 404, die Prüfung
+        # meldete also immer nur "keine Information".
+        # AKTIVIEREN (drei Handgriffe):
+        #   1. Repo öffentlich schalten und ein Release taggen (v17.6.0);
+        #      soll der Quellcode privat bleiben: separates öffentliches
+        #      Release-Repo anlegen und in updater.RELEASE_REPO eintragen
+        #   2. die nächste Zeile einkommentieren
+        #   3. AppSettings.update_check_enabled auf True setzen (dann
+        #      prüft die App zusätzlich einmal täglich still beim Start)
+        # m_help.add_command(label=S["menu_check_updates"], command=self._on_check_updates)
         m_help.add_command(label=S["menu_help_about"], command=self._on_help_about)
         menubar.add_cascade(label=S["menu_help"], menu=m_help)
 
@@ -327,8 +361,17 @@ class EryApp:
             on_subject_settings=self._on_eval_select,
             on_open_changed=self._schedule_profile_save,
             on_details_collapsed_changed=lambda _b: self._schedule_profile_save(),
+            on_edit_image_note=self._on_image_note,
+            on_subject_status=self._on_subject_status,
         )
         self.paned.add(self.sidebar, minsize=200, width=self.settings.sidebar_width)
+        # The width YOU chose. The sash may sit further right than this when the
+        # canvas cannot use the space (see _autofit_sash); that surplus is never
+        # written back, or the sidebar would ratchet wider on every session.
+        self._sidebar_floor = int(self.settings.sidebar_width)
+        self._sash_set_by_autofit: int | None = None
+        self.paned.bind("<Configure>", lambda _e: self._schedule_autofit(), add="+")
+        self.paned.bind("<ButtonRelease-1>", lambda _e: self._note_manual_sash(), add="+")
 
         # ─── Center: canvas + empty state ───
         center = tk.Frame(self.paned, bg=P["bg"])
@@ -336,8 +379,18 @@ class EryApp:
             center, self.settings, self.profile,
             save_callback=self._save_review,
             status_callback=self._set_status_text,
+            note_callback=self._on_cell_note,
+            on_overlay_autoshown=self._on_overlay_autoshown,
         )
         self.canvas.pack(fill="both", expand=True)
+        # Placed over the canvas, not packed: it floats, and `center` is the
+        # frame whose coordinates the stored geometry refers to.
+        self.notebox = NoteBox(center, self.settings, self.S, self._on_note_saved,
+                               confirm=lambda t, m: confirm_dialog(
+                                   self.root, t, m,
+                                   yes_text=self.S["confirm_yes"],
+                                   no_text=self.S["confirm_no"]),
+                               on_closed=self._on_note_closed)
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
 
         self.empty_btn = tk.Button(
@@ -356,6 +409,8 @@ class EryApp:
         self.root.bind("<Right>", lambda e: self._step_image(+1))
         self.root.bind("<Key-f>", lambda e: self._on_toggle_finished())
         self.root.bind("<Key-o>", lambda e: self._on_toggle_overlay())
+        # Escape always lands in the neutral mode — the way out of any tool.
+        self.root.bind("<Escape>", lambda e: self._set_active_tool(TOOL_CURSOR))
         self.root.bind("<Key-r>", lambda e: self._on_resegment())
         self.root.bind("<Key-z>", lambda e: self._on_undo())
         self.root.bind("<Key-q>", lambda e: self._on_close())
@@ -539,11 +594,74 @@ class EryApp:
         ) else 0
         self._show_image_at(start)
 
+    def _autofit_sash(self) -> None:
+        """Hand the sidebar the width the image provably cannot use.
+
+        The canvas draws with aspect='equal', so an image of ratio `a` occupies
+        at most `height * a` pixels of width — beyond that the extra is grey and
+        nothing can be done with it *by the image*. Measured on a 2560-wide
+        window: canvas 2123x833, image capped at 1333x833, 37 % of the pane grey.
+        That surplus goes to the sidebar instead.
+
+        Only ever gives, never takes: `_sidebar_floor` is the width the user
+        dragged to, and the sash is never moved left of it. Narrowing it
+        automatically would maximise the image at the cost of a choice the user
+        made deliberately.
+        """
+        if self.canvas.image is None:
+            return
+        try:
+            pane_w = self.paned.winfo_width()
+            view_h = self.canvas.canvas.get_tk_widget().winfo_height()
+            cur = self.paned.sash_coord(0)[0]
+        except (tk.TclError, IndexError, TypeError):
+            return
+        if pane_w < 100 or view_h < 100:
+            return                              # not laid out yet
+        h, w = self.canvas.image.shape[:2]
+        want = desired_sash(pane_w, view_h, w, h, self._sidebar_floor)
+        # A wide deadband, not a few pixels. The sash position is derived from
+        # the canvas HEIGHT, so any vertical jitter moves it sideways: in macOS
+        # fullscreen, pushing the pointer to the top edge unrolls the menu bar,
+        # the window loses ~25 px of height, and at ratio 1.6 that walks the
+        # sash ~40 px — the image visibly narrows whenever the mouse leaves
+        # upwards, and widens again on the way back. 48 px swallows that while
+        # leaving real transitions (a fullscreen toggle moves it by hundreds)
+        # untouched. sash_place also re-fires <Configure>, and reacting to a
+        # one-pixel difference is how the toolbar oscillated once before.
+        if abs(cur - want) <= SASH_DEADBAND:
+            return
+        try:
+            self.paned.sash_place(0, want, 1)
+            self._sash_set_by_autofit = want
+        except tk.TclError:
+            pass
+
+    def _schedule_autofit(self) -> None:
+        if getattr(self, "_autofit_after_id", None) is not None:
+            self.root.after_cancel(self._autofit_after_id)
+        self._autofit_after_id = self.root.after(120, self._autofit_sash)
+
+    def _note_manual_sash(self) -> None:
+        """A sash the user let go of somewhere we did not put it is their choice."""
+        try:
+            cur = self.paned.sash_coord(0)[0]
+        except (tk.TclError, IndexError, TypeError):
+            return
+        if self._sash_set_by_autofit is None or abs(cur - self._sash_set_by_autofit) > 6:
+            self._sidebar_floor = int(cur)
+
     def _show_image_at(self, idx: int) -> None:
         if not self.images or self.folder is None:
             return
         # Persist the time accrued on the image we're leaving before switching.
         self._flush_time()
+        # Close the remark editor: it belongs to the image being left, so it
+        # must not survive into the next one still showing that text. Nothing is
+        # written until Speichern, so an unsaved remark asks before it is lost —
+        # and a "no" cancels the navigation rather than discarding it anyway.
+        if hasattr(self, "notebox") and not self.notebox.request_close():
+            return
         self._time_last_tick = time.monotonic()
         idx = max(0, min(idx, len(self.images) - 1))
         self.idx = idx
@@ -612,7 +730,7 @@ class EryApp:
         if self.folder is None or not self.images:
             return
         self.sidebar.details.show_image(
-            self.folder, self.images[self.idx], self.profile,
+            self.folder, self.images[self.idx], self.profile, review=self.review,
         )
 
     def _show_subject_info(self, tp_key: str, sub_key: str) -> None:
@@ -631,6 +749,84 @@ class EryApp:
     # ─────────────────────────────────────────
     # Handlers
     # ─────────────────────────────────────────
+    def _on_cell_note(self, cid: int | None) -> None:
+        """Open the remark editor. `cid` None (empty space) targets the image.
+
+        Reached from two gestures on purpose: the `4 Anmerken` tool, which is
+        discoverable, and right-click, which is faster once you know it. Both
+        land in the same floating box rather than a modal, so the specimen
+        stays visible while the remark is written.
+        """
+        if self.folder is None or not self.images:
+            return
+        if cid is None:
+            self.notebox.show_for_image(self.review.note)
+        else:
+            self.notebox.show_for_cell(cid, self.review.notes.get(str(cid), ""))
+        # Opening a remark from the neutral cursor arms the annotate tool, so
+        # the round trip closes itself: edit or pick a neighbouring cell right
+        # away, and because closing always hands this tool back to the cursor,
+        # the ✕ returns you to where you started.
+        if self.settings.active_tool == TOOL_CURSOR and self.notebox.visible:
+            self._set_active_tool(TOOL_NOTE)
+
+
+    def _on_image_note(self) -> None:
+        """Remark for the whole current image (detail panel, sidebar menu)."""
+        self._on_cell_note(None)
+
+    def _on_note_closed(self) -> None:
+        """The remark editor closed — hand the annotate tool back to the cursor.
+
+        On close, not on open: while the box is up the tool stays armed, so the
+        box can be dragged, a neighbouring cell can be picked, and the remark
+        finished without the mode changing underfoot. Every way out counts —
+        saved, deleted or discarded — because one rule is easier to predict than
+        a mode that sometimes persists.
+        """
+        if self.settings.active_tool == TOOL_NOTE:
+            self._set_active_tool(TOOL_CURSOR)
+
+    def _on_note_saved(self, target: str | None, text: str) -> None:
+        """The box flushed its content. Empty text deletes the remark."""
+        if self.folder is None or not self.images:
+            return
+        if target is None:
+            if self.review.note == text:
+                return
+            self.review.note = text
+        else:
+            if self.review.notes.get(target, "") == text:
+                return          # debounce fired without a change — do not churn
+            if text:
+                self.review.notes[target] = text
+            else:
+                self.review.notes.pop(target, None)
+            self.canvas.set_cell_note_marker(int(target), bool(text))
+        self._save_review()
+
+    def _on_subject_status(self, tp_key: str, sub_key: str, done: bool) -> None:
+        """Set the finished flag for every segmented image of one subject."""
+        if self.folder is None or self.grouped is None:
+            return
+        images = self.grouped.tree.get(tp_key, {}).get(sub_key, [])
+        n = 0
+        for info in images:
+            if not has_cache(self.folder, info.path):
+                continue          # nothing reviewed yet — leave it alone
+            rv = ReviewState.load(self.folder, info.path.stem)
+            if rv.is_finished != done:
+                rv.is_finished = done
+                rv.save(self.folder, info.path.stem)
+                n += 1
+        if self.images and 0 <= self.idx < len(self.images):
+            self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
+        self.sidebar.invalidate_group_cache()
+        self.sidebar.refresh_statuses()
+        self._update_status()
+        self._refresh_details()
+        self._set_status_text(self.S["status_bulk_done"].format(n=n))
+
     def _on_undo(self) -> None:
         self.canvas.undo()
         self._update_status()
@@ -639,6 +835,18 @@ class EryApp:
         self.settings.overlay_visible = not self.settings.overlay_visible
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
         self.settings.save()
+
+    def _on_overlay_autoshown(self) -> None:
+        """The canvas revealed a hidden overlay so an edit would be visible.
+
+        Persist it exactly like an `o` press: the state that caused this was a
+        stored `overlay_visible: false`, so leaving the setting alone would
+        rebuild the same trap on the next start. The status line explains the
+        sudden change — an overlay that appears without a reason is its own
+        small confusion.
+        """
+        self.settings.save()
+        self._set_status_text(self.S["overlay_auto_shown"])
 
     def _on_toggle_finished(self) -> None:
         if self.review is None:
@@ -818,6 +1026,22 @@ class EryApp:
         self._flush_time()
         stats_window(self.root, self.folder, self.profile, self.grouped, self.S)
 
+    def _on_areas(self) -> None:
+        """Cell-area outcome. On request only: it walks every evaluated image
+        again, which is a cost worth paying when asked, not on every export."""
+        if self.folder is None:
+            info_dialog(self.root, self.S["areas_title"], self.S["stats_no_data"])
+            return
+        self._flush_time()
+        from .areas import compute_areas
+        with BusyDialog(self.root, self.S["areas_title"],
+                        self.S["areas_running"], strings=self.S) as busy:
+            groups = run_in_thread_pumping(
+                busy.top,
+                lambda: compute_areas(self.folder, self.profile, self.grouped),
+            )
+        areas_window(self.root, groups, self.S)
+
     def _on_dashboard(self) -> None:
         if self.folder is None:
             info_dialog(self.root, self.S["dash_title"], self.S["stats_no_data"])
@@ -869,9 +1093,12 @@ class EryApp:
             pass
 
     def _on_eval_select(self, tp_key: str, sub_key: str) -> None:
-        """Open the dialog to choose which images count toward the cap, for a
-        specific (timepoint, subject) group — triggered by the ⚙ next to a
-        subject in the sidebar."""
+        """The ⚙ next to a subject: two tabs over that group's images.
+
+        *Auswertung* picks which images count toward the cap; *Status* marks
+        which ones are finished. Both edit the same per-image review, so the
+        dialog loads and saves each one once even when both tabs touched it.
+        """
         if self.folder is None or not self.images or self.grouped is None:
             return
         images = self.grouped.tree.get(tp_key, {}).get(sub_key, [])
@@ -1018,37 +1245,57 @@ class EryApp:
         self.settings.save()
 
     def _on_export(self) -> None:
-        if self.folder is None:
+        """Ask what to export, then run it off the Tk thread."""
+        if self.folder is None or self.grouped is None:
             return
+        self._flush_time()
+        scope = export_scope_dialog(self.root, self.folder, self.grouped, self.S)
+        if scope is None:
+            return
+        groups = scope["groups"]
+        if not groups:
+            info_dialog(self.root, self.S["export_scope_title"],
+                        self.S["export_scope_empty"])
+            return
+        # None means "everything" to the exporter and keeps the cross-group
+        # overview workbook in the run; a real subset skips it (see export.py).
+        sel = None if len(groups) == len(
+            [1 for tp in self.grouped.timepoints() for _ in self.grouped.subjects_in(tp)]
+        ) else groups
         try:
-            out = export_folder_structured(self.folder, self.profile, self.grouped)
+            with BusyDialog(self.root, self.S["menu_export"],
+                            self.S["export_running"], strings=self.S) as busy:
+                out = run_in_thread_pumping(
+                    busy.top,
+                    lambda: export_folder_structured(
+                        self.folder, self.profile, self.grouped, groups=sel),
+                )
         except Exception as e:
-            info_dialog(self.root, self.S["title"], f"Export error:\n{e}")
+            info_dialog(self.root, self.S["title"], f"Export error: {e}")
             return
-        # "Export → fertig" (user spec): mark every exported image as finished.
-        if self.grouped is not None:
+
+        n_marked = 0
+        if scope["mark_finished"]:
+            # Only the groups that were actually exported — and only images that
+            # have a mask, so an untouched image is not declared reviewed.
             for info in self.grouped.flat:
+                if (info.timepoint, info.subject) not in groups:
+                    continue
                 if not has_cache(self.folder, info.path):
                     continue
-                review = ReviewState.load(self.folder, info.path.stem)
-                if not review.is_finished:
-                    review.is_finished = True
-                    review.save(self.folder, info.path.stem)
+                rv = ReviewState.load(self.folder, info.path.stem)
+                if not rv.is_finished:
+                    rv.is_finished = True
+                    rv.save(self.folder, info.path.stem)
+                    n_marked += 1
             if self.images and 0 <= self.idx < len(self.images):
                 self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
+
         info_dialog(self.root, self.S["export_done_title"],
-                    self.S["export_done_msg"].format(path=out))
-        # Small preview of the overview workbook (opt-in per profile).
-        if getattr(self.profile, "overview_xlsx", True) and self.grouped is not None:
-            try:
-                from .overview import build_overview
-                data = build_overview(self.folder, self.profile, self.grouped)
-                if data["tidy_rows"]:
-                    overview_preview_dialog(
-                        self.root, data["tidy_header"], data["tidy_rows"],
-                        out / "Uebersicht.xlsx", self.S)
-            except Exception:
-                pass
+                    self.S["export_done_msg"].format(path=out)
+                    + self.S["export_done_extra"].format(
+                        n=len(groups), marked=n_marked,
+                        overview="" if sel is None else self.S["export_no_overview"]))
         self.sidebar.invalidate_group_cache()
         self.sidebar.refresh_statuses()
         self._update_status()
@@ -1056,6 +1303,53 @@ class EryApp:
 
     def _on_help_hotkeys(self) -> None:
         info_dialog(self.root, self.S["help_hotkeys_title"], self.S["help_hotkeys"])
+
+    def _on_check_updates(self, silent: bool = False) -> None:
+        """Ask the public release repo whether something newer exists.
+
+        Runs on a worker thread with the main thread polling a holder — the
+        worker must not touch Tk, not even `widget.after()`, which registers a
+        command on the interpreter and raises "main thread is not in main loop".
+        `silent=True` is the once-a-day startup check: it reports a find but
+        stays quiet about being up to date or offline, because neither is news.
+        """
+        from .updater import check as _check
+
+        self.settings.last_update_check = time.time()
+        self.settings.save()
+        holder: dict[str, object] = {}
+        threading.Thread(
+            target=lambda: holder.setdefault("rel", _check(__version__) or False),
+            daemon=True,
+        ).start()
+
+        def poll(n: int = 0) -> None:
+            if not self.root.winfo_exists():
+                return
+            if "rel" not in holder:
+                if n < 40:                       # ~6 s, then give up quietly
+                    self.root.after(150, lambda: poll(n + 1))
+                return
+            rel = holder["rel"]
+            if not rel:
+                if not silent:
+                    info_dialog(self.root, self.S["menu_check_updates"],
+                                self.S["update_none"].format(version=__version__))
+                return
+            notes = f"\n\n{rel.notes}" if rel.notes else ""
+            info_dialog(self.root, self.S["menu_check_updates"],
+                        self.S["update_found"].format(
+                            new=rel.version, cur=__version__, url=rel.url) + notes)
+
+        self.root.after(150, poll)
+
+    def _maybe_check_updates(self) -> None:
+        """Startup check, at most once a day, silent on every negative outcome."""
+        if not self.settings.update_check_enabled:
+            return
+        if time.time() - self.settings.last_update_check < 86400:
+            return
+        self._on_check_updates(silent=True)
 
     def _on_help_about(self) -> None:
         info_dialog(self.root, self.S["menu_help_about"], f"Erys v{__version__}")
@@ -1136,9 +1430,13 @@ class EryApp:
         try:
             self.settings.window_w = self.root.winfo_width()
             self.settings.window_h = self.root.winfo_height()
-            sash = self.paned.sash_coord(0)
-            if sash and sash[0] > 50:
-                self.settings.sidebar_width = int(sash[0])
+            self.settings.screen_w = self.root.winfo_screenwidth()
+            self.settings.screen_h = self.root.winfo_screenheight()
+            # The chosen width, not the current sash: the sash may be carrying
+            # surplus the canvas could not use, and persisting that would make
+            # the sidebar grow a little wider every session.
+            if self._sidebar_floor > 50:
+                self.settings.sidebar_width = int(self._sidebar_floor)
         except tk.TclError:
             pass
         self.settings.save()
@@ -1153,6 +1451,27 @@ class EryApp:
 
     def run(self) -> None:
         self.root.mainloop()
+
+
+SASH_DEADBAND = 48          # see _autofit_sash()
+
+
+def desired_sash(pane_w: int, view_h: int, img_w: int, img_h: int,
+                 floor: int, min_side: int = 200, min_canvas: int = 400) -> int:
+    """Where the sash belongs so no pane holds width the image cannot use.
+
+    With aspect='equal' an image of ratio `img_w/img_h` draws at most
+    `view_h * ratio` pixels wide; anything beyond that is grey. That surplus is
+    handed to the sidebar. `floor` — the width the user dragged to — is never
+    undercut: giving space back is helpful, taking it away overrides a choice.
+
+    Pure so it can be checked without a window; the ratchet it prevents (the
+    sidebar keeping its surplus and growing again next session) would otherwise
+    be invisible until someone noticed the sidebar had eaten the window.
+    """
+    usable = int(view_h * (img_w / img_h))
+    want = max(floor, pane_w - usable)
+    return max(min_side, min(want, pane_w - min_canvas))
 
 
 def _enable_windows_dpi_awareness() -> None:

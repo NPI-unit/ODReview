@@ -122,6 +122,83 @@ STRINGS = {
                                  "deshalb außen vor. Die Masken selbst sind unverändert: Rand- "
                                  "und ausgeschlossene Zellen bleiben beschriftet, weil ein "
                                  "unbeschriftetes Pixel beim Training als Hintergrund gilt."),
+        "export_scope_title":  "Was soll exportiert werden?",
+        "export_scope_hint":   ("Auswahl erfolgt je Zeitpunkt/Proband — ganze Gruppen. "
+                                "Einzelne Bilder abzuwählen würde die Auswertung dieser "
+                                "Gruppe verändern (die 2000er-Kappung füllt über die "
+                                "übergebene Bildliste auf). Für schwächere Rechner: in "
+                                "mehreren Durchgängen exportieren."),
+        "export_scope_group":  "Zeitpunkt / Proband",
+        "export_scope_images": "berechnet",
+        "export_scope_state":  "Zustand",
+        "export_scope_edited": "bearbeitet",
+        "export_scope_plain":  "unbearbeitet",
+        "export_scope_all":    "Alle",
+        "export_scope_computed": "Nur berechnete",
+        "export_scope_only_edited": "Nur bearbeitete",
+        "export_scope_none":   "Keine",
+        "export_scope_count":  "{n} von {total} Gruppen ausgewählt",
+        "export_scope_start":  "Exportieren",
+        "export_scope_empty":  "Keine Gruppe ausgewählt.",
+        "export_running":      "Export läuft",
+        "export_mark_finished": "Exportierte Bilder als „fertig“ markieren",
+        "export_mark_finished_hint": ("Aus, damit ein Export den von Hand gepflegten "
+                                      "Status nicht überschreibt."),
+        "export_done_extra":   "\n\n{n} Gruppe(n) exportiert, {marked} Bild(er) als fertig markiert.{overview}",
+        "export_no_overview":  ("\n\nÜbersicht.xlsx wurde NICHT geschrieben: sie umfasst immer "
+                                "alle Gruppen, eine Teilauswahl würde eine vollständige Datei "
+                                "durch eine unvollständige ersetzen. Bei Bedarf über "
+                                "Auswertung → Übersicht als Excel speichern erzeugen."),
+        "overlay_auto_shown": "Overlay eingeblendet — die Bearbeitung wäre sonst unsichtbar geblieben.",
+        "menu_check_updates":  "Nach Updates suchen …",
+        "update_none":         "ErysReview {version} ist aktuell.",
+        "update_found":        ("Version {new} ist verfügbar — installiert ist {cur}.\n\n"
+                                "Herunterladen:\n{url}"),
+        "filter_with_notes":   "mit Anmerkung",
+        "menu_areas":          "Zellflächen …",
+        "areas_title":         "Zellflächen",
+        "areas_running":       "Zellflächen werden berechnet …",
+        "areas_hint":          ("Fläche der gezählten Zellen in Pixel². Berücksichtigt nur "
+                                "aktive Zellen aus Bildern, die in der Auswertung sind — "
+                                "dieselbe Stichprobe wie RBC und %verändert pro 2000. "
+                                "Randzellen sind angeschnitten und bleiben draußen, sonst "
+                                "wäre die Fläche systematisch zu klein. Zeile aufklappen "
+                                "zeigt die einzelnen Bilder."),
+        "areas_col_group":     "Zeitpunkt / Proband",
+        "areas_col_n":         "Zellen",
+        "areas_col_mean":      "Mittel px²",
+        "areas_col_median":    "Median px²",
+        "areas_col_sd":        "SD",
+        "areas_col_min":       "Min",
+        "areas_col_max":       "Max",
+        "areas_save_csv":      "Als CSV speichern …",
+        "areas_saved":         "Gespeichert:\n{path}",
+        "eval_dlg_tab_eval":   "Auswertung",
+        "eval_dlg_tab_status": "Status",
+        "status_dlg_hint":     ("Welche Bilder du als fertig bearbeitet betrachtest. "
+                                "Unabhängig davon, ob sie zur 2000er-Auswertung zählen."),
+        "status_dlg_all":      "Alle fertig",
+        "status_dlg_none":     "Alle offen",
+        "status_dlg_invert":   "Umkehren",
+        "status_dlg_col_done": "fertig",
+        "status_dlg_summary":  "{n} von {total} als fertig markiert",
+        "tool_note":           "Anmerken",
+        "tool_cursor":         "Cursor",
+        "details_notes":       "Anmerkungen",
+        "status_mark_all_done": "Alle Bilder als fertig markieren",
+        "status_mark_all_open": "Markierung „fertig“ aufheben",
+        "status_bulk_done":    "{n} Bild(er) geändert",
+        "note_title_cell":     "Anmerkung zu Zelle {cid}",
+        "note_title_image":    "Anmerkung zum Bild",
+        "note_hint":           "Kurze Notiz für die Besprechung.",
+        "note_save":           "Speichern",
+        "note_edit":           "Bearbeiten",
+        "note_discard_title":  "Anmerkung verwerfen?",
+        "note_discard_msg":    ("Der Text wurde nicht gespeichert. Schließen und "
+                                "Änderungen verwerfen?"),
+        "note_delete":         "Anmerkung löschen",
+        "note_none":           "keine Anmerkungen",
+        "note_count":          "{n} Anmerkung(en)",
         "menu_models":         "Cellpose-Modelle zuordnen …",
         "settings_cp_model":   "Modell",
         "settings_cp_model_hint": ("Cellpose 4 bringt nur „cpsam“ mit. Eigene oder fremde "
@@ -229,6 +306,7 @@ STRINGS = {
         "settings_cp_flow":    "Flow-Threshold",
         "settings_cp_cellprob": "Cellprob-Threshold",
         "settings_use_gpu":    "GPU verwenden",
+        "settings_gpu_probing": "Erkannt: wird ermittelt…",
         "settings_gpu_detected": "Erkannt: {backend}",
         "settings_show_margin_overlay": "Randstreifen abdunkeln",
         "settings_show_cell_numbers":   "Zellnummern anzeigen (langsamer)",
@@ -272,11 +350,17 @@ STRINGS = {
         # Help
         "help_hotkeys_title":  "Tastenkürzel",
         "help_hotkeys": (
+            "Rechtsklick auf eine Zelle: Anmerkung\n"
+            "Rechtsklick auf einen Probanden in der Liste: Status setzen\n\n"
             "Werkzeuge (Hotkey-Switch):\n"
-            "  1 – Auswahl\n"
-            "  2 – Hinzufügen\n"
-            "  3 – Entfernen (Toggle)\n"
-            "  4 – Verändert (Typ-Zuweisung)\n\n"
+            "  1 – Neue Zelle\n"
+            "  2 – Zählen ein/aus\n"
+            "  3 – Verändert (Typ-Zuweisung)\n"
+            "  4 – ❝ Anmerken (ohne Ziffer in der Leiste, Zelle anklicken;\n"
+            "      Leerfläche = ganzes Bild)\n"
+            "  5 – ↖ Cursor: verändert nichts; Klick auf eine annotierte\n"
+            "      Zelle öffnet ihre Anmerkung. Escape springt hierher.\n"
+            "  Im Anmerkungsfenster wird erst mit „Speichern\" geschrieben.\n\n"
             "Bild-Navigation:\n"
             "  ←/→ – vorheriges / nächstes Bild\n"
             "  f   – aktuelles Bild als 'fertig' markieren\n\n"
@@ -528,6 +612,81 @@ STRINGS = {
                                  "themselves are unchanged: border and excluded cells stay "
                                  "labelled, because an unlabelled pixel counts as background "
                                  "during training."),
+        "export_scope_title":  "What should be exported?",
+        "export_scope_hint":   ("Selection is per timepoint/subject — whole groups. "
+                                "Deselecting single images would change that group's "
+                                "evaluation (the target cap fills up over the image list "
+                                "it is given). For weaker machines: export in several runs."),
+        "export_scope_group":  "Timepoint / subject",
+        "export_scope_images": "computed",
+        "export_scope_state":  "State",
+        "export_scope_edited": "edited",
+        "export_scope_plain":  "untouched",
+        "export_scope_all":    "All",
+        "export_scope_computed": "Computed only",
+        "export_scope_only_edited": "Edited only",
+        "export_scope_none":   "None",
+        "export_scope_count":  "{n} of {total} groups selected",
+        "export_scope_start":  "Export",
+        "export_scope_empty":  "No group selected.",
+        "export_running":      "Exporting",
+        "export_mark_finished": "Mark exported images as finished",
+        "export_mark_finished_hint": ("Off, so an export does not overwrite the status "
+                                      "you maintain by hand."),
+        "export_done_extra":   "\n\n{n} group(s) exported, {marked} image(s) marked finished.{overview}",
+        "export_no_overview":  ("\n\nUebersicht.xlsx was NOT written: it always spans every "
+                                "group, and a partial run would replace a complete file with "
+                                "an incomplete one. Rebuild it via Analysis → Save overview "
+                                "as Excel when needed."),
+        "overlay_auto_shown": "Overlay shown — the edit would have been invisible otherwise.",
+        "menu_check_updates":  "Check for updates …",
+        "update_none":         "ErysReview {version} is up to date.",
+        "update_found":        ("Version {new} is available — you have {cur}.\n\n"
+                                "Download:\n{url}"),
+        "filter_with_notes":   "with remark",
+        "menu_areas":          "Cell areas …",
+        "areas_title":         "Cell areas",
+        "areas_running":       "Computing cell areas …",
+        "areas_hint":          ("Area of counted cells in pixels². Only active cells from "
+                                "images inside the evaluation — the same sample as RBC and "
+                                "%changed per 2000. Border cells are cut off by the image "
+                                "edge and stay out, or the area would be systematically too "
+                                "small. Expand a row to see the individual images."),
+        "areas_col_group":     "Timepoint / subject",
+        "areas_col_n":         "Cells",
+        "areas_col_mean":      "Mean px²",
+        "areas_col_median":    "Median px²",
+        "areas_col_sd":        "SD",
+        "areas_col_min":       "Min",
+        "areas_col_max":       "Max",
+        "areas_save_csv":      "Save as CSV …",
+        "areas_saved":         "Saved:\n{path}",
+        "eval_dlg_tab_eval":   "Evaluation",
+        "eval_dlg_tab_status": "Status",
+        "status_dlg_hint":     ("Which images you consider finished. Independent of "
+                                "whether they count toward the 2000-cell evaluation."),
+        "status_dlg_all":      "All finished",
+        "status_dlg_none":     "All open",
+        "status_dlg_invert":   "Invert",
+        "status_dlg_col_done": "done",
+        "status_dlg_summary":  "{n} of {total} marked finished",
+        "tool_note":           "Annotate",
+        "tool_cursor":         "Cursor",
+        "details_notes":       "Remarks",
+        "status_mark_all_done": "Mark all images finished",
+        "status_mark_all_open": "Clear the finished mark",
+        "status_bulk_done":    "{n} image(s) changed",
+        "note_title_cell":     "Remark on cell {cid}",
+        "note_title_image":    "Remark on the image",
+        "note_hint":           "Short note for discussion. Cmd/Ctrl+Enter saves.",
+        "note_save":           "Save",
+        "note_edit":           "Edit",
+        "note_discard_title":  "Discard remark?",
+        "note_discard_msg":    ("The text has not been saved. Close and discard "
+                                "the changes?"),
+        "note_delete":         "Delete remark",
+        "note_none":           "no remarks",
+        "note_count":          "{n} remark(s)",
         "menu_models":         "Map Cellpose models …",
         "settings_cp_model":   "Model",
         "settings_cp_model_hint": ("Cellpose 4 ships only \"cpsam\". Your own or third-party "
@@ -624,6 +783,7 @@ STRINGS = {
         "settings_cp_flow":    "Flow threshold",
         "settings_cp_cellprob": "Cellprob threshold",
         "settings_use_gpu":    "Use GPU",
+        "settings_gpu_probing": "Detected: checking…",
         "settings_gpu_detected": "Detected: {backend}",
         "settings_show_margin_overlay": "Dim border strip",
         "settings_show_cell_numbers":   "Show cell numbers (slower)",
@@ -665,11 +825,17 @@ STRINGS = {
         "batch_summary_errors": "{n} errors:",
         "help_hotkeys_title":  "Keyboard shortcuts",
         "help_hotkeys": (
+            "Right-click a cell: remark\n"
+            "Right-click a subject in the list: set status\n\n"
             "Tools (hotkey switches active tool):\n"
-            "  1 – Select\n"
-            "  2 – Add\n"
-            "  3 – Remove (toggle)\n"
-            "  4 – Modify (assign type)\n\n"
+            "  1 – New cell\n"
+            "  2 – Count on/off\n"
+            "  3 – Modify (assign type)\n"
+            "  4 – ❝ Annotate (shown without a digit; click a cell,\n"
+            "      empty space = whole image)\n"
+            "  5 – ↖ Cursor: changes nothing; clicking an annotated cell\n"
+            "      opens its remark. Escape jumps here.\n"
+            "  In the remark window nothing is written until \"Save\".\n\n"
             "Image navigation:\n"
             "  ←/→ – previous / next image\n"
             "  f   – mark current image as finished\n\n"

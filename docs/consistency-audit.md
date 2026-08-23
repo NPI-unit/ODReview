@@ -231,6 +231,9 @@ Fill opacity went from 0.42 to a per-profile **0.55** (min ΔE between types 21.
 **What:** `effective_eval_stems` runs once in `export_folder_structured` and again inside `write_proband_zeitpunkt_summary`; `_export_image` calls `compute_image_state`, then summary/overview/db each re-read the counts. No progress indication, no worker thread — ≥23 s frozen at 780 images.
 **Fix:** Compute the eval set and the per-image counts once per group and pass them down; wrap the run in the existing `run_in_thread_pumping` + a progress dialog (the batch dialog is the working model).
 **Why not now:** rewrites lab-critical CSV/XLSX output that can't be validated without a real export; same reasoning that parked erys.db Step 2.
+**Partial (2026-08-21):** the *thread* half is done (see UI-4). The repeated passes remain — but
+the export-scope dialog now lets a slow machine split the work by group instead, which is the
+practical relief PF-9 was meant to deliver.
 
 ### 🟡 PF-10 `DetailPanel` destroys and rebuilds every widget per click
 **Where:** [detail_panel.py:208-210](../erysreview/detail_panel.py)
@@ -245,17 +248,64 @@ Fill opacity went from 0.42 to a per-profile **0.55** (min ΔE between types 21.
 ### ⚪ PF-12 `DetailPanel.show_image` re-parses the filename per click
 **Where:** [detail_panel.py:117](../erysreview/detail_panel.py) — `grouped.flat` already holds the parsed `ImageGroupInfo`.
 
-### 🟠 UI-4 The two long operations have no feedback at all
+### 🟠 UI-4 The two long operations have no feedback at all — **export half landed 2026-08-21**
 **Where:** [app.py:503-518](../erysreview/app.py) (folder open), [app.py:885-920](../erysreview/app.py) (export)
 **What:** Cold folder open costs ~15 ms/image (≈4.5 s at 300 images) and export ≥23 s at 780 — both on the Tk thread, both painting "Not Responding" on Windows. Cellpose got a worker thread (EH-1) and the batch run got a progress bar; these two got neither.
 **Fix:** Same pattern as `batch_dialog`: `run_in_thread_pumping` + determinate progress + cancel.
+**Status:** the *export* half shipped with the export-scope dialog — `_on_export` now runs
+`export_folder_structured` through `BusyDialog` + `run_in_thread_pumping`, so the window keeps
+painting. Indeterminate, not determinate: a per-group callback would have to reach through
+`export_folder_structured` into `write_proband_zeitpunkt_summary`, and that is PF-9's rewrite,
+not this one. **Folder open is still unguarded.**
 
-### 🟠 UI-5 The ⚙ hit-test measures text with the wrong font
+### 🔴 UI-16 Bearbeiten bei ausgeblendetem Overlay war stumm *(behoben 2026-08-22)*
+**Wo:** [canvas.py:437](../erysreview/canvas.py) (`set_overlay_visible`), [canvas.py:875](../erysreview/canvas.py) (`_on_button_press`)
+**Was:** `set_overlay_visible(False)` versteckt Zellfarben, Rand-Overlay, Nummern, Umrandungen **und** die `✎`-Anmerkungsmarker in einem Zug. Jedes Bearbeitungswerkzeug zeichnet sein Ergebnis ausschließlich dorthin, und `canvas.py` kennt keinen einzigen `status_callback`-Aufruf. Bei `overlay_visible: false` traf ein Linksklick also die Zelle, schrieb den Typ und speicherte auf die Platte — sichtbar passierte nichts. Ein stumm gelingender Klick ist von einem kaputten nicht zu unterscheiden; genau so wurde es gemeldet („der Linksklick funktioniert nicht"). Verschärft dadurch, dass `overlay_visible` persistiert wird: einmal aus, und die App startet dauerhaft scheinbar defekt.
+**Behoben:** `_autoshow_overlay()` blendet vor einer Bearbeitungsgeste ein verstecktes Overlay ein (Linksklick mit Werkzeug, Rechtsklick auf eine Zelle) und meldet es dem App-Layer, das wie bei `o` speichert und die Statuszeile setzt. Die Meldung kommt **nach** dem Dispatch, weil die Bearbeitung über `save_callback` → `_update_status()` die Statuszeile neu schreibt. Bewusst nicht an `_save_review` gehängt: von dessen fünf Aufrufern haben nur zwei ein im Overlay sichtbares Ergebnis — `f` (fertig) und `e` (Auswertung) wirken auf die Sidebar, die Bild-Anmerkung nur auf das Detailpanel.
+
+### 🔴 SR-5 `._`-AppleDouble-Dateien wurden als Bilder gezählt *(behoben 2026-08-22)*
+**Wo:** [cellpose_runner.py:108](../erysreview/cellpose_runner.py) (`list_images`, beide Zweige)
+**Was:** `rel_parts = p.relative_to(folder).parts[:-1]` schnitt den Dateinamen ab, der `startswith(".")`-Test prüfte also nur Verzeichnisse. Auf FAT/exFAT — jedem USB-Stick — legt macOS neben jede Datei einen AppleDouble-Zwilling `._<name>`. Gemessen auf `/Volumes/INTENSO` (msdos): 238 echte TIFs, 238 Zwillinge, 954 `._`-Dateien im Cache. `list_images` lieferte **476 statt 238** Bilder. Da `._` vor Buchstaben sortiert, war Index 0 beim Öffnen ein 4-KB-Binärblob, `load_image` warf `UnidentifiedImageError`, der Canvas blieb leer — und **jeder Mausklick starb still** am `image is None`-Riegel in `_on_button_press`. Genau das war die Meldung „der Linksklick funktioniert nicht".
+**Nicht betroffen:** die Auswertung. `_stems_from_rows` überspringt Bilder ohne Zählung (`if c is None: continue`), Phantome haben nie eine Maske — `%verändert pro 2000` und die Stats-CSV sind sauber.
+**Behoben:** Prüfung über *alle* Pfadteile inklusive Dateiname; der Flat-Fallback filtert ebenso. Gate: `tests/test_list_images.py` (7 Checks).
+
+### 🔴 SR-6 `read_json` fing `UnicodeDecodeError` nicht *(behoben 2026-08-22)*
+**Wo:** [persistence.py:71](../erysreview/persistence.py), [cellpose_runner.py:198](../erysreview/cellpose_runner.py), [package.py:220](../erysreview/package.py)
+**Was:** gefangen wurden `json.JSONDecodeError` und `OSError`. `UnicodeDecodeError` ist eine `ValueError`-Unterklasse und **keine** `JSONDecodeError` — Bytes, die kein gültiges UTF-8 sind, entkamen also. Der Fehler flog aus `Sidebar.populate()` und brach `_open_folder` mittendrin ab: `folder`, `images`, `grouped` gesetzt, Leerzustand geräumt, aber `_show_image_at` nie erreicht. Dieselbe Fehlerklasse wie A1 (`EOFError` in `load_cached_masks`) — beim ersten Mal wurden die Geschwister nicht durchsucht, das ist jetzt per AST-Sweep nachgeholt.
+**Auslöser in freier Wildbahn:** ein flüchtiger Lesefehler auf ausgelagerten Cloud-Dateien (SR-4) und der Paket-Import einer Review, die unter einer Windows-Codepage geschrieben wurde (`.decode("utf-8")` in package.py).
+**Behoben:** überall `ValueError` statt `json.JSONDecodeError`; `read_json` meldet die Datei einmal pro Pfad, statt eine Review still als leer zu behandeln.
+
+### 🟡 UI-17 Fenstergröße wurde als absolute Pixel gespeichert *(behoben 2026-08-22)*
+**Wo:** [app.py:207](../erysreview/app.py) (`_safe_geometry`), [persistence.py:155](../erysreview/persistence.py)
+**Was:** `window_w/window_h` sind Pixel eines Bildschirms, der beim nächsten Start ein anderer sein kann. Eine auf dem MacBook (1512×982) gespeicherte Größe ließ an einem 2560er-Monitor ein Drittel des Schreibtischs frei — jede Sitzung erneut von Hand vergrößern.
+**Behoben:** `screen_w/screen_h` werden mitgeschrieben; beim Öffnen wird das *Verhältnis* übertragen. Altbestand ohne die Felder öffnet einmalig auf 92 % des Bildschirms, wenn der deutlich größer ist als das gespeicherte Fenster, und merkt sich danach die Proportion.
+
+### ⚪ UP-1 Update-Prüfung gebaut, bewusst inaktiv *(2026-08-22)*
+**Wo:** [updater.py](../erysreview/updater.py), Anschluss in [app.py](../erysreview/app.py) auskommentiert
+**Was:** Fragt `releases/latest` eines öffentlichen Repos ab, vergleicht mit `__version__` und meldet Neueres. Lädt nichts herunter und ersetzt nichts — eine Anwendung, die sich im Betrieb selbst überschreibt, ist ein anderes, deutlich riskanteres Vorhaben; nichts hier verbaut es.
+**Warum inaktiv:** `finn-dreisigacker/ErysReview` ist privat. Geprüft: unangemeldet 404 auf API *und* Webseite, während `astral-sh/ruff` 200 liefert. Ein Token auf jedem Laborrechner wäre der Preis — Klartext-Zugangsdaten auf fremden Maschinen mit Ablaufdatum, das irgendwann alle Installationen gleichzeitig lahmlegt. Also: Menüeintrag und Startaufruf auskommentiert, `update_check_enabled` auf False, Modul und Handler bleiben lebendig (importierbar, syntaktisch geprüft, vom Gate abgedeckt) statt zu verrotten.
+**Aktivieren:** Repo öffentlich schalten + Release taggen, dann zwei Zeilen einkommentieren. Alternativ separates öffentliches Release-Repo in `updater.RELEASE_REPO`.
+**Keine neue Abhängigkeit:** `urllib`, `json` sind stdlib — Installer unverändert. Tagesdrossel, weil GitHub unangemeldet 60 Anfragen/Stunde je IP erlaubt und ein Labor eine NAT teilt.
+**Gate:** `tests/test_updater.py`, 23 Checks, ohne Netz (urlopen substituiert) — ein Gate, das Internet braucht, versagt genau dort, wo diese Software läuft.
+**Offen (bewusst vertagt):** Lizenzschlüssel mit Ablauf und Codeschutz. Zur Einordnung: eine Signatur verhindert das *Fälschen* einer Lizenz, nicht das *Entfernen* der Prüfung; Python-Obfuskation ist eine Bremsschwelle, keine Mauer. Nuitka wäre der stärkste praktische Schritt und löste nebenbei die Installation (eine .exe statt conda-Umgebung).
+
+### 🔴 SR-7 Ausgeworfener Datenträger warf bei jedem Klick *(behoben 2026-08-22)*
+**Wo:** [persistence.py:272](../erysreview/persistence.py) (`FolderState.save`), erreicht über [app.py:669](../erysreview/app.py) (`_show_image_at`)
+**Was:** Der Arbeitsordner liegt auf einem USB-Stick (`/Volumes/INTENSO`). Wird der im laufenden Betrieb ausgeworfen, lief jeder Bildwechsel in `write_json_atomic` → `Path.mkdir` auf einen Pfad, den es nicht mehr gibt. `FileNotFoundError` entkam aus dem Tk-Callback — die App lief weiter, druckte aber **je Klick einen Traceback** und speicherte nichts mehr. Im Protokoll der Sitzung vom 2026-08-22 dutzendfach.
+**Behoben:** `FolderState.save` fängt `OSError` und meldet den Ordner einmal statt bei jedem Aufruf. Bewusst **nicht** für `ReviewState.save`: der zuletzt geöffnete Bildindex ist Bequemlichkeit und darf still verloren gehen, eine Review ist Arbeit des Nutzers und muss weiterhin melden, damit `_save_review` den Fehlschlag anzeigen kann statt Erfolg vorzutäuschen.
+**Gate:** `tests/test_notes_and_scope.py` — drei Checks auf einen nicht eingehängten Pfad.
+**Offen:** die App erkennt einen verschwundenen Ordner nicht aktiv und bietet nicht an, ihn zu schließen. Solange der Stick der Arbeitsort ist, bleibt das ein Risiko — dieselbe Empfehlung wie SR-4: lokale Platte.
+
+### 🟡 UI-5 The ⚙ hit-test measures text with the wrong font — **Prämisse widerlegt auf macOS (2026-08-22)**
+**Nachgemessen:** der Treeview-Stil `Erys.Treeview` setzt gar keine eigene Schrift, `style.lookup` liefert `TkDefaultFont` — also genau die, mit der gemessen wird. Und `bbox(item, "#0")` enthält die Einrückung bereits (x = 2 / 22 / 42 auf Ebene 1 / 2 / 3), sie fehlt der Rechnung also nicht. Gemessen an einer echten Probandenzeile: Text endet bei ≈174 px, das ⚙ steht bei ≈166–174, die berechnete Trefferkante liegt bei 160. **Der Klick trifft.** Was bleibt: die Zone reicht bis zum rechten Zellrand (Absicht laut Docstring), und unter Windows könnte der Stil eine andere Schrift setzen — dort ist die Messung ungeprüft. Herabgestuft von 🟠 auf 🟡, offen nur noch als Windows-Prüfpunkt zusammen mit UI-15.
+**Nebenbefund:** die eigentliche Verwirrung war eine andere — das ⚙ öffnete einen Dialog für die *Auswertung*, während der Nutzer dort den *Status* erwartete. Seit 2026-08-22 hat der Dialog beide Reiter.
+
+### 🟠 UI-5 (ursprünglicher Eintrag) The ⚙ hit-test measures text with the wrong font
 **Where:** [sidebar.py:375-399](../erysreview/sidebar.py)
 **What:** `_hit_settings_icon` measures the row string with `TkDefaultFont` and treats everything to its right as the icon — but the row renders in the `Erys.Treeview` style and the string mixes status icon, counter, `⊘` marker and padding. If the measurement is off, a click near the right edge either opens the eval dialog unintentionally or does nothing.
 **Fix:** A real Treeview column (`batch_dialog` already does this correctly with `identify_column(evt.x) != "#1"`), or a right-click context menu — which would also be more discoverable.
 
-### 🟠 UI-6 Hint text fails WCAG AA contrast in both themes
+### 🟠 UI-6 Hint text fails WCAG AA contrast in both themes *(behoben 2026-08-12, siehe Protokoll)*
 **Where:** [theme.py](../erysreview/theme.py) `fg_muted`
 **What:** `#6B7384` on `#2A3447` (dark) and `#8B94A4` on `#E8ECF2` (light) both land at ≈**2.6:1**; AA wants 4.5:1 for body text. It is used at 9 pt italic — including `details_empty_hint`, the one string that explains the ⚙ feature.
 **Fix:** Use `fg_secondary` for hints, or darken/lighten `fg_muted` until it clears 4.5:1.
@@ -274,7 +324,7 @@ Fill opacity went from 0.42 to a per-profile **0.55** (min ΔE between types 21.
 **What:** `confirm_dialog` binds `<Return>` to Yes, including for the re-segmentation prompt that discards the image's whole review.
 **Fix:** Default to the safe option in destructive dialogs.
 
-### ⚪ UI-10 Toolbar may drop its primary CTA at the minimum window size
+### ⚪ UI-10 Toolbar may drop its primary CTA at the minimum window size *(behoben 2026-08-12, siehe Protokoll)*
 **Where:** [toolbar.py:149-224](../erysreview/toolbar.py), `minsize(900, 600)` at [app.py:77](../erysreview/app.py)
 **What:** Three tool buttons, a 22-char combobox and five action buttons pack left; Export and the param banner pack last and are therefore the first to be squeezed out. Unverified — needs one look at 900 px.
 
@@ -323,6 +373,14 @@ Three-state status icons `○ ◐ ●` encode **shape as well as color**; the Wo
 - **2026-08-12 — accessibility round shipped (UI-6, UI-10, UI-13a…g, PF-14).** Perceivable: palette reworked (`fg_muted`, `accent_warn`, `sash`, new `fg_on_accent`) — failing contrast pairs 6/17 → 1/17 dark and 7/17 → 1/17 light, the remaining one being the purely decorative hairline, which 1.4.11 does not cover; fill opacity 0.42 → 0.55 per profile; all 39 font specs routed through `theme.font()` behind a 100/125/150 % setting. The Level A finding — type carried by colour alone — is answered with a per-type contour (`TypeDef.outline`: none/solid/dashed/dotted/dash-dot, plus a profile-wide on/off), deliberately **not** gated by the numbers' zoom threshold, since at full-image view a cell is ~41 px and only ~0.2 % of cells carry a mark. A rendered comparison on real cells showed solid-vs-broken is reliable while three broken patterns are not, so the field defaults to none and profiles are expected to use few styles. Operable: sidebar navigation keys no longer double-fire the window shortcuts (verified 1 → 0), toolbar goes icon-only with tooltips below 1700 px (1659 → 803 px, fits the 900 px minimum), focus ring on all four button styles, buttons 45 px and tree rows 28 px, Escape in every window, and the busy modals register a cancel request instead of being a dead end. **Verification:** three gates green (`test_export_db`, `test_overlay` — extended with profile-opacity and contour checks — and `test_sizefilter`), widget smoke run clean, profile editor and settings build in DE and EN, contrast re-measured, contour behaviour verified against a real 179-cell image across type/exclude/toggle/profile-switch, app starts without error. Mac only.
 
 - **2026-08-13 — Zusammenführung der beiden Entwicklungslinien.** `origin/main` (fünf Windows-Commits, 22.–24. Juni) und die lokale Linie liefen seit `5e933a4` (10. Juni) parallel; gemeinsame Basis war zwei Monate alt. Vier Konflikte, einzeln entschieden: *`_on_resegment`* behält den herausgezogenen `run_in_thread_pumping()`-Helfer (beide Seiten hatten dieselbe Technik, `origin/main` inline geschrieben) samt Modellsperre; *`batch_dialog`* übernimmt die Queue-Architektur von `origin/main` und schließt damit EH-2; *`install.bat`* behält den conda-forge-Einzelsolve (CP-1) und bekommt nur die GPU-*Erkennung* aus `1a4968c`, nicht deren pip-Installation; *`run.bat`* nimmt die besser kommentierte Fassung. **Beim Auflösen abgefangen:** der Auto-Merge hätte `_compute_one` (mit `run_in_thread_pumping`) innerhalb der neuen Worker-Schleife stehen lassen — das hätte `widget.update()` aus einem Hintergrund-Thread gerufen, was tkinter nicht unterstützt; es wäre sauber kompiliert und erst im ersten Batch-Lauf aufgefallen. `_compute_one` ruft jetzt direkt `run_for_image`. Version 17.5.0. Vier Gates grün, alle Dialoge bauen in DE und EN, App startet. Nur macOS geprüft.
+
+- **2026-08-21 — Anmerkungs-/Status-/Export-Block geliefert (A, B, C, D) plus E1, F1–F4.** Anmerkungen an Zellen (Rechtsklick, `✎`-Marker) und an Bildern, beide im vorhandenen `<stem>_review.json`; Sammelstatus je Gruppe über Rechtsklick in der Sidebar; Export-Dialog mit Gruppenauswahl (alle / nur berechnete / nur bearbeitete / keine) und optionalem „als fertig markieren", der Export selbst auf einem Worker-Thread (schließt UI-4 für diesen Pfad, entschärft PF-9 praktisch). Auswahl bewusst nur ganze Gruppen: `effective_eval_stems` füllt über genau die übergebene Bildliste auf, einzelne Bilder abzuwählen würde `%verändert_2000` dieser Gruppe still verändern. `Uebersicht.xlsx` wird bei Teilauswahl nicht geschrieben (eine vollständige Datei darf nicht durch eine unvollständige ersetzt werden), `erys.db` akkumuliert per Upsert über mehrere Läufe. E1: die GPU-Abfrage im Profil-Editor importierte `torch` synchron beim Fensteraufbau — 4,86 s bei warmem, 44 s bei kaltem Cache; jetzt Hintergrund-Thread mit Main-Thread-Polling (Fenster nach 0,29 s da, Label nach ~1 s gefüllt). Zwei neue Gates: `test_notes_and_scope.py` (15 Checks) und `test_i18n_keys.py` (300 Schlüssel, beide Sprachen, gleiche Platzhalter).
+
+### 🔴 SR-4 Cloud-Ordner liefern still leere Dateien statt zu blockieren *(teilweise entschärft 2026-08-21)*
+**Wo:** überall, wo Bilder oder Masken gelesen/kopiert werden — Auslöser war ein `EOFError` aus `np.load` im Statistik-Fenster.
+**Was:** `~/Desktop` ist iCloud-synchronisiert. Ausgelagerte Dateien behalten Name und Größe, aber nicht den Inhalt. Gemessen: 3 von 35 Masken, 1 von 20 TIFs, 2374 von 14556 torch-Dateien, dazu **die App-Quelldateien `extras.py` und `theme.py` selbst**. Zwei getrennte Fehlermodi: (a) ein Lesevorgang gibt gelegentlich **0 Bytes zurück statt zu blockieren** — `head`/`awk` lieferten leeren Inhalt, wo `cat` die Datei korrekt herunterlud; (b) `shutil.copy2` klont auf APFS den **Platzhalter** — die Kopie meldet die volle Größe, hat aber keine Daten, und außerhalb des synchronisierten Ordners ist sie nie mehr füllbar. (b) hätte im Trainingsdaten-Export stumm leere TIFs neben gültige Masken geschrieben.
+**Behoben:** `load_cached_masks` fängt `EOFError`/`BadZipFile` und meldet die Datei einmal statt abzustürzen; `_copy_source()` kopiert Originale über explizites read/write statt `copy2`; `_export_image` liest das TIF nur noch, wenn ein Overlay-PNG gewünscht ist (spart außerdem einen vollständigen Bildladevorgang je exportiertem Bild) und überspringt bei Lesefehler nur das Overlay.
+**Offen:** die eigentliche Abhilfe ist der Umzug auf eine lokale Platte (A2 im Feature-Doc). Der Code kann keine Daten erfinden, die nicht auf der Platte liegen. README warnt jetzt davor.
 
 ### Deliberately deferred from #6 (regression / outward-facing risk)
 - **NS-1 (rename the `2000` keys/columns)** — the `%verändert_2000` etc. are **user-facing Excel column names**; renaming them silently could break downstream analysis the user has built on those names. Needs explicit sign-off on the new names before changing.

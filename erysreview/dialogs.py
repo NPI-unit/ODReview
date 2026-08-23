@@ -535,9 +535,32 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict,
         row=row, column=0, columnspan=2, sticky="ew", pady=10); row += 1
     tk.Checkbutton(tab_cp, text=S["settings_use_gpu"], variable=use_gpu_var
                    ).grid(row=row, column=0, columnspan=2, sticky="w", padx=16); row += 1
-    tk.Label(tab_cp, text=S["settings_gpu_detected"].format(backend=detect_gpu_backend().upper()),
-             fg="#888", font=font(9)
-             ).grid(row=row, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 6))
+    # detect_gpu_backend() imports torch, which costs ~5 s warm and far more when
+    # the package files still have to come down from a cloud folder — paid on the
+    # main thread, before the window appears. The label is informational, so it
+    # gets filled in afterwards instead of holding the dialog hostage. Only the
+    # first open pays anything: the import cache serves every later one.
+    gpu_lbl = tk.Label(tab_cp, text=S["settings_gpu_probing"], fg="#888", font=font(9))
+    gpu_lbl.grid(row=row, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 6))
+
+    # The worker must not touch Tk at all — not even widget.after(), which
+    # registers a command on the interpreter and raises "main thread is not in
+    # main loop". It writes into a plain holder; the main thread polls it.
+    _gpu: dict[str, str] = {}
+    threading.Thread(
+        target=lambda: _gpu.setdefault("backend", detect_gpu_backend().upper()),
+        daemon=True,
+    ).start()
+
+    def _poll_gpu() -> None:
+        if not gpu_lbl.winfo_exists():
+            return  # dialog closed while the probe was still running
+        if "backend" in _gpu:
+            gpu_lbl.config(text=S["settings_gpu_detected"].format(backend=_gpu["backend"]))
+            return
+        gpu_lbl.after(150, _poll_gpu)
+
+    gpu_lbl.after(150, _poll_gpu)
 
     # ===== Tab: Types =====
     tab_t = tk.Frame(nb); nb.add(tab_t, text=S["pe_section_types"])
@@ -801,6 +824,139 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict,
 # ─────────────────────────────────────────────
 # App-Tab Settings (globals only)
 # ─────────────────────────────────────────────
+def export_scope_dialog(parent: tk.Misc, folder: Path, grouped, strings: dict) -> dict | None:
+    """Pick which (timepoint, subject) groups to export. Returns
+    {"groups": set[(tp, sub)], "mark_finished": bool} or None on cancel.
+
+    Whole groups only, on purpose: effective_eval_stems() fills the target up
+    over exactly the image list it receives, so deselecting images *within* a
+    group would silently change that group's RBC and %verändert_2000. Leaving a
+    whole group out changes nothing about the groups that are exported — which
+    is what makes chunking safe for weaker machines.
+    """
+    from .persistence import ReviewState
+    from .cellpose_runner import has_cache
+    S = strings
+    rows: list[tuple[str, str, int, int, bool]] = []   # tp, sub, n_img, n_cached, edited
+    for tp in grouped.timepoints():
+        for sub in grouped.subjects_in(tp):
+            imgs = grouped.tree[tp][sub]
+            cached = [i for i in imgs if has_cache(folder, i.path)]
+            edited = any(ReviewState.load(folder, i.path.stem).has_user_edits()
+                         for i in cached)
+            rows.append((tp, sub, len(imgs), len(cached), edited))
+
+    checked = {(tp, sub): True for tp, sub, _, _, _ in rows}
+    result: dict = {"ok": False}
+    top = tk.Toplevel(parent); top.title(S["export_scope_title"])
+    top.transient(parent); top.grab_set(); top.minsize(560, 380)
+    frm = tk.Frame(top, padx=14, pady=14); frm.pack(fill="both", expand=True)
+    tk.Label(frm, text=S["export_scope_hint"], justify="left", wraplength=520,
+             fg="#888", font=font(9)).pack(anchor="w", pady=(0, 10))
+
+    cols = ("check", "group", "imgs", "state")
+    tree = ttk.Treeview(frm, columns=cols, show="headings", height=10)
+    for c, w, t in (("check", 34, ""), ("group", 240, S["export_scope_group"]),
+                    ("imgs", 110, S["export_scope_images"]),
+                    ("state", 130, S["export_scope_state"])):
+        tree.heading(c, text=t); tree.column(c, width=w, stretch=(c == "group"),
+                                             anchor="w" if c in ("group", "state") else "center")
+    tree.pack(fill="both", expand=True)
+
+    def redraw():
+        for iid in tree.get_children():
+            tree.delete(iid)
+        for tp, sub, n, nc, ed in rows:
+            key = f"{tp}::{sub}"
+            tree.insert("", "end", iid=key, values=(
+                "✓" if checked[(tp, sub)] else " ",
+                f"{tp} / {sub}", f"{nc} / {n}",
+                S["export_scope_edited"] if ed else S["export_scope_plain"]))
+        n_sel = sum(1 for v in checked.values() if v)
+        footer.config(text=S["export_scope_count"].format(n=n_sel, total=len(rows)))
+
+    def toggle(evt):
+        iid = tree.identify_row(evt.y)
+        if not iid or tree.identify_column(evt.x) != "#1":
+            return
+        tp, sub = iid.split("::", 1)
+        checked[(tp, sub)] = not checked[(tp, sub)]
+        redraw()
+    tree.bind("<Button-1>", toggle)
+
+    def preset(mode):
+        for tp, sub, _n, nc, ed in rows:
+            checked[(tp, sub)] = (True if mode == "all" else
+                                  False if mode == "none" else
+                                  ed if mode == "edited" else nc > 0)
+        redraw()
+
+    btns = tk.Frame(frm); btns.pack(fill="x", pady=(10, 0))
+    for label_key, mode in (("export_scope_all", "all"),
+                            ("export_scope_computed", "computed"),
+                            ("export_scope_only_edited", "edited"),
+                            ("export_scope_none", "none")):
+        tk.Button(btns, text=S[label_key], command=lambda m=mode: preset(m)
+                  ).pack(side="left", padx=(0, 6))
+    footer = tk.Label(frm, text="", anchor="w", fg="#888", font=font(9))
+    footer.pack(fill="x", pady=(8, 0))
+
+    mark_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(frm, text=S["export_mark_finished"], variable=mark_var
+                   ).pack(anchor="w", pady=(6, 0))
+    tk.Label(frm, text=S["export_mark_finished_hint"], fg="#888", justify="left",
+             wraplength=520, font=font(9)).pack(anchor="w")
+
+    go = tk.Frame(frm); go.pack(fill="x", pady=(12, 0))
+    tk.Button(go, text=S["settings_cancel"], width=12, command=top.destroy
+              ).pack(side="right", padx=4)
+    tk.Button(go, text=S["export_scope_start"], width=14,
+              command=lambda: (result.__setitem__("ok", True), top.destroy())
+              ).pack(side="right", padx=4)
+    top.bind("<Escape>", lambda _e: top.destroy())
+    redraw()
+    _center_on_parent(top, parent); parent.wait_window(top)
+    if not result["ok"]:
+        return None
+    return {"groups": {k for k, v in checked.items() if v},
+            "mark_finished": bool(mark_var.get())}
+
+
+def note_dialog(parent: tk.Misc, title: str, text: str, strings: dict) -> str | None:
+    """Small multi-line editor for a remark. Returns the new text, or None on
+    cancel. An empty result means "delete the remark" — the caller decides."""
+    S = strings
+    result: dict = {"text": None}
+    top = tk.Toplevel(parent); top.title(title)
+    top.transient(parent); top.grab_set(); top.resizable(False, False)
+    frm = tk.Frame(top, padx=16, pady=14); frm.pack(fill="both", expand=True)
+    tk.Label(frm, text=S["note_hint"], fg="#888", justify="left", wraplength=360,
+             font=font(9)).pack(anchor="w", pady=(0, 6))
+    box = tk.Text(frm, width=44, height=4, wrap="word", font=font(11))
+    box.insert("1.0", text or "")
+    box.pack(fill="both", expand=True)
+    box.focus_set()
+
+    def ok():
+        result["text"] = box.get("1.0", "end").strip()
+        top.destroy()
+
+    btns = tk.Frame(frm); btns.pack(fill="x", pady=(10, 0))
+    tk.Button(btns, text=S["settings_cancel"], width=12,
+              command=top.destroy).pack(side="right", padx=4)
+    tk.Button(btns, text=S["settings_save"], width=12, command=ok).pack(side="right", padx=4)
+    if (text or "").strip():
+        tk.Button(btns, text=S["note_delete"],
+                  command=lambda: (result.__setitem__("text", ""), top.destroy())
+                  ).pack(side="left")
+    top.bind("<Escape>", lambda _e: top.destroy())
+    # Ctrl/Cmd+Return saves; plain Return inserts a newline, as in any text box.
+    for mod in ("Command", "Control"):
+        top.bind(f"<{mod}-Return>", lambda _e: ok())
+    _center_on_parent(top, parent); parent.wait_window(top)
+    return result["text"]
+
+
 def model_registry_dialog(parent: tk.Misc, registry: dict, strings: dict) -> dict | None:
     """Map model names to files ON THIS MACHINE. Returns the new mapping, or None.
 

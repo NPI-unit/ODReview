@@ -63,6 +63,7 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
     # Precompute active counts (cached) + original overrides.
     counts: dict[str, int | None] = {}
     originals: dict[str, bool | None] = {}
+    done_orig: dict[str, bool] = {}
     for info in images_in_group:
         stem = info.path.stem
         if has_cache(folder, info.path):
@@ -70,13 +71,23 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
             counts[stem] = c["rbc"] if c else None
         else:
             counts[stem] = None
-        originals[stem] = ReviewState.load(folder, stem).eval_include
+        rv = ReviewState.load(folder, stem)
+        originals[stem] = rv.eval_include
+        # Same load, second field: the status tab needs it and a separate pass
+        # would double the disk work of opening this dialog.
+        done_orig[stem] = bool(rv.is_finished)
     overrides = dict(originals)
+    done = dict(done_orig)
 
     top = tk.Toplevel(parent); top.title(S["eval_dlg_title"])
     top.transient(parent); top.grab_set(); top.minsize(560, 460)
 
-    bar = tk.Frame(top); bar.pack(fill="x", padx=12, pady=(12, 4))
+    nb = ttk.Notebook(top)
+    nb.pack(fill="both", expand=True, padx=12, pady=(12, 4))
+    tab_eval = tk.Frame(nb); nb.add(tab_eval, text=S["eval_dlg_tab_eval"])
+    tab_status = tk.Frame(nb); nb.add(tab_status, text=S["eval_dlg_tab_status"])
+
+    bar = tk.Frame(tab_eval); bar.pack(fill="x", padx=0, pady=(8, 4))
     def set_all(val):
         for info in images_in_group:
             if counts.get(info.path.stem) is not None:
@@ -90,7 +101,7 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
     tk.Button(bar, text=S["eval_dlg_all"], command=lambda: set_all(True)).pack(side="left", padx=2)
     tk.Button(bar, text=S["eval_dlg_none"], command=lambda: set_all(False)).pack(side="left", padx=2)
 
-    tf = tk.Frame(top); tf.pack(fill="both", expand=True, padx=12)
+    tf = tk.Frame(tab_eval); tf.pack(fill="both", expand=True)
     cols = ("count", "status", "image", "active", "cum")
     tree = ttk.Treeview(tf, columns=cols, show="headings", height=14)
     tree.heading("count", text="✓"); tree.column("count", width=36, anchor="center", stretch=False)
@@ -101,7 +112,7 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
     sb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=sb.set); sb.pack(side="right", fill="y"); tree.pack(side="left", fill="both", expand=True)
 
-    footer = tk.Frame(top); footer.pack(fill="x", padx=12, pady=8)
+    footer = tk.Frame(tab_eval); footer.pack(fill="x", pady=8)
     summary = tk.Label(footer, text="", anchor="w", font=font(11, "bold"))
     summary.pack(side="left")
 
@@ -140,16 +151,92 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
     tree.bind("<Button-1>", _toggle)
     _refresh()
 
+    # ── Status tab: which images are finished ──────────────────────────
+    tk.Label(tab_status, text=S["status_dlg_hint"], anchor="w", justify="left",
+             wraplength=520).pack(fill="x", pady=(10, 6))
+    sbar = tk.Frame(tab_status); sbar.pack(fill="x", pady=(0, 4))
+
+    def set_done(val):
+        # Only segmented images: declaring an image finished that has no mask
+        # would claim a review nobody has done.
+        for i in images_in_group:
+            if counts.get(i.path.stem) is not None:
+                done[i.path.stem] = val
+        _refresh_status()
+
+    def invert_done():
+        for i in images_in_group:
+            st = i.path.stem
+            if counts.get(st) is not None:
+                done[st] = not done.get(st, False)
+        _refresh_status()
+
+    tk.Button(sbar, text=S["status_dlg_all"], command=lambda: set_done(True)
+              ).pack(side="left", padx=2)
+    tk.Button(sbar, text=S["status_dlg_none"], command=lambda: set_done(False)
+              ).pack(side="left", padx=2)
+    tk.Button(sbar, text=S["status_dlg_invert"], command=invert_done
+              ).pack(side="left", padx=2)
+
+    stf = tk.Frame(tab_status); stf.pack(fill="both", expand=True)
+    scols = ("done", "status", "image")
+    stree = ttk.Treeview(stf, columns=scols, show="headings", height=14)
+    stree.heading("done", text=S["status_dlg_col_done"])
+    stree.column("done", width=54, anchor="center", stretch=False)
+    stree.heading("status", text="")
+    stree.column("status", width=30, anchor="center", stretch=False)
+    stree.heading("image", text=S["eval_dlg_col_image"])
+    stree.column("image", anchor="w", stretch=True)
+    ssb = ttk.Scrollbar(stf, orient="vertical", command=stree.yview)
+    stree.configure(yscrollcommand=ssb.set)
+    ssb.pack(side="right", fill="y"); stree.pack(side="left", fill="both", expand=True)
+    ssummary = tk.Label(tab_status, text="", anchor="w", font=font(11, "bold"))
+    ssummary.pack(fill="x", pady=8)
+
+    def _refresh_status():
+        for iid in stree.get_children():
+            stree.delete(iid)
+        n_done = 0
+        for i in images_in_group:
+            st = i.path.stem
+            segmented = counts.get(st) is not None
+            is_done = bool(done.get(st)) and segmented
+            n_done += is_done
+            stree.insert("", "end", iid=st, values=(
+                "✓" if is_done else " ",
+                "○" if not segmented else "●",
+                i.path.name,
+            ))
+        ssummary.config(text=S["status_dlg_summary"].format(
+            n=n_done, total=len(images_in_group)))
+
+    def _toggle_done(evt):
+        st = stree.identify_row(evt.y)
+        if not st or counts.get(st) is None:
+            return
+        done[st] = not done.get(st, False)
+        _refresh_status()
+
+    stree.bind("<Button-1>", _toggle_done)
+    _refresh_status()
+
     result = {"changed": False}
     def on_save():
         changed = False
         for info in images_in_group:
             stem = info.path.stem
-            if overrides.get(stem) != originals.get(stem):
-                rv = ReviewState.load(folder, stem)
+            want_eval = overrides.get(stem) != originals.get(stem)
+            want_done = bool(done.get(stem)) != done_orig.get(stem, False)
+            if not (want_eval or want_done):
+                continue
+            # One load and one save per image even when both tabs changed it.
+            rv = ReviewState.load(folder, stem)
+            if want_eval:
                 rv.eval_include = overrides.get(stem)
-                rv.save(folder, stem)
-                changed = True
+            if want_done:
+                rv.is_finished = bool(done.get(stem))
+            rv.save(folder, stem)
+            changed = True
         result["changed"] = changed
         top.destroy()
     btns = tk.Frame(top); btns.pack(fill="x", padx=12, pady=(0, 12))
@@ -627,3 +714,67 @@ def dashboard_window(parent, folder: Path, profile: ProfileData,
 
     tk.Button(top, text=S["btn_close"], command=top.destroy).pack(pady=(0, 12))
     _center_on_parent(top, parent)
+
+
+def areas_window(parent, groups, strings: dict) -> None:
+    """Cell-area outcome: one row per group, expandable to its images.
+
+    `groups` comes pre-computed from the caller, which runs compute_areas() on a
+    worker thread — it walks every evaluated image again, and doing that inside
+    the constructor would freeze the window while it ran.
+    """
+    import csv
+    from tkinter import filedialog
+    from .areas import to_rows
+
+    S = strings
+    top = tk.Toplevel(parent)
+    top.title(S["areas_title"])
+    top.geometry("880x560")
+    top.bind("<Escape>", lambda _e: top.destroy())
+
+    tk.Label(top, text=S["areas_hint"], justify="left", anchor="w",
+             wraplength=840).pack(fill="x", padx=12, pady=(10, 6))
+
+    cols = ("n", "mean", "median", "sd", "min", "max")
+    tree = ttk.Treeview(top, columns=cols, show="tree headings")
+    tree.heading("#0", text=S["areas_col_group"])
+    tree.column("#0", width=300, anchor="w")
+    for c, key, w in zip(cols,
+                         ("areas_col_n", "areas_col_mean", "areas_col_median",
+                          "areas_col_sd", "areas_col_min", "areas_col_max"),
+                         (80, 110, 110, 90, 90, 90)):
+        tree.heading(c, text=S[key])
+        tree.column(c, width=w, anchor="e")
+    tree.pack(fill="both", expand=True, padx=12, pady=6)
+
+    def vals(st):
+        return (st.n, f"{st.mean:.1f}", f"{st.median:.1f}",
+                f"{st.sd:.1f}", f"{st.minimum:.0f}", f"{st.maximum:.0f}")
+
+    if not groups:
+        tree.insert("", "end", text=S["stats_no_data"])
+    for g in groups:
+        gid = tree.insert("", "end", text=f"{g.timepoint} / {g.subject}",
+                          values=vals(g.stats), open=False)
+        for stem, st in g.per_image:
+            tree.insert(gid, "end", text=f"    {stem}", values=vals(st))
+
+    def save_csv():
+        dest = filedialog.asksaveasfilename(
+            parent=top, defaultextension=".csv",
+            initialfile="Zellflaechen.csv",
+            filetypes=[("CSV", "*.csv")])
+        if not dest:
+            return
+        rows = to_rows(groups)
+        with open(dest, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["ebene"])
+            w.writeheader()
+            w.writerows(rows)
+        info_dialog(top, S["areas_title"], S["areas_saved"].format(path=dest))
+
+    bar = tk.Frame(top)
+    bar.pack(fill="x", padx=12, pady=(0, 12))
+    ttk.Button(bar, text=S["areas_save_csv"], command=save_csv).pack(side="right")
+    ttk.Button(bar, text=S["btn_close"], command=top.destroy).pack(side="right", padx=(0, 8))

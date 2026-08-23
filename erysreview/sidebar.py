@@ -14,6 +14,7 @@ from __future__ import annotations
 import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont, ttk
+import sys
 from typing import Callable
 
 from .cellpose_runner import has_cache
@@ -47,6 +48,8 @@ class Sidebar(tk.Frame):
         on_open_changed: Callable[[], None],
         on_subject_settings: Callable[[str, str], None] | None = None,
         on_details_collapsed_changed: Callable[[bool], None] | None = None,
+        on_edit_image_note: Callable[[], None] | None = None,
+        on_subject_status: Callable[[str, str, bool], None] | None = None,
     ):
         super().__init__(parent, bg=palette["sidebar_bg"])
         self.P = palette
@@ -58,8 +61,12 @@ class Sidebar(tk.Frame):
         self._cb_subject_settings = on_subject_settings
         self._cb_open_changed = on_open_changed
         self._cb_details_collapsed = on_details_collapsed_changed
+        self._cb_edit_image_note = on_edit_image_note
+        self._cb_subject_status = on_subject_status
 
         # Mirror state (filled via populate())
+        # stem -> has a remark; filled as a by-product of _image_status().
+        self._note_flags: dict[str, bool] = {}
         self.folder: Path | None = None
         self.images: list[Path] = []
         self.grouped: GroupedFolder | None = None
@@ -92,6 +99,7 @@ class Sidebar(tk.Frame):
             ("unsegmented", "filter_unsegmented"),
             ("unfinished", "filter_unfinished"),
             ("finished", "filter_finished"),
+            ("with_notes", "filter_with_notes"),
         ]:
             tk.Radiobutton(
                 filt, text=S[label_key], value=value, variable=self.filter_var,
@@ -139,6 +147,10 @@ class Sidebar(tk.Frame):
         self.tree.bind("<<TreeviewOpen>>",  self._on_tree_open)
         self.tree.bind("<<TreeviewClose>>", self._on_tree_close)
         self.tree.bind("<Button-1>", self._on_tree_click, add="+")
+        # Right-click. Raw Tk reports it as Button-2 on macOS and Button-3
+        # elsewhere — unlike matplotlib, which normalises to 3 everywhere.
+        for seq in (("<Button-2>",) if sys.platform == "darwin" else ()) + ("<Button-3>",):
+            self.tree.bind(seq, self._on_tree_right_click, add="+")
         self._claim_navigation_keys()
 
         # Folder label removed per user spec — sidebar is cleaner without it.
@@ -147,6 +159,7 @@ class Sidebar(tk.Frame):
             self, P, S,
             collapsed=self.profile.details_collapsed,
             on_collapse_changed=self._on_details_collapse,
+            on_edit_image_note=self._cb_edit_image_note,
         )
         self.details.pack(fill="x", side="bottom", padx=8, pady=(4, 4), ipady=2)
 
@@ -210,7 +223,8 @@ class Sidebar(tk.Frame):
             status = self._image_status(info.path)
             icon = STATUS_ICONS[status]
             self.tree.item(info.path.name,
-                           text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}",
+                           text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}"
+                                f"{self._note_marker(info)}",
                            tags=(f"status_{status}",))
         for iid in self.tree.get_children():
             self._refresh_group_node(iid, recurse=True)
@@ -260,7 +274,8 @@ class Sidebar(tk.Frame):
 
                 for info in self.grouped.tree[tp][sub]:
                     status = self._image_status(info.path)
-                    if not self._passes_filter(status):
+                    if not self._passes_filter(status,
+                                               self._note_flags.get(info.path.stem, False)):
                         continue
                     if not tp_inserted:
                         self.tree.insert("", "end", iid=tp_iid, text=tp_label,
@@ -274,7 +289,8 @@ class Sidebar(tk.Frame):
                         sub_inserted = True
                     icon = STATUS_ICONS[status]
                     self.tree.insert(sub_iid, "end", iid=info.path.name,
-                                     text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}",
+                                     text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}"
+                                          f"{self._note_marker(info)}",
                                      tags=(f"status_{status}",))
 
         if 0 <= self.idx < len(self.images):
@@ -296,17 +312,40 @@ class Sidebar(tk.Frame):
         return ""
 
     def _image_status(self, image_path: Path) -> str:
+        """Status of one image — and, as a side effect, whether it carries a remark.
+
+        The note flag rides along deliberately: the review is already loaded
+        here, and a second `ReviewState.load` per row would double the disk work
+        of the sidebar refresh, which is the hot path this project has already
+        had to optimise once.
+        """
         if self.folder is None or not has_cache(self.folder, image_path):
+            self._note_flags[image_path.stem] = False
             return "unsegmented"
         review = ReviewState.load(self.folder, image_path.stem)
+        self._note_flags[image_path.stem] = bool(
+            review.note.strip() or any(t.strip() for t in review.notes.values())
+        )
         if review.is_finished:
             return "finished"
         return "in_progress"
 
-    def _passes_filter(self, status: str) -> bool:
+    def _note_marker(self, info: ImageGroupInfo) -> str:
+        """Trailing ❝ on images that carry a remark.
+
+        A glyph, not a blue row: the row foreground already carries the status
+        (unsegmented / in progress / finished), and recolouring exactly the rows
+        you are looking for would cost that. The blue marks the cell on the
+        canvas, where nothing competes for it; here the filter is the exact tool.
+        """
+        return "  ❝" if self._note_flags.get(info.path.stem) else ""
+
+    def _passes_filter(self, status: str, has_note: bool = False) -> bool:
         f = self.filter_var.get()
         if f == "all":
             return True
+        if f == "with_notes":
+            return has_note
         if f == "unsegmented":
             return status == "unsegmented"
         if f == "unfinished":
@@ -436,6 +475,32 @@ class Sidebar(tk.Frame):
             return
         # Defer so this click finishes (selection/focus) before a modal opens.
         self.after_idle(lambda: self._cb_subject_settings(tp_key, sub_key))
+
+    def _on_tree_right_click(self, evt) -> None:
+        """Bulk-set the finished flag for a whole subject.
+
+        The gear is already taken (it opens "which images count"), so the status
+        gets its own gesture rather than a second glyph competing for the same
+        few pixels.
+        """
+        if self._cb_subject_status is None:
+            return
+        iid = self.tree.identify_row(evt.y)
+        if not iid or not iid.startswith("sub::"):
+            return
+        try:
+            _, tp_key, sub_key = iid.split("::", 2)
+        except ValueError:
+            return
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label=self.S["status_mark_all_done"],
+                         command=lambda: self._cb_subject_status(tp_key, sub_key, True))
+        menu.add_command(label=self.S["status_mark_all_open"],
+                         command=lambda: self._cb_subject_status(tp_key, sub_key, False))
+        try:
+            menu.tk_popup(evt.x_root, evt.y_root)
+        finally:
+            menu.grab_release()
 
     def _on_tree_select(self, _evt=None) -> None:
         sel = self.tree.selection()

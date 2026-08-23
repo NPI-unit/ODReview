@@ -44,12 +44,12 @@ ErysReview gives you exactly that, in a single Tk window.
 
 ## Highlights
 
-- **Profiles per study** — regex-based filename grouping into `Zeitpunkt → Proband → Bild`, configurable cell types, Cellpose parameters, target cell count, duplicate-detection rules.
+- **Profiles per study** — regex-based filename grouping into `Zeitpunkt → Proband → Bild`, configurable cell types, Cellpose parameters, target cell count, implausible-cell-size bounds.
 - **Lazy Cellpose** with on-disk cache and parameter manifest. Open 200 images, only the ones you actually look at trigger compute.
 - **Hierarchical sidebar** with collapsible subject groups and an always-visible counter `n/target Erys` per group.
 - **Cockpit detail panel** that shows live per-image or per-subject statistics — % per cell type, % verändert, % toward target.
-- **3-tool palette**: `Neue Zelle` (add manual cell), `Zählen ein/aus` (toggle active state, also re-include border/duplicate cells), `Verändert` (assign type from dropdown).
-- **Automatic duplicate detection** (centroid distance) with configurable threshold + policy.
+- **3-tool palette**: `Neue Zelle` (add manual cell), `Zählen ein/aus` (toggle active state, also re-include border / size-filtered cells), `Verändert` (assign type from dropdown).
+- **Implausible-cell-size filter** — erythrocytes in one field are strikingly uniform (measured IQR 0.90–1.09× the median area over 3164 cells), so anything below `min_factor` or above `max_factor` of *that image's* median is a fragment or a merged pair. Excluded from the count, rendered gray, re-includable with `Zählen ein/aus`. Replaces the old centroid-distance duplicate detection, which was measured to be inert — a Cellpose mask is a pixel partition, so two labels can never overlap.
 - **Margin / border filter** so partial cells at image edges don't pollute counts. Configurable per profile.
 - **Auto-save** on every click into per-image JSON sidecars. No `Save` button.
 - **Structured export** to `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/` with original TIFs copied alongside masks, overlay PNGs, per-image stats CSV, and a per-subject summary CSV in a 4-block layout matching the standard lab spreadsheet format.
@@ -57,6 +57,11 @@ ErysReview gives you exactly that, in a single Tk window.
 - **Batch with hierarchical filtering** — *Mehrere Bilder* mirrors the sidebar: a `Zeitpunkt → Proband → Bild` tree plus `Zeitpunkt`/`Proband` dropdown filters, so you can target a single subject or timepoint. Quick-selects (all / unsegmented / unfinished / invert) and *Erste N pro Proband* stack as intersections; *Bis Ziel rechnen* computes each group in image order until its active count reaches the profile target; *wachhalten* prevents sleep during long runs (`caffeinate` on macOS, `SetThreadExecutionState` on Windows).
 - **Recursive image loading** — images in sub-folders are read too; the `outputs/` export folder and `.erys_cache/` are skipped and duplicate filenames are ignored.
 - **Two themes** — Lab Neutral (light) and Soft Dark (dark) — sharing identical semantic color keys, both targeted at scientific work.
+- **Remarks on cells and images** — right-click a cell (or `Notiz …` in the detail panel for the whole image) to jot down anything you want to discuss later. Cells carrying a remark get a `✎` marker on the canvas; the detail panel rolls up every remark of the current image. Stored in the same `<stem>_review.json` sidecar, exported in `erys.db`.
+- **Bulk status per group** — right-click a `Zeitpunkt`/`Proband` row in the sidebar to mark all its images *fertig* or to clear that flag, instead of pressing `f` on each one.
+- **Export with scope selection** — `Exportieren` first opens a picker listing every `Zeitpunkt/Proband` group with its image count and state (*bearbeitet* / *unbearbeitet*). Presets: all, only computed, only human-edited, none. Exporting in several smaller runs keeps weaker machines usable; `erys.db` accumulates across runs. Selection is per whole group on purpose — dropping single images inside a group would change that group's `% verändert pro 2000`, because the cap fills up over exactly the image list it is handed. The cross-group `Uebersicht.xlsx` is written only on a full run (a partial one would replace a complete workbook with an incomplete one); rebuild it any time via `Auswertung → Übersicht als Excel speichern`.
+- **Robust folder scanning** — AppleDouble `._` twins (macOS writes one next to every file on FAT/exFAT, i.e. any USB stick) are skipped, so a stick holding 238 photos is not read as 476 images half of which are 4 KB binary blobs. Unreadable sidecars are reported per file instead of aborting the folder open.
+- **Cell-area outcome** — `Auswertung → Zellflächen …` computes n, mean, median, SD, min and max of the cell area (px²) per image and per `Zeitpunkt/Proband`, on request only, and saves to CSV. Restricted to active cells in images inside the evaluation — the same sample as RBC and `% verändert pro 2000`, so two numbers for one subject never rest on different denominators. Per-cell areas were always in `*_stats.csv`; this adds the aggregate.
 - **DE / EN** strings.
 - **Share packages** — bundle a study (precomputed `.npy` masks + reviews, originals optional) into one ZIP via `Datei → Paket erstellen …`. Creation shows a `Zeitpunkt → Proband → Bild` checklist so you pick exactly which segmented images go in (group rows toggle all their children; All/None; default all). A teammate runs `Datei → Paket importieren …` and reviews **without ever running Cellpose** — ideal when their machine is too weak to segment. Imported images are always set to *bearbeitet* (never *fertig*); per-image conflicts with local reviews are resolved interactively (import / keep / all).
 - **Editable 2000-cell cap** — each subject×timepoint group auto-selects images (in order) until the running active count just exceeds the target; press `e` to swap any single image in/out/auto. Skipped images are marked `⊘` in the sidebar and drop out of the summary CSV.
@@ -177,7 +182,7 @@ You should see versions printed. The last value is `True` when a GPU is availabl
 5. Click any image — Cellpose runs (modal spinner shows progress on first load, instant from cache afterwards).
 6. **Tools** in the toolbar (or press `1`, `2`, `3`):
    - `1 Neue Zelle` — click empty space to add a manual cell
-   - `2 Zählen ein/aus` — click an active cell to remove it from the count, click a gray (border/duplicate) cell to manually include it
+   - `2 Zählen ein/aus` — click an active cell to remove it from the count, click a gray (border / implausible size) cell to manually include it
    - `3 Verändert` — pick a type from the dropdown and click cells to label them
 7. Press `f` to mark the current image as **fertig** (green ●).
 8. Click `↓ Exportieren` (or `Cmd+S`) — writes `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/…` with everything.
@@ -188,15 +193,18 @@ You should see versions printed. The last value is `True` when a GPU is availabl
 
 | Key | Action |
 |---|---|
-| `1` / `2` / `3` | switch tool |
+| `1` / `2` / `3` / `4` | switch tool (4 = ❝ annotate) |
 | `Linksklick` | tool action (add / toggle count / assign type) |
+| `Rechtsklick` (Zelle) | add / edit a remark on that cell (same floating editor as tool 4) |
+| `Rechtsklick` (Sidebar-Gruppe) | mark all images of the group finished / open |
 | `Mausrad` | zoom on cursor |
 | `Mittel-Drag` | pan |
 | `Home` / `0` | reset zoom |
 | `←` / `→` | previous / next image |
 | `f` | mark image as finished |
 | `e` | toggle current image in / out / auto for the 2000-cell evaluation |
-| `o` | overlay on/off (also toggles margin overlay) |
+| `o` | overlay on/off (also toggles margin overlay, numbers, outlines and `✎` markers) |
+| — | editing with the overlay hidden turns it back on: the result would otherwise be invisible |
 | `r` | segment / re-run Cellpose on current image (no auto-render on load) |
 | `F5` / `Cmd+R` | refresh — re-scan folder + re-group (also after editing the profile) |
 | `z` | undo |
@@ -213,7 +221,7 @@ You should see versions printed. The last value is `True` when a GPU is availabl
   .erys_cache/                created automatically
     <stem>_masks.npy          cached Cellpose mask
     <stem>_masks.json         which parameters produced this mask
-    <stem>_review.json        per-image user edits (auto-saved on every click)
+    <stem>_review.json        per-image user edits + remarks (auto-saved on every click)
     folder_state.json         last opened image index
   outputs/                    created when you export
     <Zeitpunkt>/
@@ -223,9 +231,31 @@ You should see versions printed. The last value is `True` when a GPU is availabl
         *_masks.npy                          final mask (with manual additions)
         *_overlay.png                        rendered overlay
         <Zeitpunkt>_<Proband>_summary.csv    4-block aggregated CSV
-    Uebersicht.xlsx           cross-group overview (tidy sheet + pivot matrices)
+    Uebersicht.xlsx           cross-group overview (full exports only)
+    erys.db                   SQLite reporting store (images, cells, remarks; upserted per image)
     manifest.json             profile snapshot + app version + timestamp
 ```
+
+### Do not keep the study folder in a cloud drive
+
+iCloud Drive, OneDrive and Dropbox *evict* files that have not been touched for a
+while: the name and size stay, the content does not. Both the app folder and the
+study folder are affected, and the failure is quiet rather than loud:
+
+- reading an evicted file sometimes returns **zero bytes instead of blocking**, so
+  a mask comes back as `EOFError` and the image silently counts as unsegmented;
+- copying one with the usual clone-based copy (`shutil.copy2`, Finder duplicate,
+  `cp`) copies the *placeholder* — the copy reports the full size but has no data,
+  and outside the synced folder it can never be filled in again;
+- the first Cellpose run of a session pays for re-downloading PyTorch: measured
+  **44 s cold vs. 2 s warm** for the import alone, with 2374 of 14556 torch files
+  evicted.
+
+ErysReview defends itself where it can — unreadable masks are reported per file
+instead of crashing, originals are copied through an explicit read, and the
+`Übersicht`/`Statistik` windows no longer block on it — but it cannot invent data
+that is not on the disk. Keep `<study_folder>` (and the app) on a local disk, e.g.
+`~/ErysData`, and use the cloud for finished `outputs/` only.
 
 App-wide preferences live in `~/Library/Application Support/Erys/settings.json` (macOS) or `%APPDATA%/Erys/settings.json` (Windows). Profiles live next to it in `profiles/<slug>.json`.
 
@@ -276,7 +306,7 @@ A study profile is a small JSON file in `~/Library/Application Support/Erys/prof
   "use_gpu": true,
   "margin_n": 0,
   "show_margin_overlay": true,
-  "duplicate_detection": {"enabled": true, "threshold_factor": 0.7, "policy": "remove_smaller"}
+  "size_filter": {"enabled": true, "min_factor": 0.35, "max_factor": 1.7}
 }
 ```
 

@@ -105,7 +105,16 @@ def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
                 drops["ext"] += 1; continue
             if p.name.endswith("_overlay.png"):
                 drops["overlay"] += 1; continue  # export artifact, not a source
-            rel_parts = p.relative_to(folder).parts[:-1]  # parent dirs only
+            # Every part INCLUDING the filename. The old `[:-1]` checked only
+            # parent directories, so a dot-file itself always passed. On a
+            # FAT/exFAT volume — any USB stick — macOS writes an AppleDouble
+            # `._<name>` twin next to every file, so `._image.tif` was counted
+            # as an image: 238 photos became 476 "images", half of them 4 KB
+            # binary blobs. `._` sorts before letters, so the folder opened on
+            # a blob, load_image failed, the canvas stayed empty and every
+            # click died at the `image is None` guard. It also doubled the
+            # image count feeding the 2000-cell evaluation.
+            rel_parts = p.relative_to(folder).parts
             if any(part in _SKIP_DIRS or part.startswith(".") for part in rel_parts):
                 drops["hidden"] += 1; continue
             rp = p.resolve()
@@ -128,6 +137,7 @@ def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
             flat = sorted(
                 q for q in folder.iterdir()
                 if q.is_file() and q.suffix.lower() in IMG_EXTS
+                and not q.name.startswith(".")      # AppleDouble / dot-files
                 and not q.name.endswith("_overlay.png")
             )
         except OSError:
@@ -195,7 +205,10 @@ def cached_params(folder: Path, image_path: Path) -> dict | None:
     try:
         with meta.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
+        # ValueError covers UnicodeDecodeError too — see read_json(). An
+        # unreadable manifest means "parameters unknown", which is exactly the
+        # `None` this already returns.
         return None
 
 
@@ -235,13 +248,37 @@ def _read_mask(path: Path) -> np.ndarray:
     return np.asarray(obj)
 
 
+# Masks already reported as unreadable, so one broken file does not flood the
+# console — every counter, the statistics window and the export each read it.
+_UNREADABLE: set[str] = set()
+
+
 def load_cached_masks(folder: Path, image_path: Path) -> np.ndarray | None:
+    """The cached mask, or None if there is none — or it cannot be read.
+
+    `EOFError` was missing from the caught set and is neither an OSError nor a
+    ValueError, so it escaped all the way up and crashed the statistics window.
+    It is what np.load raises for a file whose bytes are not there: on macOS
+    iCloud and on Windows OneDrive evict file *contents* while keeping the
+    directory entry, leaving a full-size file with zero allocated blocks.
+
+    Returning None makes such an image read as "not segmented", which is the
+    honest state — but silently doing so would hide real data loss, so the file
+    is named on stdout once (the launchers keep a console open).
+    """
     npy, _ = mask_read_paths(folder, image_path)
     if npy is None:
         return None
     try:
         return _read_mask(npy).astype(np.int32)
-    except (OSError, ValueError, zipfile.BadZipFile):
+    except (OSError, ValueError, EOFError, zipfile.BadZipFile) as e:
+        key = str(npy)
+        if key not in _UNREADABLE:
+            _UNREADABLE.add(key)
+            print(f"[Maske unlesbar] {image_path.name}: {type(e).__name__} — "
+                  f"{npy}. Datei ist vorhanden, aber ihr Inhalt nicht "
+                  f"(Cloud-Auslagerung?). Das Bild gilt als nicht segmentiert.",
+                  flush=True)
         return None
 
 

@@ -50,6 +50,21 @@ def _group_folder(root: Path, tp: str, sub: str) -> Path:
     return d
 
 
+def _copy_source(src: Path, dst: Path) -> None:
+    """Copy an original image through an explicit read/write.
+
+    Not `shutil.copy2`: on APFS that goes through fcopyfile/clonefile, which
+    clones a cloud-evicted file's *placeholder* — the copy reports the full
+    logical size but has no data, and outside the synced tree it can never be
+    materialised. Result would be an empty TIF sitting next to a valid mask.
+    An explicit read forces the download (verified: reading an evicted file
+    works, cloning it does not) and raises loudly if it cannot.
+    """
+    with src.open("rb") as fsrc, dst.open("wb") as fdst:
+        shutil.copyfileobj(fsrc, fdst)
+    shutil.copystat(src, dst)
+
+
 def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData,
                   dest: Path, in_eval: bool = True) -> bool:
     """Export one image's derived files into `dest`. Returns True if mask was cached.
@@ -78,7 +93,6 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
     if state is None:
         return False
 
-    image = load_image(image_info.path)
     default_type = profile.default_type_key()
     type_name_by_key = {t.key: (t.name or t.key) for t in profile.cell_types}
 
@@ -117,15 +131,27 @@ def _export_image(folder: Path, image_info: ImageGroupInfo, profile: ProfileData
     # Copy original (off by default — avoids duplicating the source TIFs).
     if getattr(profile, "copy_originals_to_outputs", False):
         try:
-            shutil.copy2(image_info.path, dest / image_info.path.name)
-        except (FileNotFoundError, shutil.SameFileError):
+            _copy_source(image_info.path, dest / image_info.path.name)
+        except (OSError, shutil.SameFileError):
             pass
 
     df.to_csv(dest / f"{stem}_stats.csv", index=False)
     save_mask(dest / f"{stem}_masks.npy", state.masks)
 
-    # Overlay PNG (off by default — large + slow).
+    # Overlay PNG (off by default — large + slow). The source TIF is only read
+    # here: it is needed for nothing else, and reading it unconditionally cost a
+    # full image load per exported image plus an unrecoverable crash whenever a
+    # file was present but unreadable (cloud-evicted). A broken source now costs
+    # its overlay, not the export.
     if getattr(profile, "overlay_png", False):
+        try:
+            image = load_image(image_info.path)
+        except Exception as e:
+            print(f"[Overlay uebersprungen] {image_info.path.name}: "
+                  f"{type(e).__name__} — Bilddatei nicht lesbar "
+                  f"(Cloud-Auslagerung?). Stats und Maske wurden exportiert.",
+                  flush=True)
+            return True
         fig = plt.figure(figsize=(14, 9))
         ax = fig.add_subplot(111)
         ax.imshow(normalize_image_for_display(image), interpolation="nearest")
@@ -186,7 +212,7 @@ def export_training_data(folder: Path, profile: ProfileData,
         if review.manual_cells:
             skipped_manual.append(stem)
             continue
-        shutil.copy2(info.path, dest / f"{stem}{info.path.suffix}")
+        _copy_source(info.path, dest / f"{stem}{info.path.suffix}")
         tifffile.imwrite(dest / f"{stem}_masks.tif",
                          masks.astype(np.uint16), compression="zlib")
         written.append(stem)
@@ -219,8 +245,21 @@ def export_training_data(folder: Path, profile: ProfileData,
 
 
 def export_folder_structured(folder: Path, profile: ProfileData,
-                             grouped: GroupedFolder | None) -> Path:
-    """Run the full structured export against the current folder. Returns outputs root."""
+                             grouped: GroupedFolder | None,
+                             groups: set[tuple[str, str]] | None = None) -> Path:
+    """Run the structured export. Returns the outputs root.
+
+    `groups` limits the run to those (timepoint, subject) pairs; None means all.
+    Only WHOLE groups can be selected: `effective_eval_stems` fills the target up
+    over exactly the image list it is handed, so dropping images *inside* a group
+    would silently change that group's RBC and %verändert_2000.
+
+    With a subset the cross-group overview workbook is skipped — it always spans
+    every group, so writing it from a partial run would overwrite a complete file
+    with an incomplete one. Auswertung → Übersicht speichern rebuilds it on
+    demand. erys.db is upserted per image and therefore accumulates correctly
+    across several partial runs.
+    """
     root = outputs_root(folder)
 
     # If grouping is missing (shouldn't happen in normal flow), build a single bucket
@@ -231,6 +270,8 @@ def export_folder_structured(folder: Path, profile: ProfileData,
 
     for tp in grouped.timepoints():
         for sub in grouped.subjects_in(tp):
+            if groups is not None and (tp, sub) not in groups:
+                continue
             images = grouped.tree[tp][sub]
             dest = _group_folder(root, tp, sub)
             eval_stems = effective_eval_stems(folder, images, profile)
@@ -259,7 +300,7 @@ def export_folder_structured(folder: Path, profile: ProfileData,
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
     # Cross-group overview workbook (opt-in per profile).
-    if getattr(profile, "overview_xlsx", True):
+    if groups is None and getattr(profile, "overview_xlsx", True):
         try:
             from .overview import write_overview_xlsx
             write_overview_xlsx(folder, profile, grouped, root / "Uebersicht.xlsx")

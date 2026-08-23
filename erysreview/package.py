@@ -218,7 +218,10 @@ def import_package(
             if review_name in names:
                 try:
                     raw = json.loads(zf.read(review_name).decode("utf-8"))
-                except json.JSONDecodeError:
+                except ValueError:
+                    # Also UnicodeDecodeError: a review written under a Windows
+                    # code page decodes to invalid UTF-8, and that must cost the
+                    # one review, not the whole package import.
                     raw = {}
                 raw["is_finished"] = False  # imported => bearbeitet, never fertig
                 (cache_dir / f"{stem}_review.json").write_text(
