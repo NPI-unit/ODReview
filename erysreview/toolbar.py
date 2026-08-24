@@ -10,6 +10,7 @@ ttk styles (`ErysTool`, `ErysToolActive`, `ErysAction`, `ErysPrimary`,
 
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable
@@ -24,27 +25,53 @@ from .theme import font
 
 # Toolbar glyphs, in one place so they are a one-line change.
 #
-# Chosen for a bold, filled look. Two carry a known risk, accepted deliberately:
-# ⛶ (U+26F6, Misc Symbols) and ⬇ (U+2B07, Misc Symbols and Arrows) sit in blocks
-# whose Windows coverage is patchy, so Windows may substitute them from another
-# font — or show a box. That cannot be checked from macOS; verify on the first
-# Windows run and swap here if they look wrong. Safe equivalents of the same
-# weight: ▣ (U+25A3) and ⇩ (U+21E9), both in well-covered blocks.
+# Chosen for a bold, filled look. ◉ (U+25C9) rather than ◐: ◐ is already the
+# sidebar's "in progress" status icon (theme.STATUS_ICONS_3), and one glyph must
+# not mean two things in one window.
 #
-# ◉ (U+25C9) rather than ◐: ◐ is already the sidebar's "in progress" status
-# icon (theme.STATUS_ICONS_3), and one glyph must not mean two things in one
-# window.
-GLYPHS = {
-    "resegment":  "⟳",     # U+27F3
+# This is the macOS set, and it is also the fallback everywhere else. Windows
+# overrides two of them below — see _GLYPHS_WINDOWS.
+_GLYPHS_BASE = {
+    "resegment":  "⟳",     # U+27F3 — no bold face on Windows, see below
     "overlay":    "◉",     # U+25C9
-    "reset_zoom": "⛶",     # U+26F6  — see the note above
+    "reset_zoom": "⛶",     # U+26F6
     "undo":       "↺",     # U+21BA
     "info":       "ⓘ",     # U+24D8
     "note":       "❝",     # U+275D — reads as "remark"; present in Segoe UI
                            # Symbol, which UI-15 showed is worth checking.
-    "cursor":     "↖",     # U+2196
-    "export":     "⬇",     # U+2B07  — see the note above
+    "cursor":     "↖",     # U+2196 — overridden on Windows
+    "export":     "⬇",     # U+2B07 — overridden on Windows
 }
+
+# Windows replacements — measured on Windows 11 / Tk 8.6.13, not guessed.
+#
+# The toolbar does not render in the font this file assumes. theme.font() builds
+# the tuple ("TkDefaultFont", size), and Tk reads a tuple as {family size style}
+# — so "TkDefaultFont" is taken as a *family* name, no such family exists, and
+# Tk substitutes: Arial, here. Arial carries almost none of these glyphs, so Tk
+# font-links them out of a symbol font, and that link fails for the **bold**
+# face of two of them, which then draw as a ?-in-a-box.
+#
+# Only bold-styled buttons are affected, which is why it looks arbitrary:
+#   export  ErysPrimary is always bold      -> ⬇ U+2B07 is always a box
+#   cursor  ErysToolActive is bold          -> ↖ U+2196 is a box while the tool
+#                                              is selected, fine otherwise
+#   resegment ⟳ U+27F3 breaks in bold too, but ErysAction is not bold, so it is
+#             left as it is — do not put it on a bold style without swapping it.
+#
+# Both replacements were checked in bold ttk.Buttons at the toolbar's own font
+# size, with the DPI awareness the app switches on at startup:
+#   ⇓ U+21D3 is in WGL4, i.e. in Arial itself — there is no font link to fail.
+#   ◤ U+25E4 draws in both weights and reads as an up-left pointer.
+# macOS keeps _GLYPHS_BASE untouched.
+_GLYPHS_WINDOWS = {
+    "cursor": "◤",         # U+25E4, replaces ↖ U+2196
+    "export": "⇓",         # U+21D3, replaces ⬇ U+2B07
+}
+
+GLYPHS = dict(_GLYPHS_BASE)
+if sys.platform == "win32":
+    GLYPHS.update(_GLYPHS_WINDOWS)
 
 
 class Toolbar(tk.Frame):
@@ -184,13 +211,20 @@ class Toolbar(tk.Frame):
     # ─────────────────────────────────────────
     # Build
     # ─────────────────────────────────────────
-    # Below this window width the labels drop and only the icons remain.
-    # Measured with the auto-switching disabled and the parameter banner filled
-    # (an empty banner collapses to 1 px and hides the real need): labels want
-    # 1866 px, glyphs alone 968 px. Without this the *last-packed* widgets get
-    # squeezed out — the Export button and the banner (UI-10). A maximised
-    # 1920 px screen keeps the labels, anything narrower goes glyph-only.
-    COMPACT_WIDTH = 1870
+    # Below the width the full labels actually need, they drop and only the
+    # icons remain. Without this the *last-packed* widgets get squeezed out —
+    # the Export button and the banner (UI-10).
+    #
+    # This used to be a hard-coded `COMPACT_WIDTH = 1870`, measured once on
+    # macOS. A pixel figure cannot survive the trip between platforms: Windows
+    # at 150 % display scaling runs Tk at `tk scaling` ≈ 2.0, where the very
+    # same labels need 2339 px. The row therefore switched *to* full labels at
+    # ~1900 px — a width they no longer fit into — and the cut landed inside
+    # "Rückgängig", the button whose cumulative offset (2006 px) straddles the
+    # edge. Font, UI language and DPI all move that number, so the threshold is
+    # measured from the widgets instead of guessed. On macOS this asks the same
+    # widgets the 1870 was eyeballed from, so nothing there changes character;
+    # it just stops being a constant that is only ever right on one machine.
 
     def _add_tip(self, widget: tk.Misc, text: str) -> None:
         """Plain tooltip — the only label an icon-only button still carries."""
@@ -241,6 +275,10 @@ class Toolbar(tk.Frame):
         # (widget, compact text, full text) for the width-driven relabelling
         self._labels: list[tuple[ttk.Button, str, str]] = []
         self._compact: bool | None = None
+        # Width the row needs with full labels. Measured once, lazily, on the
+        # first <Configure> — at that point the labels are still full, and
+        # switching to compact would change the very widths we want to know.
+        self._full_width_need: int | None = None
 
         # Tool palette
         self.tool_buttons: dict[str, ttk.Button] = {}
@@ -306,8 +344,8 @@ class Toolbar(tk.Frame):
             self._add_tip(b, S[key])
 
         # Spacer
-        spacer = tk.Frame(self, bg=P["toolbar_bg"])
-        spacer.pack(side="left", fill="x", expand=True)
+        self._spacer = tk.Frame(self, bg=P["toolbar_bg"])
+        self._spacer.pack(side="left", fill="x", expand=True)
 
         # Primary CTA
         export_full = f"{GLYPHS['export']}   " + S["tool_export"]
@@ -337,16 +375,45 @@ class Toolbar(tk.Frame):
     # Hysteresis band. Relabelling changes the toolbar's natural width, so a
     # single threshold can flip back and forth on its own <Configure> events;
     # switching back to full labels only well above the shrink point stops that.
-    # Small enough that a 1920 px window comes back to labels (1870+30).
     COMPACT_HYSTERESIS = 30
+
+    def _natural_full_width(self) -> int:
+        """Pixels the row needs with full labels, asked of the widgets.
+
+        `winfo_reqwidth` is the size a widget *asks* for, independent of what
+        pack has actually granted it, so this is valid even while the toolbar
+        is squeezed — which is exactly when we need to know.
+
+        The parameter banner is excluded on purpose: it is the one item allowed
+        to wrap rather than shrink (see set_compact), so its text must not drag
+        the threshold up. The spacer is excluded because it only absorbs slack.
+        """
+        need = 0
+        for child in self.winfo_children():
+            if child in (self.param_banner, self._spacer):
+                continue
+            padx = child.pack_info().get("padx", 0)
+            need += child.winfo_reqwidth() + (
+                sum(int(v) for v in padx)
+                if isinstance(padx, (tuple, list)) else int(padx) * 2
+            )
+        return need
+
+    def _compact_threshold(self) -> int:
+        if self._full_width_need is None:
+            self._full_width_need = self._natural_full_width()
+        return self._full_width_need
 
     def _on_configure(self, evt) -> None:
         if evt.width < 50:
             return                    # not mapped yet — width is meaningless
+        if self._full_width_need is None and self._compact:
+            return                    # compact already: cannot measure full now
+        threshold = self._compact_threshold()
         if self._compact:
-            if evt.width > self.COMPACT_WIDTH + self.COMPACT_HYSTERESIS:
+            if evt.width > threshold + self.COMPACT_HYSTERESIS:
                 self.set_compact(False)
-        elif evt.width < self.COMPACT_WIDTH:
+        elif evt.width < threshold:
             self.set_compact(True)
 
     def set_compact(self, compact: bool) -> None:

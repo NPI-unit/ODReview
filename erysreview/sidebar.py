@@ -213,21 +213,71 @@ class Sidebar(tk.Frame):
         self._invalidate_group_cache()
         self.refresh()
 
+    def _apply_status_row(self, info: ImageGroupInfo) -> None:
+        """Repaint one image row from disk. One review read — the costly bit."""
+        status = self._image_status(info.path)
+        icon = STATUS_ICONS[status]
+        self.tree.item(info.path.name,
+                       text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}"
+                            f"{self._note_marker(info)}",
+                       tags=(f"status_{status}",))
+
     def refresh_statuses(self) -> None:
-        """Update per-row status icons + per-group counters after edits."""
+        """Update per-row status icons + per-group counters after edits.
+
+        Folder-wide, so keep it for the operations that really can change any
+        row (batch segmentation, opening a folder, bulk group status). A single
+        cell edit cannot — use refresh_current_group() for that.
+        """
         if self.grouped is None:
             return
         for info in self.grouped.flat:
             if not self.tree.exists(info.path.name):
                 continue
-            status = self._image_status(info.path)
-            icon = STATUS_ICONS[status]
-            self.tree.item(info.path.name,
-                           text=f"{icon}  {info.path.name}{self._eval_marker(info, status)}"
-                                f"{self._note_marker(info)}",
-                           tags=(f"status_{status}",))
+            self._apply_status_row(info)
         for iid in self.tree.get_children():
             self._refresh_group_node(iid, recurse=True)
+
+    def refresh_current_group(self) -> None:
+        """Repaint just the group being edited: its rows and its counter.
+
+        An edit changes the status and remark marker of the image it was made
+        on, and — once the cap refills — the ⊘ eval marker of its siblings in
+        the same group. It cannot change a row in any other group, so the
+        folder-wide sweep re-read every review JSON in the folder for nothing.
+
+        That sweep hides in the noise on macOS: tests/bench_stick.py calibrates
+        APFS at 4.2-4.5 µs per filesystem operation. Measured on Windows/NTFS
+        the same operation costs 130-200 µs, so a 780-image folder spent
+        ~340 ms of *every single click* re-reading files that had not changed.
+
+        The group node is refreshed BEFORE the rows on purpose: it fills the
+        eval-stem cache from the same disk pass that produces its counter, so
+        the ⊘ markers below cost nothing extra.
+        """
+        keys = self.current_group_keys()
+        if keys is None or self.grouped is None:
+            self.refresh_statuses()      # no group context — fall back to the sweep
+            return
+        tp_key, sub_key = keys
+        stems_before = self._group_eval_cache.get((tp_key, sub_key))
+        self._invalidate_group_cache(tp_key, sub_key)
+        sub_iid = f"sub::{tp_key}::{sub_key}"
+        if self.tree.exists(sub_iid):
+            self._refresh_group_node(sub_iid)     # refills the eval-stem cache
+        stems_after = self._group_eval_cache.get((tp_key, sub_key))
+        # A sibling row can only change its ⊘ marker, and only when the cap
+        # boundary actually moved. If the stem set came back identical, reading
+        # 25 more review files would repaint 25 rows with what they already say.
+        # stems_before is None after any wider invalidation — then repaint all.
+        cap_moved = stems_after != stems_before
+        current = self.images[self.idx] if 0 <= self.idx < len(self.images) else None
+        for info in self.grouped.tree.get(tp_key, {}).get(sub_key, []):
+            if not self.tree.exists(info.path.name):
+                continue
+            if info.path != current and not cap_moved:
+                continue
+            self._apply_status_row(info)
 
     def refresh_current_group_counter(self) -> None:
         keys = self.current_group_keys()
@@ -374,9 +424,16 @@ class Sidebar(tk.Frame):
         cache_key = (tp_key, sub_key)
         n_active = self._group_active_cache.get(cache_key)
         if n_active is None:
-            from .evaluation import group_eval_summary
+            from .evaluation import group_eval
             try:
-                n_active = group_eval_summary(self.folder, images, self.profile)["n_active"]
+                summary, stems = group_eval(self.folder, images, self.profile)
+                n_active = summary["n_active"]
+                # That pass already decided which stems count toward the cap.
+                # Keeping them means _eval_marker() does not send
+                # effective_eval_stems() over the very same group a second time
+                # on the very same refresh — it was the largest single cost on
+                # the click path after the folder-wide status sweep.
+                self._group_eval_cache[cache_key] = stems
             except Exception:
                 n_active = 0
             self._group_active_cache[cache_key] = n_active

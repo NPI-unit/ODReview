@@ -83,10 +83,17 @@ def effective_eval_stems(
     return _stems_from_rows(_group_rows(folder, images_in_group, profile), target)
 
 
-def group_eval_summary(
+def group_eval(
     folder: Path, images_in_group: list[ImageGroupInfo], profile: ProfileData,
-) -> dict:
-    """Aggregate counts restricted to the effective evaluation set of one group."""
+) -> tuple[dict, set[str]]:
+    """The summary AND the stem set it was taken over, from ONE disk pass.
+
+    The sidebar needs both on every save — the group counter from the summary,
+    the ⊘ markers from the stem set — and asking for them through
+    group_eval_summary() plus effective_eval_stems() walked the same group
+    twice per click, reading every `<stem>_counts.json` and `<stem>_review.json`
+    in it a second time for numbers the first pass had already worked out.
+    """
     target = max(1, profile.target_cells)
     rows = _group_rows(folder, images_in_group, profile)
     stems = _stems_from_rows(rows, target)
@@ -115,4 +122,11 @@ def group_eval_summary(
         "pct_changed": pct_changed,
         "pct_changed_2000": pct_changed_2000,
         "time_s": time_s,
-    }
+    }, stems
+
+
+def group_eval_summary(
+    folder: Path, images_in_group: list[ImageGroupInfo], profile: ProfileData,
+) -> dict:
+    """Aggregate counts restricted to the effective evaluation set of one group."""
+    return group_eval(folder, images_in_group, profile)[0]

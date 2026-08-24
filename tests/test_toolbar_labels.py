@@ -26,6 +26,14 @@ from erysreview.profile import ProfileData
 from erysreview.theme import palette
 from erysreview.toolbar import GLYPHS, Toolbar
 
+# Every label this test prints contains the glyphs it is checking. Windows
+# routes REDIRECTED stdout through the locale codepage (cp1252), which cannot
+# encode ⟳ ◉ ⛶ ↺ ⓘ - so `python tests/test_toolbar_labels.py > out.txt` died in
+# print() with a UnicodeEncodeError long before any assertion had an opinion.
+# A real console window is fine; only the redirect is not.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 CHECKS = 0
 
 
@@ -39,6 +47,12 @@ def check(cond: bool, label: str) -> None:
 
 def main() -> int:
     root = tk.Tk()
+    # A fixed width matters: without one the toplevel shrinks to fit its
+    # content, so the toolbar's own width follows its compact state and the
+    # real <Configure> that update_idletasks() delivers immediately undoes
+    # the synthetic one below. In the app the toolbar is packed fill="x" into
+    # a window the user sizes, so its width never depends on the labels.
+    root.geometry("1200x200")
     root.withdraw()
     noop = lambda *a, **k: None
     settings = AppSettings()
@@ -81,9 +95,38 @@ def main() -> int:
             check(GLYPHS[glyph_key] in label,
                   f"the {tool} tool shows its glyph ({label!r})")
 
+    # ── The relabel threshold must come from the widgets, not from a constant ──
+    # A hard-coded pixel figure is only ever right on the machine it was
+    # measured on. The old COMPACT_WIDTH = 1870 was taken on macOS; on Windows
+    # at 150 % display scaling (tk scaling ~2.0) the same labels need ~2400 px,
+    # so the row switched to full labels at a width they did not fit into and
+    # cut "Rückgängig" in half. This asserts the invariant that broke, in a way
+    # that holds on any platform, font and DPI.
+    tb.pack(fill="x")
+    root.update_idletasks()
+    threshold = tb._compact_threshold()
+    check(threshold > 0, f"the relabel threshold is measured, not assumed ({threshold} px)")
+
+    class _Configure:
+        def __init__(self, width): self.width = width
+
+    offenders = []
+    for width in (600, 900, 1400, 1870, 1920, threshold - 1,
+                  threshold + tb.COMPACT_HYSTERESIS + 1, threshold * 2):
+        tb._on_configure(_Configure(int(width)))
+        root.update_idletasks()
+        if not tb._compact and width < threshold:
+            offenders.append(int(width))
+    check(not offenders,
+          f"full labels are never shown below the width they need ({offenders})")
+
+    tb._on_configure(_Configure(int(threshold * 2)))
+    root.update_idletasks()
+    check(not tb._compact, "and they do come back once there is room")
+
     root.destroy()
     print(f"OK — {CHECKS} checks: compact and full labels stay in sync; no button "
-          f"can inherit another's label.")
+          f"can inherit another's label; the relabel threshold is measured.")
     return 0
 
 

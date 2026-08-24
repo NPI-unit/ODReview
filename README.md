@@ -137,10 +137,12 @@ macOS uses a Homebrew-Python **venv**, *not* conda — see the note above.
 
 3. From the Start menu, open **Miniforge Prompt**, then build the env entirely from conda-forge (one OpenMP runtime — no pip for the scientific stack):
    ```cmd
-   conda create -n erys -c conda-forge python=3.12 "cellpose>=4.1.1,<5" pytorch numpy scipy scikit-image matplotlib-base pandas pillow tifffile openpyxl -y
+   conda create -n erys --override-channels -c conda-forge --strict-channel-priority python=3.12 "cellpose>=4.1.1,<5" pytorch numpy scipy scikit-image matplotlib-base pandas pillow tifffile openpyxl -y
    conda activate erys
    ```
-   _(Upgrading from an older pip-based install? Remove the stale env first — `conda env remove -n erys -y` — so the duplicate-OpenMP problem doesn't carry over, then run the create line above.)_
+   `--override-channels --strict-channel-priority` is not decoration: if you also have Anaconda installed, `defaults` is configured alongside conda-forge and a mixed solve pulls Intel's `intel-openmp` in next to conda-forge's `llvm-openmp` — two OpenMP runtimes, the same deadlock again. Pinning the solve to conda-forge alone is what keeps it at one.
+
+   _(Upgrading from an older pip-based install? Remove the stale env first — `conda env remove -n erys -y` — so the duplicate-OpenMP problem doesn't carry over, then run the create line above. On Windows that removal often can't delete everything, because antivirus or a still-open Python holds a DLL open; check whether `%USERPROFILE%\miniforge3\envs\erys` still exists afterwards and `rmdir /s /q` it by hand. `conda create` will happily install **on top of** such a leftover, which keeps the very files you were trying to get rid of.)_
 
    The default solve installs the **CPU** PyTorch build. For an NVIDIA GPU, request the CUDA build from conda-forge instead (e.g. add a `pytorch=*=*cuda*` spec or install `pytorch-gpu`) — **do not** `pip install` a CUDA torch into this env.
 

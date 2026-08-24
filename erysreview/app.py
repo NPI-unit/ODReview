@@ -1366,8 +1366,10 @@ class EryApp:
             self.root.after(1500, lambda: self.saved_label.config(text=""))
         except Exception as e:
             self.saved_label.config(text=f"! {e}", fg=self.P["accent_error"])
-        self.sidebar.refresh_current_group_counter()
-        self.sidebar.refresh_statuses()
+        # Group-local, not folder-wide: this runs on every single click, and an
+        # edit can only change rows inside its own group. See
+        # Sidebar.refresh_current_group() for the measurements behind that.
+        self.sidebar.refresh_current_group()
         self._update_status()
         self._refresh_details()
 

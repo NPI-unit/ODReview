@@ -193,6 +193,24 @@ def test_package_roundtrip(tmp: Path) -> None:
           "a package without the fields imports as empty, not as an error")
 
 
+def _unmounted_path() -> Path:
+    """A path on a volume that is definitely not mounted, per platform.
+
+    "/Volumes/..." only means "not mounted" on macOS. On Windows a leading
+    slash is resolved against the CURRENT drive, so that same string becomes
+    C:\\Volumes\\... - a perfectly writable location. The test then created the
+    folder it was asserting could not exist, littered the system drive with a
+    .erys_cache, and reported a failure for the wrong reason. Windows needs an
+    unused drive letter instead.
+    """
+    if sys.platform == "win32":
+        for letter in "QRSTUVWXYZ":
+            if not Path(f"{letter}:/").exists():
+                return Path(f"{letter}:/definitely-not-mounted-xyz/study")
+        raise RuntimeError("every drive letter Q-Z is in use; cannot test a vanished volume")
+    return Path("/Volumes/definitely-not-mounted-xyz/study")
+
+
 def test_vanished_volume() -> None:
     """A folder that is no longer there must not throw out of a Tk callback.
 
@@ -207,7 +225,7 @@ def test_vanished_volume() -> None:
     """
     from erysreview.persistence import FolderState
 
-    gone = Path("/Volumes/definitely-not-mounted-xyz/study")
+    gone = _unmounted_path()
     FolderState(last_index=7).save(gone)          # must not raise
     check(True, "saving the remembered index on a vanished volume is not fatal")
     FolderState(last_index=8).save(gone)          # reported once, then quiet
