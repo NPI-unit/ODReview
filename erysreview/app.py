@@ -198,6 +198,8 @@ class EryApp:
         """Resolve which profile to use at startup. Runs the Profile Manager
         dialog if no last-used profile name is on disk."""
         chosen: ProfileData | None = None
+        from .profile import migrate_default_name
+        migrate_default_name(self.settings)
         if self.settings.last_profile_name:
             chosen = load_profile(self.settings.last_profile_name)
         if chosen is None:

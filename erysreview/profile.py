@@ -24,9 +24,11 @@ from .persistence import (
 
 
 # ─────────────────────────────────────────────
-# Default TRIBAL-prefilled profile content
+# Default profile content (cell types as in the first study it served)
 # ─────────────────────────────────────────────
-DEFAULT_PROFILE_NAME = "TRIBAL (Default)"
+DEFAULT_PROFILE_NAME = "Standard"
+# Earlier name of the default study; renamed once at startup (migrate_default_name).
+LEGACY_DEFAULT_NAMES = ("TRIBAL (Default)",)
 
 DEFAULT_IMAGE_PATTERN = (
     r"^(?P<study>[A-Za-z]+)_(?P<subject>\d+)_(?P<timepoint>[^_]+)"
@@ -313,6 +315,26 @@ def delete_profile(name: str) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def migrate_default_name(settings=None) -> bool:
+    """Rename the default study from its old name ('TRIBAL (Default)') to
+    DEFAULT_PROFILE_NAME, once. Folder, types and reviews stay — the reviews
+    live in the image folder, not in the study file. If it was the last
+    opened study, `settings` follows (and is saved). Leaves everything alone
+    when a study with the new name already exists. Returns True if renamed."""
+    if load_profile(DEFAULT_PROFILE_NAME) is not None:
+        return False
+    for old in LEGACY_DEFAULT_NAMES:
+        p = load_profile(old)
+        if p is None:
+            continue
+        rename_profile(p, DEFAULT_PROFILE_NAME)
+        if settings is not None and settings.last_profile_name == old:
+            settings.last_profile_name = DEFAULT_PROFILE_NAME
+            settings.save()
+        return True
+    return False
 
 
 def ensure_default_profile() -> ProfileData:

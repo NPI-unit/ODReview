@@ -97,7 +97,8 @@ def main() -> int:
     check(not tb.banner.isVisible(), "the old text banner is gone from the toolbar")
     check(len(sb.stale_paths()) == 1 and "(1)" in sb.filter_combo.itemText(sb.filter_combo.findData("stale")),
           "the filter offers 'Alte Werte (1)'")
-    check(sb.det_rerun.isVisibleTo(sb) and "1" in sb.det_rerun.text(), "the detail panel offers 'Diese 1 neu rechnen …'")
+    check(not hasattr(sb, "det_rerun") and "Zellen" in sb.det_cells.text(),
+          "the detail panel shows only cells vs. target (old values live in tree, filter and study card)")
     OUT.mkdir(exist_ok=True)
     win.grab().save(str(OUT / "qt_stale_main.png"))
 

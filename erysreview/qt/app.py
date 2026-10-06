@@ -83,6 +83,8 @@ class MainWindow(QMainWindow):
             profile = controller.profile
             self._pick_at_start = False
         else:
+            from ..profile import migrate_default_name
+            migrate_default_name(self.settings)       # 'TRIBAL (Default)' → 'Standard', once
             profile = None
             if self.settings.last_profile_name:
                 profile = load_profile(self.settings.last_profile_name)
@@ -608,8 +610,19 @@ class MainWindow(QMainWindow):
             return
         c = status_counts(self.canvas.cell_infos, self.ctl.review, self.ctl.profile,
                           self.canvas.border_ids, self.canvas.duplicate_ids)
+        group = None
+        key = self.sidebar._group_of_idx.get(self.ctl.idx)
+        if key is not None and self.ctl.grouped is not None:
+            from ..evaluation import group_eval
+            from ..grouping import UNGROUPED_TIMEPOINT
+            tp, sub = key
+            images = self.ctl.grouped.tree[tp][sub]
+            if tp != UNGROUPED_TIMEPOINT:
+                summary, stems = group_eval(self.ctl.folder, images, self.ctl.profile)
+                group = {"title": f"{tp} · {self.S['pe_role_subject']} {sub}", "summary": summary,
+                         "n_total": len(images), "counted": self.ctl.current_path.stem in stems}
         ImageInfoDialog(self, self.P, self.S, self.ctl.current_path.name, c,
-                        self.ctl.profile, self.ctl.review).exec()
+                        self.ctl.profile, self.ctl.review, group=group).exec()
 
     def choose_counted(self, tp: str, sub: str) -> None:
         images = self.ctl.grouped.tree.get(tp, {}).get(sub, []) if self.ctl.grouped else []
@@ -756,7 +769,7 @@ class MainWindow(QMainWindow):
                 # Rebuild once the dialog is closed, then reopen it on the same
                 # page with any unsaved study edits carried over.
                 self._pending_restyle = (dlg.current_page(), dlg.work if dlg.has_changes() else None)
-                dlg.done(0)
+                QTimer.singleShot(0, lambda: dlg.done(0))   # not from inside the click
             else:
                 self.restyle()
         elif field == "toolbar_layout":
@@ -825,6 +838,15 @@ class MainWindow(QMainWindow):
         folder, current image and review stay). Every window built
         afterwards picks up the new strings and colours. Returns the new window."""
         app = QApplication.instance()
+        if getattr(app, "_restyling", False):
+            return self
+        app._restyling = True               # apply_look can emit colorSchemeChanged → no nested rebuild
+        try:
+            return self._restyle(app, reopen)
+        finally:
+            app._restyling = False
+
+    def _restyle(self, app, reopen) -> "MainWindow":
         apply_look(app, self.settings)
         self.notebox.request_close()
         self.ctl.flush_time()
@@ -839,14 +861,18 @@ class MainWindow(QMainWindow):
         self.close()
         self.deleteLater()
         if reopen is not None:
+            # A beat later: macOS must have ended the old dialog's modal
+            # session before the next one starts (else "modalSession has been
+            # exited prematurely").
             page, work = reopen
-            QTimer.singleShot(0, lambda: new.open_settings(page, work=work))
+            QTimer.singleShot(120, lambda: new.open_settings(page, work=work))
         return new
 
     def _on_system_scheme(self, *_):
         from ..theme import THEME_SYSTEM, resolve_theme
         from .style import system_scheme
-        if self.settings.theme != THEME_SYSTEM or self._handover:
+        if self.settings.theme != THEME_SYSTEM or self._handover \
+                or getattr(QApplication.instance(), "_restyling", False):
             return
         if system_scheme() == resolve_theme(THEME_SYSTEM):
             return

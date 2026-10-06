@@ -126,7 +126,7 @@ QLabel#staleBox {{ color: {T['accent_warn']}; background: {_mix(T['panel_bg'], T
     border-radius: 8px; padding: 8px 10px; }}
 QPushButton#rerunBtn {{ border: 1px solid {T['accent_warn']}; color: {T['accent_warn']};
     background: {_mix(T['panel_bg'], T['accent_warn'], 0.10)}; font-size: 12px; min-height: 28px; }}
-QPushButton#keyCapture {{ font-family: "SF Mono", Menlo, monospace; }}
+QPushButton#keyCapture {{ font-family: Menlo, monospace; }}
 QPushButton#keyCapture[capturing="true"] {{ border: 2px solid {T['accent_primary']};
     background: {T['accent_soft']}; color: {T['accent_primary']}; }}
 QLabel#cpDot {{ background: {T['accent_warn']}; border: 2px solid {T['panel_bg']}; border-radius: 6px; }}
@@ -225,6 +225,8 @@ QFrame#choiceCard[on="true"] {{ border: 2px solid {T['accent_primary']}; backgro
 QFrame#choiceCard QLabel, QFrame#choiceCard QRadioButton {{ background: transparent; }}
 QFrame#probeBox {{ background: {T['sidebar_bg']}; border-radius: 10px; }}
 QLabel#probeThumb {{ background: {T['sidebar_alt_bg']}; border-radius: 8px; }}
+QLabel#detCells {{ color: {T['accent_error']}; font-size: 15px; font-weight: 700; }}
+QLabel#detCells[reached="true"] {{ color: {T['state_finished']}; }}
 #notebox {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 12px; }}
 """
 

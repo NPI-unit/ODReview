@@ -69,9 +69,15 @@ def main() -> int:
     check(light_base == PALETTES["light"]["panel_bg"].upper(), "starts with the light palette")
 
     seen: list = []
+    seen_dlgs: list = []
 
     def drive():
-        dlg = next(w for w in QApplication.topLevelWidgets() if isinstance(w, SettingsDialog) and w.isVisible())
+        dlg = next((w for w in QApplication.topLevelWidgets()
+                    if isinstance(w, SettingsDialog) and w.isVisible() and w not in seen_dlgs), None)
+        if dlg is None:                          # the rebuilt window reopens it a beat later
+            QTimer.singleShot(30, drive)
+            return
+        seen_dlgs.append(dlg)
         if not seen:
             dlg.work.target_cells = 123          # an unsaved study edit
             dlg._changed()
@@ -87,7 +93,7 @@ def main() -> int:
     OUT.mkdir(exist_ok=True)
     QTimer.singleShot(50, drive)
     win.open_settings("images")
-    QTest.qWait(300)
+    QTest.qWait(600)
     wins = [w for w in QApplication.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible()]
     check(len(wins) == 1 and wins[0] is not win, "the main window was rebuilt (one window left)")
     new = wins[0]

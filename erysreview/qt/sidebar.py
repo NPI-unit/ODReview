@@ -82,29 +82,14 @@ class QtSidebar(QWidget):
         self.tree.customContextMenuRequested.connect(self._subject_menu)
         lay.addWidget(self.tree, 1)
 
-        # ── detail panel ──
+        # ── detail panel: one line, counted cells against the target ──
+        # (per-type numbers, counted images, % changed: Info, key I)
         self.details = QFrame(); self.details.setObjectName("sidebarDetails")
-        dv = QVBoxLayout(self.details); dv.setContentsMargins(12, 12, 12, 12); dv.setSpacing(6)
+        dv = QVBoxLayout(self.details); dv.setContentsMargins(12, 10, 12, 10); dv.setSpacing(4)
         self.det_title = QLabel(""); self.det_title.setObjectName("caption")
         dv.addWidget(self.det_title)
-        grid = QGridLayout(); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(4)
-        self.det_values: dict[str, QLabel] = {}
-        for r, key in enumerate(("qt_det_cells", "qt_det_counted", "qt_det_changed")):
-            k = QLabel(S[key]); k.setStyleSheet(f"color: {P['fg_secondary']};")
-            vlab = QLabel("–")
-            grid.addWidget(k, r, 0); grid.addWidget(vlab, r, 1)
-            self.det_values[key] = vlab
-        self.det_stale_key = QLabel(S["qt_det_stale"]); self.det_stale_val = QLabel("")
-        for w in (self.det_stale_key, self.det_stale_val):
-            w.setStyleSheet(f"color: {P['accent_warn']}; font-weight: 600;")
-        grid.addWidget(self.det_stale_key, 3, 0); grid.addWidget(self.det_stale_val, 3, 1)
-        dv.addLayout(grid)
-        self.det_rerun = QPushButton(""); self.det_rerun.setObjectName("rerunBtn")
-        self.det_rerun.clicked.connect(self._rerun_current_group)
-        dv.addWidget(self.det_rerun, 0, Qt.AlignLeft)
-        self.det_chips = QLabel(""); self.det_chips.setWordWrap(True)
-        self.det_chips.setTextFormat(Qt.RichText)
-        dv.addWidget(self.det_chips)
+        self.det_cells = QLabel("–"); self.det_cells.setObjectName("detCells")
+        dv.addWidget(self.det_cells)
         lay.addWidget(self.details)
         self.details.hide()
 
@@ -246,26 +231,12 @@ class QtSidebar(QWidget):
         sub_disp = (self.S["sb_ungrouped"] if sub == UNGROUPED_SUBJECT
                     else f"{self.S['pe_role_subject']} {sub}")
         self.det_title.setText(f"{tp_disp} · {sub_disp}".upper())
-        reached = " ✓" if d["n_active"] >= d["target"] else ""
-        self.det_values["qt_det_cells"].setText(f"{_num(d['n_active'])} / {_num(d['target'])}{reached}")
-        self.det_values["qt_det_counted"].setText(f"{d['n_images']} / {d['n_total']}")
-        self.det_values["qt_det_changed"].setText(
-            f"{d['pct_changed']:.1f} %".replace(".", self.S["qt_decimal_sep"]))
-        stale = self._stale.get(key, [])
-        for w in (self.det_stale_key, self.det_stale_val, self.det_rerun):
-            w.setVisible(bool(stale))
-        self.det_stale_val.setText(self.S["qt_n_images"].format(n=len(stale)))
-        self.det_rerun.setText("⟳  " + self.S["qt_rerun_these"].format(n=len(stale)))
-        chips = []
-        for t in self.profile.cell_types:
-            n = d["by_type"].get(t.key, 0)
-            if n <= 0:
-                continue
-            bg = _mix(self.P["panel_bg"], t.color, 0.22)
-            chips.append(f'<span style="background-color:{bg};">&nbsp;<span style="color:{t.color};">●</span>'
-                         f'&nbsp;{t.name or t.key} {_num(n)}&nbsp;</span>')
-        self.det_chips.setText("&nbsp; ".join(chips))
-        self.det_chips.setVisible(bool(chips))
+        reached = d["n_active"] >= d["target"]
+        self.det_cells.setText(self.S["qt_det_cells_line"].format(
+            n=_num(d["n_active"]), target=_num(d["target"])) + (" ✓" if reached else ""))
+        self.det_cells.setToolTip(self.S["qt_det_cells_tip"])
+        self.det_cells.setProperty("reached", reached)
+        self.det_cells.style().unpolish(self.det_cells); self.det_cells.style().polish(self.det_cells)
         self.details.show()
 
     def _subject_menu(self, pos) -> None:
@@ -290,12 +261,6 @@ class QtSidebar(QWidget):
 
     def stale_paths(self) -> list[Path]:
         return [p for v in self._stale.values() for p in v]
-
-    def _rerun_current_group(self) -> None:
-        key = self._group_of_idx.get(self._current) if self._current is not None else None
-        paths = self._stale.get(key, []) if key else []
-        if paths:
-            self._on_rerun(list(paths))
 
     def _iter_items(self):
         stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]

@@ -140,6 +140,21 @@ def main() -> int:
     info.show(); QTest.qWait(20); info.grab().save(str(OUT / "qt_image_info.png"))
     check(c.active == 2 and c.by_type.get("normal") == 2, "image info counts cells per type")
     info.accept()
+    shown = []
+    orig_info_exec = processing.ImageInfoDialog.exec
+
+    def grab_info(d):
+        shown.append(d); d.grab().save(str(OUT / "qt_image_info_group.png")); return 1
+    import erysreview.qt.app as qapp
+    qapp.ImageInfoDialog.exec = grab_info
+    win.show_info()
+    qapp.ImageInfoDialog.exec = orig_info_exec
+    heads = [r[0] for r in shown[0].rows] if shown else []
+    check(shown and shown[0].rows[0][1] is not None and "Zellen" in heads[0]
+          and shown[0].rows[-2][1] == "–",
+          "Info shows proband × timepoint beside the image (border/size/excluded only for the image)")
+    check(win.sidebar.det_cells.property("reached") is False and "/" in win.sidebar.det_cells.text(),
+          f"the sidebar line shows cells vs. target, red below it ({win.sidebar.det_cells.text()})")
 
     # ── export ──
     orig_exec = processing.ExportDialog.exec

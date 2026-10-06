@@ -489,32 +489,69 @@ class EvalSelectDialog(QDialog):
 # Bildinfo (ⓘ)
 # ─────────────────────────────────────────────
 class ImageInfoDialog(QDialog):
-    def __init__(self, parent, P, S, name: str, counts, profile, review):
+    """Info (key I): two columns — the image's proband × timepoint over its
+    counted images, and the image itself — with the same rows, so the two
+    compare at a glance. Border / size / excluded only for the image (for the
+    group that would mean loading every mask). `group`: {"title", "summary"
+    (evaluation.group_eval), "n_total", "counted" (this image counts)}."""
+
+    def __init__(self, parent, P, S, name: str, counts, profile, review, group: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"{S['details_image']}: {name}")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(560 if group else 420)
         v = QVBoxLayout(self); v.setContentsMargins(24, 20, 24, 20); v.setSpacing(10)
         t = QLabel(name); t.setStyleSheet("font-size: 16px; font-weight: 700;"); t.setWordWrap(True)
         v.addWidget(t)
-        grid = QGridLayout(); grid.setHorizontalSpacing(16); grid.setVerticalSpacing(6)
+        grid = QGridLayout(); grid.setHorizontalSpacing(22); grid.setVerticalSpacing(6)
         sep = S["qt_decimal_sep"]
-        pct = lambda a, b: f"{(100.0 * a / b if b else 0):.1f} %".replace(".", sep)
-        rows = [(S["details_total"], f"<b>{counts.active}</b>")]
+        num = lambda n: f"{n:,}".replace(",", "\u2009")     # 2 104, as in the sidebar
+        pct = lambda a, b: f"{(100.0 * a / b if b else 0):.0f} %"
+        pct1 = lambda x: f"{x:.1f} %".replace(".", sep)
+        g = group["summary"] if group else None
+        muted = P["fg_secondary"]
+
+        def head(text):
+            lab = QLabel(text.upper()); lab.setObjectName("caption")
+            return lab
+
+        r = 0
+        if group:
+            grid.addWidget(head(group["title"]), r, 1); grid.addWidget(head(S["details_image"]), r, 2)
+            r += 1
+        rows = []
+        img_cells = f"<b>{num(counts.active)}</b>"
+        if g:
+            ok = g["n_active"] >= g["target"]
+            col = P["state_finished"] if ok else P["accent_error"]
+            rows.append((S["qt_info_cells"], f'<b style="color:{col}">{num(g["n_active"])} / {num(g["target"])}'
+                                             f'{" ✓" if ok else ""}</b>', img_cells))
+        else:
+            rows.append((S["qt_info_cells"], None, img_cells))
         for td in profile.cell_types:
             n = (counts.by_type or {}).get(td.key, 0)
-            rows.append((f'<span style="color:{td.color};">●</span> {td.name or td.key}',
-                         f"{n}  ({pct(n, counts.active)})"))
-        rows.append((f"<b>{S['details_pct_changed']}</b>",
-                     f'<b style="color:{P["accent_warn"]};">{counts.changed}  ({pct(counts.changed, counts.active)})</b>'))
-        rows.append((S["details_extras"], f"{S['details_extras_border']} {counts.n_border} · "
-                                          f"{S['details_extras_dup']} {counts.n_size} · "
-                                          f"{S['status_excluded']} {counts.excluded}"))
-        mins = int(round(review.time_spent_s / 60))
-        rows.append(("⏱", f"{mins} min"))
-        for r, (k, val) in enumerate(rows):
-            kl = QLabel(k); kl.setTextFormat(Qt.RichText)
-            vl = QLabel(val); vl.setTextFormat(Qt.RichText)
-            grid.addWidget(kl, r, 0); grid.addWidget(vl, r, 1)
+            gv = None
+            if g:
+                gn = g["by_type"].get(td.key, 0)
+                gv = f"{num(gn)}  <span style='color:{muted}'>({pct(gn, g['n_active'])})</span>"
+            rows.append((f'<span style="color:{td.color};">●</span> {td.name or td.key}', gv,
+                         f"{num(n)}  <span style='color:{muted}'>({pct(n, counts.active)})</span>"))
+        img_changed = 100.0 * counts.changed / counts.active if counts.active else 0.0
+        rows.append((S["qt_info_changed"], pct1(g["pct_changed"]) if g else None,
+                     f'<span style="color:{P["accent_warn"]};">{pct1(img_changed)}</span>'))
+        rows.append((S["qt_det_counted"], f'{g["n_images"]} / {group["n_total"]}' if g else None,
+                     (S["qt_info_counted_yes"] if group["counted"] else S["qt_info_counted_no"]) if group else None))
+        rows.append((S["qt_info_extras"], None if group is None else "–",
+                     f"{counts.n_border} / {counts.n_size} / {counts.excluded}"))
+        mins = lambda s_: f"{int(round(s_ / 60))} min"
+        rows.append(("⏱ " + S["qt_info_time"], mins(g["time_s"]) if g else None, mins(review.time_spent_s)))
+        for k, gv, iv in rows:
+            kl = QLabel(k); kl.setTextFormat(Qt.RichText); kl.setStyleSheet(f"color: {muted};")
+            grid.addWidget(kl, r, 0)
+            if group:
+                gl = QLabel(gv or ""); gl.setTextFormat(Qt.RichText); grid.addWidget(gl, r, 1)
+            il = QLabel(iv or ""); il.setTextFormat(Qt.RichText); grid.addWidget(il, r, 2 if group else 1)
+            r += 1
+        self.rows = rows                    # for tests
         v.addLayout(grid)
         if review.note.strip():
             nl = QLabel(f"❝ {review.note.strip()}"); nl.setWordWrap(True)
