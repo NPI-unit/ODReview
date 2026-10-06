@@ -15,7 +15,8 @@
 #
 #  Output: "[n/6] …" per step, "##DONE" or "##FAIL <reason>" at the end
 #  (read by the installer window). --yes: no questions, no "press Enter".
-#  ERYS_INSTALL_NO_APP=1 skips the Desktop app (tests).
+#  ERYS_INSTALL_NO_APP=1 skips the Desktop app (tests, installer window option).
+#  ERYS_INSTALL_DROP_VENDOR=1 removes vendor/ again after a good install.
 #  Everything is also written to install.log.
 # ─────────────────────────────────────────────────────────────────────────
 set -u
@@ -41,6 +42,10 @@ pause() { if [ "$ASK" = 1 ]; then read -r -p "Enter zum Schließen ..."; fi; }
 step()  { echo ""; echo "[$1/$N] $2"; }
 fail()  { echo ""; echo "[!] $1"; echo "##FAIL $1"; pause; exit 1; }
 online() { curl -s -m 6 -o /dev/null -I https://pypi.org/simple/ ; }
+
+# A folder downloaded from the internet carries macOS' quarantine flag — every
+# script and app in it would warn again. Running this installer is consent.
+xattr -dr com.apple.quarantine "$ROOT" 2>/dev/null || true
 
 # ─── 1. Python 3.12 ──────────────────────────────────────────────────────
 step 1 "Python 3.12 suchen"
@@ -160,6 +165,11 @@ LAUNCHER
 PLIST
     touch "$APP" 2>/dev/null || true
     echo "      ErysReview.app auf dem Schreibtisch angelegt."
+fi
+
+if [ "${ERYS_INSTALL_DROP_VENDOR:-0}" = "1" ]; then
+    rm -rf "$WHEELS" "$MODELS"
+    echo "      Pakete im Ordner entfernt (wie gewählt)."
 fi
 
 echo ""

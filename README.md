@@ -15,8 +15,10 @@ If you don't want to touch a terminal:
    - **macOS**: Python 3.12 — either the macOS installer from <https://www.python.org/downloads/> or `brew install python@3.12` (<https://brew.sh>). Nothing else.
 2. **Download or clone** this repo to a folder of your choice (e.g. your Desktop).
 3. Double-click the installer for your OS:
-   - **macOS**: `install.command`
+   - **macOS**: **`ErysReview installieren.app`** (an installer window; `install.command` does the same in Terminal)
    - **Windows**: `install.bat`
+
+   > **macOS warns “developer cannot be verified”?** The installer is not signed. In Finder **right-click › Open**, then **Open** again. The installer then removes the warning from the whole folder (incl. the ErysReview app it creates).
 4. Wait until you see `Fertig. ErysReview … ist installiert.` / `Done. ErysReview is installed.` (~5–10 min on first run).
 
 **macOS, offline / several lab Macs:** `install.command` keeps every package in `vendor/wheels/` and the Cellpose model in `vendor/models/` inside the folder (~2 GB, not in git). Copy the whole folder — `vendor/` included — to the next Mac (e.g. on a stick) and run `install.command` there: it installs without internet. It always installs the exact tested versions from `requirements-lock-macos.txt` and ends with a self-test (`tools/check_install.py`).
