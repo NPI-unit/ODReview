@@ -18,25 +18,12 @@ STRINGS = {
         "menu_profile_manage": "Profile verwalten …",
         "menu_profile_edit":   "Aktives Profil bearbeiten …",
         # Profile manager
-        "pm_title":            "Studien-Profil wählen",
-        "pm_existing":         "Vorhandene Profile",
-        "pm_load":             "Laden",
-        "pm_new":              "Neu …",
         "pm_duplicate":        "Duplizieren …",
         "pm_delete":           "Löschen",
         "pm_default":          "Standard laden",
-        "pm_empty":            "Noch keine Profile angelegt.",
-        "pm_no_default":       "Default-Profil existiert nicht — wird beim Klick angelegt.",
-        "pm_new_name_prompt":  "Name für neues Profil:",
         "pm_dup_name_prompt":  "Name für Kopie:",
         "pm_confirm_delete":   "Profil '{name}' wirklich löschen?",
         # Profile editor (Profile tab in Settings)
-        "pe_section_general":  "Allgemein",
-        "pe_section_grouping": "Gruppierung (Regex)",
-        "pe_section_cellpose": "Cellpose",
-        "pe_section_types":    "Typen",
-        "pe_section_size":     "Größenfilter",
-        "pe_section_appear":   "Darstellung",
         "pe_name":             "Profil-Name",
         "pe_import_folder":    "Bilder-Ordner",
         "pe_choose_folder":    "Wählen …",
@@ -44,9 +31,6 @@ STRINGS = {
         "pe_images_per_subject": "Bilder pro Proband (Batch-Standard)",
         "pe_image_pattern":    "Filename-Regex",
         "pe_pattern_help":     "Pflicht-Gruppen: (?P<subject>…), (?P<timepoint>…), (?P<image_num>…). Optional: study, date, …",
-        "pe_pattern_test":     "Test gegen Beispiel-Dateinamen:",
-        "pe_pattern_match":    "Match",
-        "pe_pattern_nomatch":  "Kein Match",
         "pe_size_enabled":     "Größenfilter aktiv",
         "pe_size_min":         "Zu klein unter (× Medianfläche)",
         "pe_size_max":         "Zu groß über (× Medianfläche)",
@@ -56,51 +40,25 @@ STRINGS = {
                                 "dargestellt und lassen sich mit „Zählen ein/aus\u201c einzeln "
                                 "wieder aufnehmen."),
         # Sidebar
-        "sb_group_open_counter": "{n_active}/{target} Erys",
-        "sb_group_closed_counter": "{n_active}/{target}",
         "sb_ungrouped":        "Nicht zugeordnet",
         "tool_info":           "Info",
         # Status bar (added "verändert" counter)
         "status_changed":      "verändert",
         # Detail panel
-        "details_title":       "Details",
-        "details_empty_hint":  "Wähle ein Bild oder einen Proband. Das ⚙ neben einem Proband wählt die zählenden Bilder.",
         "details_image":       "Bild",
-        "details_proband":     "Proband",
-        "details_timepoint":   "Zeitpunkt",
-        "details_total":       "RBC bestätigt",
-        "details_by_type":     "Pro Typ",
-        "details_extras":      "Davon",
-        "details_extras_border": "Rand",
-        "details_extras_dup":  "Duplikat",
         "details_extras_manual": "Manuell",
-        "details_target":      "Ziel",
-        "details_progress":    "Fortschritt",
-        "details_pct_changed": "% verändert",
-        "details_pct_changed_2000": "% verändert pro 2000",
-        "details_images_done": "Bilder fertig",
         # Save / popup
-        "save_summary_title":  "Summary speichern?",
-        "save_summary_msg":    "Summary-CSV für {group} jetzt neu schreiben?",
         # Profile-related confirmations
-        "save_profile_title":  "Profil speichern?",
-        "save_profile_msg":    "Änderungen am Profil speichern? Cache wird ggf. invalidiert.",
         "menu_settings":       "Einstellungen",
         "menu_settings_open":  "Einstellungen …",
         "menu_help":           "Hilfe",
         "pe_type_outline":     "Kontur (Zusatzmerkmal)",
-        "pe_type_outline_hint": ("Messung auf 41-px-Zellen: durchgezogen gegen unterbrochen "
-                                 "ist zuverlässig unterscheidbar, drei verschiedene "
-                                 "Unterbrechungsmuster nicht. Sparsam vergeben."),
         "pe_outline_none":     "keine",
         "pe_outline_solid":    "durchgezogen",
         "pe_outline_dashed":   "gestrichelt",
         "pe_outline_dotted":   "gepunktet",
         "pe_outline_dashdot":  "strich-punkt",
         "pe_outlines_enabled": "Typ-Konturen zeichnen",
-        "pe_outlines_hint":    ("Zeichnet die im Typ hinterlegte Kontur um passende Zellen, "
-                                "damit der Typ nicht allein an der Farbe hängt — wichtig bei "
-                                "Farbsehschwäche. Aus: reine Farbdarstellung wie bisher."),
         "pe_overlay_alpha":    "Deckkraft der Füllung",
         "pe_overlay_alpha_hint": ("Höher = kräftigere Typfarben, aber die Zellstruktur "
                                   "darunter wird stärker verdeckt. 0,55 ist der Kompromiss."),
@@ -108,8 +66,6 @@ STRINGS = {
         "settings_font_100":   "100 %",
         "settings_font_125":   "125 %",
         "settings_font_150":   "150 %",
-        "busy_cancel_hint":    "Esc oder Fenster schließen: Abbruch anfordern",
-        "busy_cancelling":     "Abbruch angefordert – der laufende Rechenschritt wird noch beendet …",
         "menu_training_export": "Trainingsdaten exportieren …",
         "training_pick_folder": "Zielordner für die Trainingsdaten",
         "training_running":     "Trainingsdaten werden geschrieben",
@@ -191,7 +147,6 @@ STRINGS = {
         "status_dlg_summary":  "{n} von {total} als fertig markiert",
         "tool_note":           "Anmerken",
         "tool_cursor":         "Cursor",
-        "details_notes":       "Anmerkungen",
         "status_mark_all_done": "Alle Bilder als fertig markieren",
         "status_mark_all_open": "Markierung „fertig“ aufheben",
         "status_bulk_done":    "{n} Bild(er) geändert",
@@ -204,17 +159,8 @@ STRINGS = {
         "note_discard_msg":    ("Der Text wurde nicht gespeichert. Schließen und "
                                 "Änderungen verwerfen?"),
         "note_delete":         "Anmerkung löschen",
-        "note_none":           "keine Anmerkungen",
-        "note_count":          "{n} Anmerkung(en)",
         "menu_models":         "Cellpose-Modelle zuordnen …",
         "settings_cp_model":   "Modell",
-        "settings_cp_model_hint": ("Cellpose 4 bringt nur „cpsam“ mit. Eigene oder fremde "
-                                   "Modelle werden unter Einstellungen → Cellpose-Modelle "
-                                   "zuordnen mit einem Namen hinterlegt; das Profil merkt "
-                                   "sich nur den Namen."),
-        "settings_cp_model_missing": ("Für „{name}“ ist auf diesem Rechner keine Datei "
-                                      "hinterlegt. Segmentieren ist gesperrt, bis die "
-                                      "Zuordnung ergänzt wurde."),
         "models_title":        "Cellpose-Modelle zuordnen",
         "models_hint":         ("Profile verlangen ein Modell über seinen Namen. Hier legst du "
                                 "fest, welche Datei auf DIESEM Rechner dahintersteht — so "
@@ -251,10 +197,8 @@ STRINGS = {
         "filter_unsegmented":  "Ungesegmentiert",
         "filter_unfinished":   "Unfertig",
         "filter_finished":     "Fertig",
-        "no_folder":           "Kein Ordner geladen",
         "btn_open_folder":     "Ordner laden …",
         # Tools
-        "tool_select":         "Auswahl",
         "tool_add":            "Neue Zelle",
         "tool_remove":         "Zählen ein/aus",
         "tool_type":           "Verändert",
@@ -263,7 +207,6 @@ STRINGS = {
         "tool_export":         "Exportieren",
         "tool_overlay":        "Overlay",
         "tool_undo":           "Rückgängig",
-        "tool_batch":          "Mehrere Bilder",
         # Status bar
         "status_ready":        "Bereit",
         "status_active":       "aktiv",
@@ -272,58 +215,33 @@ STRINGS = {
         "status_total":        "erkannt",
         "status_saved":        "gespeichert",
         "status_finished":     "fertig",
-        "status_param_mismatch": "Andere Parameter – neu rechnen?",
         # Cellpose modal
         "cp_running":          "Cellpose läuft …",
         "cp_running_image":    "Bild: {name}",
-        "cp_running_hint":     "(2–60 s, je nach Bildgröße)",
         # Confirms
         "confirm_resegment_title": "Cellpose neu rechnen?",
         "confirm_resegment_msg":   "Die gecachte Maske und der Review-State für\n{name}\nwerden überschrieben. Fortfahren?",
         "confirm_yes":         "Ja",
         "confirm_no":          "Nein",
-        "confirm_delete_type_title": "Typ löschen?",
-        "confirm_delete_type_msg":   "Typ '{name}' löschen? Bestehende Zell-Zuweisungen bleiben in den Review-Dateien als unbekannter Typ erhalten.",
-        "language_changed_title": "Sprache geändert",
-        "language_changed_msg":   "Bitte starte die App neu, damit die Sprachänderung wirkt.",
         # Settings dialog
         "settings_title":      "Einstellungen",
-        "settings_section_general": "Allgemein",
-        "settings_section_cellpose": "Cellpose",
-        "settings_section_types": "Typen",
-        "settings_section_appearance": "Darstellung",
         "settings_language":   "Sprache",
         "settings_theme":      "Theme",
         "settings_theme_dark": "Dunkel",
         "settings_theme_light": "Hell",
-        "settings_theme_restart": "Theme- und Schriftgrößen-Änderungen werden nach einem Neustart wirksam.",
-        "tool_resegment_more": "Mehrere Bilder rechnen …",
         "tool_reset_zoom":     "Zoom zurücksetzen",
         "status_tool":         "Werkzeug",
         "status_tool_type":    "Typ",
         "menu_recent_folders": "Zuletzt verwendet",
         "menu_recent_empty":   "(keine)",
         "pe_color_scheme":     "Farbschema anwenden",
-        "pe_color_scheme_help": "Setzt die Typ-Farben in der aktuellen Reihenfolge neu.",
-        "confirm_apply_scheme_title": "Farbschema anwenden?",
-        "confirm_apply_scheme_msg":   'Alle Typ-Farben werden mit dem Schema „{name}" überschrieben. Fortfahren?',
         "settings_margin_n":   "Rand-Margin N (Pixel)",
         "settings_margin_help": "Zellen, deren Bbox in diesen Streifen vom Bildrand reicht, werden als Rand-Zellen markiert und nicht gezählt.",
         "settings_cp_diameter": "Diameter (px)",
         "settings_cp_flow":    "Flow-Threshold",
         "settings_cp_cellprob": "Cellprob-Threshold",
-        "settings_use_gpu":    "GPU verwenden",
-        "settings_gpu_probing": "Erkannt: wird ermittelt…",
-        "settings_gpu_detected": "Erkannt: {backend}",
         "settings_show_margin_overlay": "Randstreifen abdunkeln",
-        "settings_show_cell_numbers":   "Zellnummern anzeigen (langsamer)",
         "settings_type_name":  "Name",
-        "settings_type_color": "Farbe",
-        "settings_type_new":   "Neu",
-        "settings_type_save":  "Speichern",
-        "settings_type_delete": "Löschen",
-        "settings_type_up":    "Hoch",
-        "settings_type_down":  "Runter",
         "settings_type_normal_protected": "Der Typ 'Normal' kann nicht gelöscht werden.",
         "settings_color_pick": "Farbe wählen …",
         "settings_save":       "Speichern",
@@ -355,37 +273,7 @@ STRINGS = {
         "batch_summary_skipped": "{n} übersprungen (bereits gecacht).",
         "batch_summary_errors": "{n} Fehler:",
         # Help
-        "help_hotkeys_title":  "Tastenkürzel",
-        "help_hotkeys": (
-            "Rechtsklick auf eine Zelle: Anmerkung\n"
-            "Rechtsklick auf einen Probanden in der Liste: Status setzen\n\n"
-            "Werkzeuge (Hotkey-Switch):\n"
-            "  1 – Neue Zelle\n"
-            "  2 – Zählen ein/aus\n"
-            "  3 – Verändert (Typ-Zuweisung)\n"
-            "  4 – ❝ Anmerken (ohne Ziffer in der Leiste, Zelle anklicken;\n"
-            "      Leerfläche = ganzes Bild)\n"
-            "  5 – ↖ Cursor: verändert nichts; Klick auf eine annotierte\n"
-            "      Zelle öffnet ihre Anmerkung. Escape springt hierher.\n"
-            "  Im Anmerkungsfenster wird erst mit „Speichern\" geschrieben.\n\n"
-            "Bild-Navigation:\n"
-            "  ←/→ – vorheriges / nächstes Bild\n"
-            "  f   – aktuelles Bild als 'fertig' markieren\n\n"
-            "Sonst:\n"
-            "  Mausrad     – Zoom auf Cursor\n"
-            "  Mittel-Drag – Pan\n"
-            "  Home / 0    – Zoom zurücksetzen\n"
-            "  o – Overlay an/aus\n"
-            "  r – Segmentieren / neu rechnen (aktuelles Bild)\n"
-            "  F5 / Cmd+R – Aktualisieren (Ordner neu einlesen)\n"
-            "  z – Rückgängig\n"
-            "  e – Bild zur Auswertung (2000) ein/aus/auto\n"
-            "  s / Cmd+S – Exportieren\n"
-            "  q – Beenden"
-        ),
         # Empty state
-        "empty_title":         "Kein Ordner geladen",
-        "empty_subtitle":      "Wähle einen Ordner mit TIF/PNG-Bildern.",
         # Errors
         "err_no_images":       "Keine Bilder im Ordner gefunden:\n{path}",
         "err_load_image":      "Bild konnte nicht geladen werden:\n{path}\n\n{err}",
@@ -411,10 +299,6 @@ STRINGS = {
         "menu_stats":          "Statistik …",
         "menu_dashboard":      "Übersicht (Dashboard) …",
         # No-auto-render + profile refresh
-        "status_not_segmented": "Nicht segmentiert – Cellpose-Knopf / r zum Rechnen",
-        "profile_cp_changed_title": "Cellpose-Parameter geändert",
-        "profile_cp_changed_msg":   "Die Cellpose-Parameter haben sich geändert – vorhandene Masken sind veraltet. Jetzt betroffene Bilder neu rechnen (Batch)?",
-        "pkg_import_no_images":     "Das Paket enthält keine Originalbilder und im Zielordner sind keine gefunden – die Bilder können nicht angezeigt werden. Lege die TIFs in den Zielordner.",
         # Eval-selection dialog
         "eval_dlg_title":      "Zählende Bilder wählen",
         "eval_dlg_auto":       "Auto-Vorschlag",
@@ -471,8 +355,6 @@ STRINGS = {
         "qt_discard": "Verwerfen",
         "qt_save_dots": "Speichern …",
         "qt_close": "Schließen",
-        "qt_saved_now": "Wird sofort gespeichert",
-        "qt_restart_note": "Sprache, Erscheinungsbild und Schriftgröße wirken nach einem Neustart der App.",
         "wiz_title": "Neue Studie",
         "wiz_name": "Name der Studie",
         "wiz_target": "Ziel-Zellzahl",
@@ -684,7 +566,6 @@ STRINGS = {
         "qt_keys_none": "—",
         "qt_keys_taken": "„{key}“ gehört schon zu „{action}“. Erst dort entfernen oder eine andere Taste wählen.",
         "qt_keys_reset": "Standard wiederherstellen",
-        "qt_keys_clear": "Kürzel entfernen",
         "qt_keys_reset_start": "Doppelt belegte Tastenkürzel wurden auf den Standard zurückgesetzt: {list}",
         "qt_mouse_back": "Maus: Zurück",
         "qt_mouse_forward": "Maus: Vor",
@@ -697,19 +578,14 @@ STRINGS = {
         "qt_tip_unseg": "Noch nicht gerechnet — klicken oder R startet Cellpose für dieses Bild.",
         "qt_tip_stale": "Masken mit anderen Werten — erstellt mit {old}, die Studie verlangt {new}. Klicken oder R rechnet dieses Bild neu.",
         "qt_filter_stale": "Alte Werte",
-        "qt_det_stale": "Alte Werte",
-        "qt_n_images": "{n} Bild(er)",
-        "qt_rerun_these": "Diese {n} neu rechnen …",
         "qt_rerun_all": "Alle {n} neu rechnen …",
         "qt_stale_count": "{n} Bilder mit alten Werten",
         "qt_status_stale": "⟳ Masken mit alten Werten",
         "qt_rerun_title": "Neu rechnen?",
         "qt_rerun_msg": "{n} Bilder werden mit den aktuellen Werten der Studie neu gerechnet.\n\nDabei entstehen neue Zellen. Die bisherige Bewertung dieser Bilder (Typen, an/aus, manuelle Zellen, Anmerkungen zu Zellen) wird zurückgesetzt.",
         "qt_rerun_running": "Rechne {i} von {n} neu: {name}",
-        "qt_restart_now":      "Jetzt neu starten",
         "qt_sub_eval":         "Zählende Bilder wählen …",
         "qt_decimal_sep":      ",",
-        "qt_det_cells":        "Zellen gesamt",
         "qt_det_cells_line":   "{n} / {target} Zellen",
         "qt_grid":             "Hilfsraster",
         "qt_grid_off":         "Aus",
@@ -723,15 +599,10 @@ STRINGS = {
         "qt_info_time":        "Zeit",
         "qt_det_cells_tip":    "Gezählte Zellen aus den gewerteten Bildern gegen das Ziel der Studie. Aufschlüsselung: Info.",
         "qt_det_counted":      "Gewertete Bilder",
-        "qt_det_changed":      "Verändert",
         "qt_card_model":       "Modell",
         "qt_menu_view":        "Ansicht",
         "qt_later":            "Folgt in einem späteren Schritt des Qt-Umbaus — bis dahin in der Tk-Version.",
         "settings_section_study": "Studie",
-        "settings_study_active": "Aktive Studie: {name}",
-        "settings_study_edit": "Bearbeiten …",
-        "settings_study_switch": "Wechseln …",
-        "settings_section_local": "Nur dieser Rechner",
         "settings_toolbar":    "Werkzeugleiste",
         "settings_toolbar_grouped": "Gruppiert (eine Zeile)",
         "settings_toolbar_two_row": "Zweizeilig, Zelltypen als Farbchips (bis 6 Typen)",
@@ -739,17 +610,12 @@ STRINGS = {
         "settings_reseg_later": "Später entscheiden (Hinweis in der Werkzeugleiste)",
         "settings_reseg_ask":  "Jedes Mal fragen",
         "settings_reseg_batch": "Sofort Neuberechnung öffnen",
-        "tb_group_edit":       "Zellen bearbeiten",
-        "tb_group_check":      "Prüfen",
-        "tb_group_view":       "Ansicht",
         "tb_study_tip":        "Studie: Fortschritt, bearbeiten, wechseln",
         "study_menu_progress": "{done} / {total} IDs fertig & exportiert",
         "study_menu_rest":     "{wip} in Arbeit · {open} offen",
         "study_menu_no_folder": "Kein Bilderordner geöffnet",
         "study_menu_edit":     "Studie bearbeiten …",
         "study_menu_switch":   "Studie wechseln …",
-        "study_menu_settings": "Einstellungen …",
-        "status_cp_changed_later": "Cellpose-Werte geändert — vorhandene Masken bleiben, bis du neu rechnest (⟳).",
         # Package create
         "pkg_create_title":    "Paket erstellen",
         "pkg_include_images":  "Originalbilder einbeziehen (eigenständiges Paket)",
@@ -771,7 +637,6 @@ STRINGS = {
         "pkg_not_a_package":   "Diese Datei ist kein gültiges Erys-Paket.",
         "pkg_import_info":     ("Von: {reviewer}\nBilder im Paket: {n}\nOriginale enthalten: {images}\n"
                                 "Profil: {profile}\n\nZielordner wählen?"),
-        "pkg_import_choose_target": "Zielordner wählen …",
         "pkg_pick_target":     "Zielordner für den Import",
         "pkg_import_subfolder": "In Unterordner „{name}“ entpacken?",
         "pkg_importing":       "Import läuft …",
@@ -809,7 +674,6 @@ STRINGS = {
         "dash_subject_totals": "Zeit pro Proband:",
         "dash_total_time":     "Gesamtzeit: {time}",
         # Eval cap
-        "status_eval_out":     "nicht gewertet",
         "eval_toggled_in":     "Bild zählt zur Auswertung",
         "eval_toggled_out":    "Bild zählt NICHT zur Auswertung",
         "eval_toggled_auto":   "Bild: automatische Wertung",
@@ -825,17 +689,10 @@ STRINGS = {
         "pe_role_timepoint":   "Zeitpunkt",
         "pe_role_image_num":   "Bildnummer",
         "pe_role_ignore":      "Ignorieren",
-        "pe_preview":          "Vorschau (echte Dateien):",
-        "pe_preview_none":     "Kein Ordner / keine Dateien zum Testen.",
-        "pe_preview_ok":       "{ok}/{total} Dateien erkannt.",
         "pe_stats_enabled":    "Statistik-Tab für dieses Profil aktivieren",
         "pe_overview_xlsx":    "Übersichts-Excel (Uebersicht.xlsx) beim Export erzeugen",
         "pe_overlay_png":      "Overlay-PNGs beim Export erzeugen (groß/langsam)",
         "pe_copy_originals":   "Original-TIFs in outputs/ kopieren (Speicher!)",
-        "overview_preview_title": "Übersicht – Vorschau",
-        "overview_preview_path":  "Gespeichert: {path}",
-        "overview_preview_more":  "… und {n} weitere Zeilen im Excel",
-        "pe_section_stats":    "Statistik",
         # Export
     },
     "en": {
@@ -849,24 +706,11 @@ STRINGS = {
         "menu_profile":        "Profile",
         "menu_profile_manage": "Manage profiles …",
         "menu_profile_edit":   "Edit active profile …",
-        "pm_title":            "Pick a study profile",
-        "pm_existing":         "Existing profiles",
-        "pm_load":             "Load",
-        "pm_new":              "New …",
         "pm_duplicate":        "Duplicate …",
         "pm_delete":           "Delete",
         "pm_default":          "Load default",
-        "pm_empty":            "No profiles yet.",
-        "pm_no_default":       "Default profile doesn't exist — will be created on click.",
-        "pm_new_name_prompt":  "Name for new profile:",
         "pm_dup_name_prompt":  "Name for the copy:",
         "pm_confirm_delete":   "Delete profile '{name}'?",
-        "pe_section_general":  "General",
-        "pe_section_grouping": "Grouping (regex)",
-        "pe_section_cellpose": "Cellpose",
-        "pe_section_types":    "Types",
-        "pe_section_size":     "Size filter",
-        "pe_section_appear":   "Appearance",
         "pe_name":             "Profile name",
         "pe_import_folder":    "Image folder",
         "pe_choose_folder":    "Choose …",
@@ -874,9 +718,6 @@ STRINGS = {
         "pe_images_per_subject": "Images per subject (batch default)",
         "pe_image_pattern":    "Filename regex",
         "pe_pattern_help":     "Required groups: (?P<subject>…), (?P<timepoint>…), (?P<image_num>…). Optional: study, date, …",
-        "pe_pattern_test":     "Test against an example filename:",
-        "pe_pattern_match":    "Match",
-        "pe_pattern_nomatch":  "No match",
         "pe_size_enabled":     "Size filter on",
         "pe_size_min":         "Too small below (× median area)",
         "pe_size_max":         "Too large above (× median area)",
@@ -884,47 +725,21 @@ STRINGS = {
                                 "do not count: too small = segmentation fragment, too large = "
                                 "two merged cells. They render gray and can be put back in "
                                 "individually with the Count on/off tool."),
-        "sb_group_open_counter": "{n_active}/{target} erys",
-        "sb_group_closed_counter": "{n_active}/{target}",
         "sb_ungrouped":        "Unassigned",
         "tool_info":           "Info",
         "status_changed":      "changed",
-        "details_title":       "Details",
-        "details_empty_hint":  "Select an image or a subject. The ⚙ next to a subject picks the counted images.",
         "details_image":       "Image",
-        "details_proband":     "Subject",
-        "details_timepoint":   "Timepoint",
-        "details_total":       "Confirmed RBC",
-        "details_by_type":     "Per type",
-        "details_extras":      "Of which",
-        "details_extras_border": "border",
-        "details_extras_dup":  "duplicate",
         "details_extras_manual": "manual",
-        "details_target":      "Target",
-        "details_progress":    "Progress",
-        "details_pct_changed": "% changed",
-        "details_pct_changed_2000": "% changed per 2000",
-        "details_images_done": "Images done",
-        "save_summary_title":  "Save summary?",
-        "save_summary_msg":    "Rewrite summary CSV for {group} now?",
-        "save_profile_title":  "Save profile?",
-        "save_profile_msg":    "Save profile changes? Cache may be invalidated.",
         "menu_settings":       "Settings",
         "menu_settings_open":  "Settings …",
         "menu_help":           "Help",
         "pe_type_outline":     "Contour (extra cue)",
-        "pe_type_outline_hint": ("Measured on 41 px cells: solid versus broken reads "
-                                 "reliably, three different broken patterns do not. "
-                                 "Use sparingly."),
         "pe_outline_none":     "none",
         "pe_outline_solid":    "solid",
         "pe_outline_dashed":   "dashed",
         "pe_outline_dotted":   "dotted",
         "pe_outline_dashdot":  "dash-dot",
         "pe_outlines_enabled": "Draw type contours",
-        "pe_outlines_hint":    ("Draws each type's contour around matching cells so the type "
-                                "is not carried by colour alone — important for colour vision "
-                                "deficiency. Off: plain colour rendering as before."),
         "pe_overlay_alpha":    "Fill opacity",
         "pe_overlay_alpha_hint": ("Higher = stronger type colours, but more of the cell "
                                   "structure underneath is hidden. 0.55 is the compromise."),
@@ -932,8 +747,6 @@ STRINGS = {
         "settings_font_100":   "100 %",
         "settings_font_125":   "125 %",
         "settings_font_150":   "150 %",
-        "busy_cancel_hint":    "Esc or close the window: request cancel",
-        "busy_cancelling":     "Cancel requested – finishing the current step …",
         "menu_training_export": "Export training data …",
         "training_pick_folder": "Destination folder for the training data",
         "training_running":     "Writing training data",
@@ -1013,7 +826,6 @@ STRINGS = {
         "status_dlg_summary":  "{n} of {total} marked finished",
         "tool_note":           "Annotate",
         "tool_cursor":         "Cursor",
-        "details_notes":       "Remarks",
         "status_mark_all_done": "Mark all images finished",
         "status_mark_all_open": "Clear the finished mark",
         "status_bulk_done":    "{n} image(s) changed",
@@ -1026,15 +838,8 @@ STRINGS = {
         "note_discard_msg":    ("The text has not been saved. Close and discard "
                                 "the changes?"),
         "note_delete":         "Delete remark",
-        "note_none":           "no remarks",
-        "note_count":          "{n} remark(s)",
         "menu_models":         "Map Cellpose models …",
         "settings_cp_model":   "Model",
-        "settings_cp_model_hint": ("Cellpose 4 ships only \"cpsam\". Your own or third-party "
-                                   "models are registered under Settings → Map Cellpose "
-                                   "models; the profile stores just the name."),
-        "settings_cp_model_missing": ("No file is registered for \"{name}\" on this machine. "
-                                      "Segmentation is blocked until it is."),
         "models_title":        "Map Cellpose models",
         "models_hint":         ("Profiles ask for a model by name. Here you decide which file "
                                 "that name means on THIS machine — so a shared package works "
@@ -1068,9 +873,7 @@ STRINGS = {
         "filter_unsegmented":  "Unsegmented",
         "filter_unfinished":   "Unfinished",
         "filter_finished":     "Finished",
-        "no_folder":           "No folder loaded",
         "btn_open_folder":     "Open folder …",
-        "tool_select":         "Select",
         "tool_add":            "New cell",
         "tool_remove":         "Count on/off",
         "tool_type":           "Modify",
@@ -1078,7 +881,6 @@ STRINGS = {
         "tool_export":         "Export",
         "tool_overlay":        "Overlay",
         "tool_undo":           "Undo",
-        "tool_batch":          "Multiple images",
         "status_ready":        "Ready",
         "status_active":       "active",
         "status_excluded":     "removed",
@@ -1086,55 +888,30 @@ STRINGS = {
         "status_total":        "detected",
         "status_saved":        "saved",
         "status_finished":     "finished",
-        "status_param_mismatch": "Different parameters – re-run?",
         "cp_running":          "Cellpose running …",
         "cp_running_image":    "Image: {name}",
-        "cp_running_hint":     "(2–60 s, depending on image size)",
         "confirm_resegment_title": "Re-run Cellpose?",
         "confirm_resegment_msg":   "The cached mask and review state for\n{name}\nwill be overwritten. Continue?",
         "confirm_yes":         "Yes",
         "confirm_no":          "No",
-        "confirm_delete_type_title": "Delete type?",
-        "confirm_delete_type_msg":   "Delete type “{name}”? Existing cell assignments stay in review files as an unknown type.",
-        "language_changed_title": "Language changed",
-        "language_changed_msg":   "Please restart the app for the language change to apply.",
         "settings_title":      "Settings",
-        "settings_section_general": "General",
-        "settings_section_cellpose": "Cellpose",
-        "settings_section_types": "Types",
-        "settings_section_appearance": "Appearance",
         "settings_language":   "Language",
         "settings_theme":      "Theme",
         "settings_theme_dark": "Dark",
         "settings_theme_light": "Light",
-        "settings_theme_restart": "Theme and text-size changes take effect after an app restart.",
-        "tool_resegment_more": "Run multiple images …",
         "tool_reset_zoom":     "Reset zoom",
         "status_tool":         "Tool",
         "status_tool_type":    "Type",
         "menu_recent_folders": "Recent folders",
         "menu_recent_empty":   "(none)",
         "pe_color_scheme":     "Apply color scheme",
-        "pe_color_scheme_help": "Reassigns type colors in the current order.",
-        "confirm_apply_scheme_title": "Apply color scheme?",
-        "confirm_apply_scheme_msg":   "All type colors will be overwritten with the \"{name}\" scheme. Continue?",
         "settings_margin_n":   "Border margin N (pixels)",
         "settings_margin_help": "Cells whose bbox reaches into this margin are flagged as border cells and not counted.",
         "settings_cp_diameter": "Diameter (px)",
         "settings_cp_flow":    "Flow threshold",
         "settings_cp_cellprob": "Cellprob threshold",
-        "settings_use_gpu":    "Use GPU",
-        "settings_gpu_probing": "Detected: checking…",
-        "settings_gpu_detected": "Detected: {backend}",
         "settings_show_margin_overlay": "Dim border strip",
-        "settings_show_cell_numbers":   "Show cell numbers (slower)",
         "settings_type_name":  "Name",
-        "settings_type_color": "Color",
-        "settings_type_new":   "New",
-        "settings_type_save":  "Save",
-        "settings_type_delete": "Delete",
-        "settings_type_up":    "Up",
-        "settings_type_down":  "Down",
         "settings_type_normal_protected": "The “Normal” type cannot be deleted.",
         "settings_color_pick": "Pick color …",
         "settings_save":       "Save",
@@ -1164,36 +941,6 @@ STRINGS = {
         "batch_summary_done":  "{n} images processed.",
         "batch_summary_skipped": "{n} skipped (already cached).",
         "batch_summary_errors": "{n} errors:",
-        "help_hotkeys_title":  "Keyboard shortcuts",
-        "help_hotkeys": (
-            "Right-click a cell: remark\n"
-            "Right-click a subject in the list: set status\n\n"
-            "Tools (hotkey switches active tool):\n"
-            "  1 – New cell\n"
-            "  2 – Count on/off\n"
-            "  3 – Modify (assign type)\n"
-            "  4 – ❝ Annotate (shown without a digit; click a cell,\n"
-            "      empty space = whole image)\n"
-            "  5 – ↖ Cursor: changes nothing; clicking an annotated cell\n"
-            "      opens its remark. Escape jumps here.\n"
-            "  In the remark window nothing is written until \"Save\".\n\n"
-            "Image navigation:\n"
-            "  ←/→ – previous / next image\n"
-            "  f   – mark current image as finished\n\n"
-            "Other:\n"
-            "  Wheel       – zoom on cursor\n"
-            "  Middle-drag – pan\n"
-            "  Home / 0    – reset zoom\n"
-            "  o – overlay on/off\n"
-            "  r – segment / re-run (current image)\n"
-            "  F5 / Cmd+R – refresh (re-scan folder)\n"
-            "  z – undo\n"
-            "  e – image in/out/auto for evaluation (2000)\n"
-            "  s / Cmd+S – export\n"
-            "  q – quit"
-        ),
-        "empty_title":         "No folder loaded",
-        "empty_subtitle":      "Pick a folder with TIF/PNG images.",
         "err_no_images":       "No images found in folder:\n{path}",
         "err_load_image":      "Image could not be loaded:\n{path}\n\n{err}",
         "err_cellpose":        "Cellpose error:\n{err}",
@@ -1216,10 +963,6 @@ STRINGS = {
         "menu_stats":          "Statistics …",
         "menu_dashboard":      "Overview (dashboard) …",
         # No-auto-render + profile refresh
-        "status_not_segmented": "Not segmented – Cellpose button / r to run",
-        "profile_cp_changed_title": "Cellpose parameters changed",
-        "profile_cp_changed_msg":   "The Cellpose parameters changed – existing masks are stale. Re-run affected images now (batch)?",
-        "pkg_import_no_images":     "The package contains no original images and none were found in the target folder – images can't be displayed. Put the TIFs into the target folder.",
         # Eval-selection dialog
         "eval_dlg_title":      "Choose counted images",
         "eval_dlg_auto":       "Auto-suggest",
@@ -1276,8 +1019,6 @@ STRINGS = {
         "qt_discard": "Discard",
         "qt_save_dots": "Save …",
         "qt_close": "Close",
-        "qt_saved_now": "Saved immediately",
-        "qt_restart_note": "Language, appearance and text size apply after restarting the app.",
         "wiz_title": "New study",
         "wiz_name": "Study name",
         "wiz_target": "Target cells",
@@ -1489,7 +1230,6 @@ STRINGS = {
         "qt_keys_none": "—",
         "qt_keys_taken": "“{key}” already belongs to “{action}”. Remove it there first or pick another key.",
         "qt_keys_reset": "Restore defaults",
-        "qt_keys_clear": "Remove shortcut",
         "qt_keys_reset_start": "Shortcuts assigned twice were reset to their defaults: {list}",
         "qt_mouse_back": "Mouse: Back",
         "qt_mouse_forward": "Mouse: Forward",
@@ -1502,19 +1242,14 @@ STRINGS = {
         "qt_tip_unseg": "Not computed yet — click or press R to run Cellpose on this image.",
         "qt_tip_stale": "Masks made with other values — made with {old}, the study asks for {new}. Click or press R to re-run this image.",
         "qt_filter_stale": "Old values",
-        "qt_det_stale": "Old values",
-        "qt_n_images": "{n} image(s)",
-        "qt_rerun_these": "Re-run these {n} …",
         "qt_rerun_all": "Re-run all {n} …",
         "qt_stale_count": "{n} images with old values",
         "qt_status_stale": "⟳ Masks made with old values",
         "qt_rerun_title": "Re-run?",
         "qt_rerun_msg": "{n} images will be re-run with the study's current values.\n\nThis creates new cells. The existing review of these images (types, on/off, manual cells, cell remarks) is reset.",
         "qt_rerun_running": "Re-running {i} of {n}: {name}",
-        "qt_restart_now":      "Restart now",
         "qt_sub_eval":         "Choose counted images …",
         "qt_decimal_sep":      ".",
-        "qt_det_cells":        "Cells total",
         "qt_det_cells_line":   "{n} / {target} cells",
         "qt_grid":             "Helper grid",
         "qt_grid_off":         "Off",
@@ -1528,15 +1263,10 @@ STRINGS = {
         "qt_info_time":        "Time",
         "qt_det_cells_tip":    "Cells counted in the counted images against the study's target. Breakdown: Info.",
         "qt_det_counted":      "Counted images",
-        "qt_det_changed":      "Changed",
         "qt_card_model":       "Model",
         "qt_menu_view":        "View",
         "qt_later":            "Comes in a later step of the Qt port — use the Tk version until then.",
         "settings_section_study": "Study",
-        "settings_study_active": "Active study: {name}",
-        "settings_study_edit": "Edit …",
-        "settings_study_switch": "Switch …",
-        "settings_section_local": "This computer only",
         "settings_toolbar":    "Toolbar",
         "settings_toolbar_grouped": "Grouped (one row)",
         "settings_toolbar_two_row": "Two rows, cell types as colour chips (up to 6 types)",
@@ -1544,17 +1274,12 @@ STRINGS = {
         "settings_reseg_later": "Decide later (hint in the toolbar)",
         "settings_reseg_ask":  "Ask every time",
         "settings_reseg_batch": "Open re-run right away",
-        "tb_group_edit":       "Edit cells",
-        "tb_group_check":      "Review",
-        "tb_group_view":       "View",
         "tb_study_tip":        "Study: progress, edit, switch",
         "study_menu_progress": "{done} / {total} IDs finished & exported",
         "study_menu_rest":     "{wip} in progress · {open} open",
         "study_menu_no_folder": "No image folder open",
         "study_menu_edit":     "Edit study …",
         "study_menu_switch":   "Switch study …",
-        "study_menu_settings": "Settings …",
-        "status_cp_changed_later": "Cellpose values changed — existing masks stay until you re-run (⟳).",
         # Package create
         "pkg_create_title":    "Create package",
         "pkg_include_images":  "Include original images (self-contained package)",
@@ -1576,7 +1301,6 @@ STRINGS = {
         "pkg_not_a_package":   "This file is not a valid Erys package.",
         "pkg_import_info":     ("From: {reviewer}\nImages in package: {n}\nOriginals included: {images}\n"
                                 "Profile: {profile}\n\nChoose a target folder?"),
-        "pkg_import_choose_target": "Choose target folder …",
         "pkg_pick_target":     "Target folder for the import",
         "pkg_import_subfolder": "Extract into subfolder “{name}”?",
         "pkg_importing":       "Importing …",
@@ -1614,7 +1338,6 @@ STRINGS = {
         "dash_subject_totals": "Time per subject:",
         "dash_total_time":     "Total time: {time}",
         # Eval cap
-        "status_eval_out":     "not counted",
         "eval_toggled_in":     "Image counts toward evaluation",
         "eval_toggled_out":    "Image does NOT count toward evaluation",
         "eval_toggled_auto":   "Image: automatic evaluation",
@@ -1630,17 +1353,10 @@ STRINGS = {
         "pe_role_timepoint":   "Timepoint",
         "pe_role_image_num":   "Image number",
         "pe_role_ignore":      "Ignore",
-        "pe_preview":          "Preview (real files):",
-        "pe_preview_none":     "No folder / no files to test.",
-        "pe_preview_ok":       "{ok}/{total} files recognized.",
         "pe_stats_enabled":    "Enable statistics tab for this profile",
         "pe_overview_xlsx":    "Generate overview Excel (Uebersicht.xlsx) on export",
         "pe_overlay_png":      "Write overlay PNGs on export (large/slow)",
         "pe_copy_originals":   "Copy original TIFs into outputs/ (storage!)",
-        "overview_preview_title": "Overview – preview",
-        "overview_preview_path":  "Saved: {path}",
-        "overview_preview_more":  "… and {n} more rows in the Excel",
-        "pe_section_stats":    "Statistics",
     },
 }
 
