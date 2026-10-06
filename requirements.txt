@@ -37,3 +37,6 @@ scipy>=1.13
 #
 # (replace cu121 with the CUDA version your driver supports)
 openpyxl>=3.1
+
+# Qt front end (python -m erysreview.qt) — the Tk app does not need it.
+PySide6>=6.8

@@ -64,3 +64,4 @@ run_erys.command
 !docs/**/*.png
 !assets/*.png
 !assets/*.ico
+tests/_out/

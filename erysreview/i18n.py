@@ -421,6 +421,11 @@ STRINGS = {
         # Settings
         "settings_reviewer":   "Reviewer-Name (für Pakete)",
         "settings_overlay_autoshow": "Overlay beim Bearbeiten automatisch einblenden",
+        "qt_menu_edit":        "Bearbeiten",
+        "qt_card_folder":      "Ordner",
+        "qt_card_model":       "Modell",
+        "qt_menu_view":        "Ansicht",
+        "qt_later":            "Folgt in einem späteren Schritt des Qt-Umbaus — bis dahin in der Tk-Version.",
         "settings_section_study": "Studie",
         "settings_study_active": "Aktive Studie: {name}",
         "settings_study_edit": "Bearbeiten …",
@@ -917,6 +922,11 @@ STRINGS = {
         # Settings
         "settings_reviewer":   "Reviewer name (for packages)",
         "settings_overlay_autoshow": "Show overlay automatically when editing",
+        "qt_menu_edit":        "Edit",
+        "qt_card_folder":      "Folder",
+        "qt_card_model":       "Model",
+        "qt_menu_view":        "View",
+        "qt_later":            "Comes in a later step of the Qt port — use the Tk version until then.",
         "settings_section_study": "Study",
         "settings_study_active": "Active study: {name}",
         "settings_study_edit": "Edit …",

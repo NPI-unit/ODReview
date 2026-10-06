@@ -24,6 +24,7 @@ from .grouping import (
 )
 from .persistence import ReviewState
 from .profile import ProfileData
+from .sidebar_model import image_status, passes_filter
 from .theme import font, STATUS_ICONS_3, STATUS_TO_COLOR
 
 
@@ -362,23 +363,11 @@ class Sidebar(tk.Frame):
         return ""
 
     def _image_status(self, image_path: Path) -> str:
-        """Status of one image — and, as a side effect, whether it carries a remark.
-
-        The note flag rides along deliberately: the review is already loaded
-        here, and a second `ReviewState.load` per row would double the disk work
-        of the sidebar refresh, which is the hot path this project has already
-        had to optimise once.
-        """
-        if self.folder is None or not has_cache(self.folder, image_path):
-            self._note_flags[image_path.stem] = False
-            return "unsegmented"
-        review = ReviewState.load(self.folder, image_path.stem)
-        self._note_flags[image_path.stem] = bool(
-            review.note.strip() or any(t.strip() for t in review.notes.values())
-        )
-        if review.is_finished:
-            return "finished"
-        return "in_progress"
+        """Status of one image; the remark flag is recorded as a side effect
+        (rule in sidebar_model.image_status, shared with the Qt sidebar)."""
+        status, has_note = image_status(self.folder, image_path)
+        self._note_flags[image_path.stem] = has_note
+        return status
 
     def _note_marker(self, info: ImageGroupInfo) -> str:
         """Trailing ❝ on images that carry a remark.
@@ -391,18 +380,7 @@ class Sidebar(tk.Frame):
         return "  ❝" if self._note_flags.get(info.path.stem) else ""
 
     def _passes_filter(self, status: str, has_note: bool = False) -> bool:
-        f = self.filter_var.get()
-        if f == "all":
-            return True
-        if f == "with_notes":
-            return has_note
-        if f == "unsegmented":
-            return status == "unsegmented"
-        if f == "unfinished":
-            return status != "finished"
-        if f == "finished":
-            return status == "finished"
-        return True
+        return passes_filter(self.filter_var.get(), status, has_note)
 
     def _sub_label(self, label: str, tp_key: str, sub_key: str) -> str:
         counts = self._group_counters(tp_key, sub_key)

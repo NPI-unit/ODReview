@@ -83,6 +83,18 @@ def status_counts(cell_ids, review: ReviewState, profile: ProfileData,
     return ImageCounts(total, active, changed, n_excl, auto)
 
 
+def format_status(S: dict, idx: int, n_images: int, name: str,
+                  c: ImageCounts, finished: bool) -> str:
+    """The status line under the image, shared by both front ends."""
+    done = f"  ·  {S['status_finished']}" if finished else ""
+    return (f"[{idx + 1}/{n_images}]  {name}  ·  "
+            f"{c.active} {S['status_active']}  ·  "
+            f"{c.changed} {S['status_changed']} ({c.pct_changed:.1f}%)  ·  "
+            f"{c.excluded} {S['status_excluded']}  ·  "
+            f"{c.inactive_auto} {S['status_border']}  ·  "
+            f"{c.total} {S['status_total']}{done}")
+
+
 class AppController:
     MAX_RECENT_FOLDERS = 5
     TIME_IDLE_S = 60.0       # no input for this long -> stop counting time

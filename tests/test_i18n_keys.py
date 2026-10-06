@@ -28,7 +28,7 @@ STRING_HOLDERS = {"S", "strings", "STRINGS"}
 def collect_used(pkg: pathlib.Path) -> dict[str, list[str]]:
     """key -> where it is referenced (for a useful failure message)."""
     used: dict[str, list[str]] = {}
-    for f in sorted(pkg.glob("*.py")):
+    for f in sorted(pkg.rglob("*.py")):          # qt/ included
         if f.stem == "i18n":
             continue
         for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):

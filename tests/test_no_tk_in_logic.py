@@ -14,9 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 LOGIC = [
-    "areas", "batch", "cellpose_runner", "controller", "counts", "db", "editor", "evaluation", "export",
+    "areas", "batch", "canvas_core", "cellpose_runner", "controller", "counts", "db", "editor", "evaluation", "export",
     "grouping", "i18n", "image_state", "nameparser", "overlay", "overview",
-    "package", "persistence", "profile", "sizefilter", "stats", "study",
+    "package", "persistence", "profile", "qt.app", "sidebar_model", "sizefilter", "stats", "study",
     "summary", "tasks", "theme",
 ]
 
