@@ -144,8 +144,9 @@ class MainWindow(QMainWindow):
         m_file = mb.addMenu(S["menu_file"])
         self._act(m_file, S["qt_studies_title"] + " …", self.switch_study, "Ctrl+Shift+O")
         self._act(m_file, S["menu_open_folder"], self.ask_open_folder, QKeySequence.Open)
+        # "Ctrl" is ⌘ on macOS; QKeySequence.Preferences is empty on some platforms.
         prefs = self._act(m_file, S["settings_title"] + " …", lambda: self.open_settings(),
-                          QKeySequence.Preferences)
+                          ["Ctrl+,"])
         prefs.setMenuRole(QAction.PreferencesRole)      # macOS: app menu › Einstellungen
         self.m_recent = m_file.addMenu(S["menu_recent_folders"])
         self._fill_recent()
@@ -166,6 +167,8 @@ class MainWindow(QMainWindow):
     def _act(self, menu, text, fn, keys=None) -> QAction:
         a = QAction(text, self)
         if keys is not None:
+            if isinstance(keys, str):
+                keys = [keys]           # a bare string would be read as a key list
             a.setShortcuts([QKeySequence(k) for k in keys] if isinstance(keys, list) else keys)
         a.triggered.connect(lambda _c=False: fn())
         menu.addAction(a)

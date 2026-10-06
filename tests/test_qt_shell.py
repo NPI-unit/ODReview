@@ -85,6 +85,10 @@ def main() -> int:
     check(win.canvas.masks is not None and win.canvas.masks.max() == 2, "the segmented image shows its masks")
     check(win.empty_btn.isHidden(), "the empty-state button is gone once images show")
     check("[1/3]" in win.status_label.text(), "the status line counts the images")
+    from PySide6.QtGui import QAction, QShortcut
+    bare = {sc.key().toString() for sc in win.findChildren(QShortcut)}
+    menu_keys = {k.toString() for a in win.findChildren(QAction) for k in a.shortcuts()}
+    check(not (bare & menu_keys), f"no menu shortcut collides with a tool key ({bare & menu_keys})")
     groups = win.sidebar._group_items
     check(set(groups) == {("Prä", "01"), ("Prä", "02")}, "the sidebar shows timepoint › subject")
 
