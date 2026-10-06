@@ -34,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .persistence import ReviewState, cache_dir_for, write_json_atomic
+from .persistence import ReviewState, cache_dir_for, review_dir, write_json_atomic
 from .profile import ProfileData
 
 EXCLUDED = "_excluded"
@@ -43,20 +43,24 @@ EXCLUDED = "_excluded"
 # ─────────────────────────────────────────────
 # Storage
 # ─────────────────────────────────────────────
-def _slug(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_") or "rater"
-
-
 def raters_dir(folder: Path) -> Path:
     return cache_dir_for(folder) / "raters"
 
 
 def rater_dir(folder: Path, name: str) -> Path:
-    return raters_dir(folder) / _slug(name)
+    return review_dir(folder, name)
+
+
+def rater_info(folder: Path, name: str) -> dict:
+    p = rater_dir(folder, name) / "rater.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def list_raters(folder: Path) -> list[str]:
-    """Names of the second raters stored for this folder."""
+    """Names of the second ratings stored for this folder."""
     d = raters_dir(folder)
     out = []
     if d.is_dir():
@@ -70,9 +74,22 @@ def list_raters(folder: Path) -> list[str]:
     return out
 
 
-def load_rater_review(folder: Path, name: str, stem: str) -> ReviewState | None:
-    p = rater_dir(folder, name) / f"{stem}_review.json"
+def load_review(folder: Path, rater: str | None, stem: str) -> ReviewState | None:
+    """A review of one rating: rater None = the main reviews (A). None if
+    that rating has no review for the image."""
+    p = review_dir(folder, rater) / f"{stem}_review.json"
     return ReviewState.load_file(p) if p.is_file() else None
+
+
+def load_rater_review(folder: Path, name: str, stem: str) -> ReviewState | None:
+    return load_review(folder, name, stem)
+
+
+def _write_rater_meta(folder: Path, name: str, **extra) -> None:
+    meta = rater_info(folder, name)
+    meta.update(extra)
+    meta["name"] = name
+    write_json_atomic(rater_dir(folder, name) / "rater.json", meta)
 
 
 # ─────────────────────────────────────────────
@@ -86,10 +103,9 @@ def _local_mask_digest(folder: Path, stem: str) -> str | None:
     """Digest of the mask the app would show for this image (cache first,
     then the export layout next to the image — as mask_read_paths)."""
     from .cellpose_runner import mask_read_paths
-    npy, _meta = mask_read_paths(folder, folder / f"{stem}.tif")
-    if npy is None:
-        hits = list(cache_dir_for(folder).glob(f"{stem}_masks.npy"))
-        npy = hits[0] if hits else None
+    npy = cache_dir_for(folder) / f"{stem}_masks.npy"
+    if not npy.is_file():
+        npy, _meta = mask_read_paths(folder, folder / f"{stem}.tif")
     try:
         return _digest(npy.read_bytes()) if npy is not None else None
     except OSError:
@@ -138,11 +154,65 @@ def import_rater(zip_path: Path, folder: Path, name: str | None = None) -> dict:
     with zipfile.ZipFile(zip_path) as zf:
         for stem in ok:
             (d / f"{stem}_review.json").write_bytes(zf.read(f"cache/{stem}_review.json"))
-    write_json_atomic(d / "rater.json", {
-        "name": rater, "package": Path(zip_path).name,
-        "imported_at": _dt.datetime.now().isoformat(timespec="seconds"),
-        "created_at": manifest.get("created_at"), "stems": ok, "rejected": rejected})
+    _write_rater_meta(folder, rater, kind="package", package=Path(zip_path).name,
+                      imported_at=_dt.datetime.now().isoformat(timespec="seconds"),
+                      created_at=manifest.get("created_at"), stems=ok, rejected=rejected,
+                      masks={stem: _local_mask_digest(folder, stem) for stem in ok})
     return {"name": rater, "imported": ok, "rejected": rejected}
+
+
+def create_self_rating(folder: Path, name: str, stems: list[str]) -> None:
+    """A second rating by me (intra-rater) or anyone at this computer: an
+    empty namespace on today's masks. The masks' digests are kept, so a later
+    re-segmentation takes the image out of the comparison."""
+    rater_dir(folder, name).mkdir(parents=True, exist_ok=True)
+    _write_rater_meta(folder, name, kind="self",
+                      created_at=_dt.datetime.now().isoformat(timespec="seconds"),
+                      masks={stem: _local_mask_digest(folder, stem) for stem in stems})
+
+
+def masks_unchanged(folder: Path, rater: str | None, stem: str) -> bool:
+    """True if the image's mask is still the one the rating was made on."""
+    if not rater:
+        return True
+    want = (rater_info(folder, rater).get("masks") or {}).get(stem)
+    return want is None or want == _local_mask_digest(folder, stem)
+
+
+# ─────────────────────────────────────────────
+# Consensus
+# ─────────────────────────────────────────────
+CONSENSUS = "Konsens"
+
+
+def set_consensus_cell(folder: Path, stem: str, cid: int, source: ReviewState, base: ReviewState) -> None:
+    """Take one cell's rating (type, excluded / re-included) from `source`
+    into the consensus review of the image, which starts as a copy of `base`
+    (rating A) the first time it is touched."""
+    import copy as _copy
+    cons = load_review(folder, CONSENSUS, stem)
+    if cons is None:
+        cons = _copy.deepcopy(base)
+        cons.is_finished = False
+    key = str(cid)
+    for lst_name in ("force_excluded", "force_included"):
+        lst = [x for x in getattr(cons, lst_name) if x != cid]
+        if cid in getattr(source, lst_name):
+            lst.append(cid)
+        setattr(cons, lst_name, lst)
+    if key in source.types:
+        cons.types[key] = source.types[key]
+    else:
+        cons.types.pop(key, None)
+    d = rater_dir(folder, CONSENSUS)
+    write_json_atomic(d / f"{stem}_review.json", cons.to_dict())
+    if not (d / "rater.json").is_file():
+        _write_rater_meta(folder, CONSENSUS, kind="consensus",
+                          created_at=_dt.datetime.now().isoformat(timespec="seconds"), masks={})
+    masks = rater_info(folder, CONSENSUS).get("masks") or {}
+    if stem not in masks:
+        masks[stem] = _local_mask_digest(folder, stem)
+        _write_rater_meta(folder, CONSENSUS, masks=masks)
 
 
 # ─────────────────────────────────────────────
@@ -270,6 +340,7 @@ class Agreement:
     manual_only_b: int
     per_image: list[tuple[str, int, int]] = field(default_factory=list)   # (name, n, same)
     cells: list[tuple[str, int, str, str]] = field(default_factory=list)  # (image, id, A, B)
+    n_masks_changed: int = 0                     # left out: masks changed since a rating
 
     @property
     def pct_same(self) -> float:
@@ -282,65 +353,178 @@ def _pct_changed(cats: dict[int, str], manual: list[str]) -> tuple[int, float]:
     return len(act), (100.0 * changed / len(act) if act else 0.0)
 
 
-def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: str = "") -> Agreement:
-    """My reviews (A) against `rater_b`'s, over every image both have."""
+def _image_pair(folder: Path, info, profile: ProfileData, base: str | None, rater_b: str):
+    """(ids, auto, review A, review B) for one image, or None if it is not
+    comparable (no B review, no masks, or masks changed since a rating)."""
     from .cellpose_runner import load_cached_masks
+    stem = info.path.stem
+    rb = load_review(folder, rater_b, stem)
+    if rb is None:
+        return None
+    if not (masks_unchanged(folder, rater_b, stem) and masks_unchanged(folder, base, stem)):
+        return "changed"
+    masks = load_cached_masks(folder, info.path)
+    if masks is None:
+        return None
+    ra = load_review(folder, base, stem) or ReviewState()
+    ids, auto = mask_cells(masks, profile)
+    return ids, auto, ra, rb, masks
+
+
+def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: str = "",
+            base: str | None = None) -> Agreement:
+    """Rating A (`base`; None = the main reviews) against `rater_b`, over
+    every image both have on unchanged masks. `rater_a` is A's display name."""
     from .grouping import UNGROUPED_TIMEPOINT
     a_all, b_all, cells, per_image, groups = [], [], [], [], []
-    man_a = man_b = n_images = 0
+    man_a = man_b = n_images = n_changed = 0
+    default = profile.default_type_key()
     for tp in grouped.timepoints():
         if tp == UNGROUPED_TIMEPOINT:
             continue
         for sub in grouped.subjects_in(tp):
-            ga: dict[int, str] = {}
-            gb: dict[int, str] = {}
-            mga: list[str] = []
-            mgb: list[str] = []
+            ga: list[str] = []
+            gb: list[str] = []
             n_grp = 0
             for info in grouped.tree[tp][sub]:
-                rb = load_rater_review(folder, rater_b, info.path.stem)
-                if rb is None:
+                pair = _image_pair(folder, info, profile, base, rater_b)
+                if pair == "changed":
+                    n_changed += 1
                     continue
-                masks = load_cached_masks(folder, info.path)
-                if masks is None:
+                if pair is None:
                     continue
-                ra = ReviewState.load(folder, info.path.stem)
-                ids, auto = mask_cells(masks, profile)
+                ids, auto, ra, rb, _m = pair
                 ca, cb = categories(ids, auto, ra, profile), categories(ids, auto, rb, profile)
                 same = 0
                 for cid in ids:
                     a_all.append(ca[cid]); b_all.append(cb[cid])
                     same += ca[cid] == cb[cid]
                     cells.append((info.path.name, cid, ca[cid], cb[cid]))
-                default = profile.default_type_key()
                 ma = [ra.types.get(str(m.cell_id), default) for m in ra.manual_cells
                       if m.cell_id not in ra.force_excluded]
                 mb = [rb.types.get(str(m.cell_id), default) for m in rb.manual_cells
                       if m.cell_id not in rb.force_excluded]
                 man_a += len(ma); man_b += len(mb)
                 per_image.append((info.path.name, len(ids), same))
-                off = len(ga)
-                ga.update({off + i: c for i, c in enumerate(ca.values())})
-                gb.update({off + i: c for i, c in enumerate(cb.values())})
-                mga += ma; mgb += mb
+                ga += list(ca.values()) + ma
+                gb += list(cb.values()) + mb
                 n_grp += 1
                 n_images += 1
             if n_grp:
-                na, pa = _pct_changed(ga, mga)
-                nb, pb = _pct_changed(gb, mgb)
+                na, pa = _pct_changed(dict(enumerate(ga)), [])
+                nb, pb = _pct_changed(dict(enumerate(gb)), [])
                 groups.append(GroupPair(tp, sub, n_grp, na, nb, pa, pb))
     order = [t.key for t in profile.cell_types]
-    cats = [c for c in order if c in set(a_all) | set(b_all)] + \
-        sorted((set(a_all) | set(b_all)) - set(order) - {EXCLUDED}) + \
-        ([EXCLUDED] if EXCLUDED in set(a_all) | set(b_all) else [])
+    present = set(a_all) | set(b_all)
+    cats = [c for c in order if c in present] + sorted(present - set(order) - {EXCLUDED}) + \
+        ([EXCLUDED] if EXCLUDED in present else [])
     idx = {c: i for i, c in enumerate(cats)}
     m = np.zeros((len(cats), len(cats)), dtype=int)
     for x, y in zip(a_all, b_all):
         m[idx[x], idx[y]] += 1
     xa, yb = [g.pct_a for g in groups], [g.pct_b for g in groups]
-    return Agreement(rater_a or "A", rater_b, cats, m, len(a_all), int(np.trace(m)) if len(cats) else 0,
-                     cohen_kappa(a_all, b_all), groups, icc_2_1(xa, yb), bland_altman(xa, yb),
-                     n_images, man_a, man_b, per_image, cells)
+    ag = Agreement(rater_a or "A", rater_b, cats, m, len(a_all), int(np.trace(m)) if len(cats) else 0,
+                   cohen_kappa(a_all, b_all), groups, icc_2_1(xa, yb), bland_altman(xa, yb),
+                   n_images, man_a, man_b, per_image, cells)
+    ag.n_masks_changed = n_changed
+    return ag
+
+
+@dataclass
+class CellDiff:
+    cid: int
+    a: str
+    b: str
+    bbox: tuple[int, int, int, int]       # x0, y0, x1, y1
+
+
+def image_diffs(folder: Path, info, profile: ProfileData, rater_b: str, base: str | None = None):
+    """(masks, review A, review B, [CellDiff]) for one image — what the
+    comparison view shows; None if the image is not comparable."""
+    pair = _image_pair(folder, info, profile, base, rater_b)
+    if pair is None or pair == "changed":
+        return None
+    ids, auto, ra, rb, masks = pair
+    ca, cb = categories(ids, auto, ra, profile), categories(ids, auto, rb, profile)
+    from .overlay import compute_cell_infos
+    infos = compute_cell_infos(masks, set())
+    diffs = [CellDiff(cid, ca[cid], cb[cid],
+                      (infos[cid].bbox_x0, infos[cid].bbox_y0, infos[cid].bbox_x1, infos[cid].bbox_y1))
+             for cid in ids if ca[cid] != cb[cid] and cid in infos]
+    diffs.sort(key=lambda d: (d.bbox[1] // 80, d.bbox[0]))      # reading order, row by row
+    return masks, ra, rb, diffs
+
+
+# ─────────────────────────────────────────────
+# More than two ratings
+# ─────────────────────────────────────────────
+def fleiss_kappa(table) -> float:
+    """Fleiss' κ (1971) from an n_subjects × n_categories table of counts
+    (every row sums to the number of raters)."""
+    t = np.asarray(table, dtype=float)
+    n, _ = t.shape
+    r = t.sum(1)
+    if n == 0 or not np.all(r == r[0]) or r[0] < 2:
+        return float("nan")
+    m = r[0]
+    p_j = t.sum(0) / (n * m)
+    p_i = ((t * t).sum(1) - m) / (m * (m - 1))
+    pbar, pe = p_i.mean(), (p_j ** 2).sum()
+    return float((pbar - pe) / (1 - pe)) if pe < 1 else 1.0
+
+
+@dataclass
+class MultiAgreement:
+    raters: list[str]
+    n_cells: int
+    n_images: int
+    fleiss: float
+    icc: tuple[float, float, float]
+    groups: list[tuple[str, str, list[float]]]       # tp, sub, % verändert per rater
+
+
+def compare_many(folder: Path, grouped, profile: ProfileData, ratings: list[str | None],
+                 labels: list[str]) -> MultiAgreement:
+    """All ratings at once, on the images every one of them has (unchanged
+    masks): Fleiss' κ over the cells, ICC(2,1) over the groups' % verändert."""
+    from .cellpose_runner import load_cached_masks
+    from .grouping import UNGROUPED_TIMEPOINT
+    rows: list[list[str]] = []
+    groups = []
+    n_images = 0
+    for tp in grouped.timepoints():
+        if tp == UNGROUPED_TIMEPOINT:
+            continue
+        for sub in grouped.subjects_in(tp):
+            per_rater: list[list[str]] = [[] for _ in ratings]
+            n_grp = 0
+            for info in grouped.tree[tp][sub]:
+                stem = info.path.stem
+                revs = [load_review(folder, r, stem) if r else (load_review(folder, None, stem) or ReviewState())
+                        for r in ratings]
+                if any(rv is None for rv in revs) or not all(masks_unchanged(folder, r, stem) for r in ratings):
+                    continue
+                masks = load_cached_masks(folder, info.path)
+                if masks is None:
+                    continue
+                ids, auto = mask_cells(masks, profile)
+                cats = [categories(ids, auto, rv, profile) for rv in revs]
+                for cid in ids:
+                    rows.append([c[cid] for c in cats])
+                for k, c in enumerate(cats):
+                    per_rater[k] += list(c.values())
+                n_grp += 1
+                n_images += 1
+            if n_grp:
+                groups.append((tp, sub, [_pct_changed(dict(enumerate(v)), [])[1] for v in per_rater]))
+    allcats = sorted({c for r in rows for c in r})
+    idx = {c: i for i, c in enumerate(allcats)}
+    table = np.zeros((len(rows), len(allcats)), dtype=int)
+    for i, r in enumerate(rows):
+        for c in r:
+            table[i, idx[c]] += 1
+    icc = icc_2_1_matrix([g[2] for g in groups]) if groups else (float("nan"),) * 3
+    return MultiAgreement(labels, len(rows), n_images, fleiss_kappa(table) if rows else float("nan"), icc, groups)
 
 
 def write_csv(ag: Agreement, path: Path, type_names: dict[str, str]) -> None:

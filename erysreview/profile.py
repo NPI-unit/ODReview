@@ -142,6 +142,12 @@ class ProfileData:
     recent_folders: list[str] = field(default_factory=list)
     # Currently-selected type for the "Modify" tool (per-profile so each study keeps its own)
     active_type_key: str = "normal"
+    # Second rating (interrater.py): reviews go to the rater's namespace in the
+    # same folder, on the same masks. rater_base = the study rated first (A);
+    # blind = the agreement stays closed until this rating is finished.
+    rater: str = ""
+    rater_base: str = ""
+    blind: bool = False
     # Metadata
     created_at: str = ""
     updated_at: str = ""
@@ -198,6 +204,9 @@ class ProfileData:
             details_collapsed=bool(raw.get("details_collapsed", False)),
             recent_folders=list(raw.get("recent_folders", [])),
             active_type_key=raw.get("active_type_key", "normal"),
+            rater=str(raw.get("rater", "") or ""),
+            rater_base=str(raw.get("rater_base", "") or ""),
+            blind=bool(raw.get("blind", False)),
             created_at=raw.get("created_at", ""),
             updated_at=raw.get("updated_at", ""),
         )
@@ -228,6 +237,9 @@ class ProfileData:
             "details_collapsed": self.details_collapsed,
             "recent_folders": self.recent_folders,
             "active_type_key": self.active_type_key,
+            "rater": self.rater,
+            "rater_base": self.rater_base,
+            "blind": self.blind,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

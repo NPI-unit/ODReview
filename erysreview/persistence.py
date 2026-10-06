@@ -51,6 +51,48 @@ def cache_dir_for(folder: Path) -> Path:
 
 
 # ─────────────────────────────────────────────
+# Review namespaces (second ratings, interrater.py)
+# ─────────────────────────────────────────────
+# A second rating of the same images (Anna, "me again", a consensus) lives in
+# its own namespace: <cache>/raters/<slug>/ for reviews and their counts, and
+# outputs/_rater_<slug>/ for its export. Masks are shared — that is the point.
+# While a study with a rater is open, the app reads and writes there.
+_REVIEW_NS: dict[str, str] = {}
+
+
+def rater_slug(name: str) -> str:
+    import re
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_") or "rater"
+
+
+def set_review_namespace(folder: Path, rater: str | None) -> None:
+    key = str(folder)
+    if rater:
+        _REVIEW_NS[key] = rater
+    else:
+        _REVIEW_NS.pop(key, None)
+
+
+def review_namespace(folder: Path) -> str | None:
+    return _REVIEW_NS.get(str(folder))
+
+
+def review_dir(folder: Path, rater: str | None = "") -> Path:
+    """Where reviews (and their counts) live: the cache, or a rater's folder.
+    rater "" = the active namespace, None = the main reviews."""
+    if rater == "":
+        rater = _REVIEW_NS.get(str(folder))
+    base = cache_dir_for(folder)
+    return base / "raters" / rater_slug(rater) if rater else base
+
+
+def outputs_dir(folder: Path) -> Path:
+    """The export folder of the active namespace (not created here)."""
+    rater = _REVIEW_NS.get(str(folder))
+    return folder / "outputs" / f"_rater_{rater_slug(rater)}" if rater else folder / "outputs"
+
+
+# ─────────────────────────────────────────────
 # Atomic JSON
 # ─────────────────────────────────────────────
 def write_json_atomic(path: Path, data) -> None:
@@ -363,7 +405,7 @@ class ReviewState:
 
     @staticmethod
     def review_path(folder: Path, image_stem: str) -> Path:
-        return cache_dir_for(folder) / f"{image_stem}_review.json"
+        return review_dir(folder) / f"{image_stem}_review.json"
 
     @classmethod
     def load(cls, folder: Path, image_stem: str) -> "ReviewState":
@@ -399,22 +441,22 @@ class ReviewState:
         except (TypeError, ValueError):
             return cls()
 
+    def to_dict(self) -> dict:
+        return {
+            "force_excluded": self.force_excluded,
+            "force_included": self.force_included,
+            "types": self.types,
+            "manual_cells": [asdict(m) for m in self.manual_cells],
+            "is_finished": self.is_finished,
+            "next_manual_id": self.next_manual_id,
+            "time_spent_s": round(self.time_spent_s, 1),
+            "notes": self.notes,
+            "note": self.note,
+            "eval_include": self.eval_include,
+        }
+
     def save(self, folder: Path, image_stem: str) -> None:
-        write_json_atomic(
-            self.review_path(folder, image_stem),
-            {
-                "force_excluded": self.force_excluded,
-                "force_included": self.force_included,
-                "types": self.types,
-                "manual_cells": [asdict(m) for m in self.manual_cells],
-                "is_finished": self.is_finished,
-                "next_manual_id": self.next_manual_id,
-                "time_spent_s": round(self.time_spent_s, 1),
-                "notes": self.notes,
-                "note": self.note,
-                "eval_include": self.eval_include,
-            },
-        )
+        write_json_atomic(self.review_path(folder, image_stem), self.to_dict())
 
     def has_user_edits(self) -> bool:
         return bool(

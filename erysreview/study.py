@@ -32,7 +32,8 @@ def _group_exported(folder: Path, tp: str, sub: str) -> bool:
     # The path export._group_folder writes to — rebuilt here instead of
     # calling outputs_root(), which would create outputs/ as a side effect.
     name = f"{tp}_{sub}"
-    return (folder / "outputs" / tp / name / f"{name}_summary.csv").is_file()
+    from .persistence import outputs_dir
+    return (outputs_dir(folder) / tp / name / f"{name}_summary.csv").is_file()
 
 
 def study_progress(folder: Path, grouped: GroupedFolder) -> StudyProgress:

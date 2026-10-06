@@ -115,8 +115,10 @@ def main() -> int:
     check(len(ag.groups) == 6 and ir.EXCLUDED in ag.categories, "one pair per proband × timepoint, excluded as category")
 
     # broken package: every mask different → refused
+    saved = {}
     for nm in names:
         npy, _ = cache_paths(folder, folder / nm)
+        saved[npy] = npy.read_bytes()
         m = np.load(npy); m[0, 0] = 99; np.save(npy, m)
     try:
         ir.import_rater(zip_path, folder, name="Bob")
@@ -124,6 +126,11 @@ def main() -> int:
     except ValueError:
         refused = True
     check(refused and ir.list_raters(folder) == ["Anna"], "a package with other masks everywhere is refused")
+    ag2 = ir.compare(folder, grouped, prof, "Anna", "Finn")
+    check(ag2.n_images == 0 and ag2.n_masks_changed == 11,
+          "masks changed after Anna's rating: those images drop out of the comparison")
+    for npy, data in saved.items():
+        npy.write_bytes(data)
 
     # ── Qt window ──
     from PySide6.QtTest import QTest

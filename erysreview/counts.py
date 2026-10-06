@@ -25,12 +25,12 @@ from pathlib import Path
 from .cellpose_runner import mask_read_paths
 from .grouping import ImageGroupInfo
 from .image_state import compute_image_state
-from .persistence import ReviewState, cache_dir_for, read_json, write_json_atomic
+from .persistence import ReviewState, read_json, review_dir, write_json_atomic
 from .profile import ProfileData
 
 
 def _counts_path(folder: Path, stem: str) -> Path:
-    return cache_dir_for(folder) / f"{stem}_counts.json"
+    return review_dir(folder) / f"{stem}_counts.json"     # counts follow the review
 
 
 def profile_signature(profile: ProfileData) -> str:

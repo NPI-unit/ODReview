@@ -24,7 +24,7 @@ from .cellpose_runner import (
 from .export import export_folder_structured, export_training_data
 from .grouping import GroupedFolder, group_images
 from .persistence import (
-    AppSettings, FolderState, ReviewState, TOOLS_ORDER,
+    AppSettings, FolderState, ReviewState, TOOLS_ORDER, set_review_namespace,
 )
 from .profile import ProfileData, save_profile
 from .tasks import Task, simple
@@ -193,6 +193,8 @@ class AppController:
         if not images:
             return None
         self.folder = path
+        # a second rating reads and writes its own reviews (same masks)
+        set_review_namespace(path, self.profile.rater or None)
         self.images = images
         self.grouped = group_images(images, self.profile)
         self.folder_state = FolderState.load(path)
@@ -304,6 +306,8 @@ class AppController:
     # ── profile (study) ──
     def activate_profile(self, profile: ProfileData) -> None:
         self.profile = profile
+        if self.folder is not None:
+            set_review_namespace(self.folder, profile.rater or None)
         self.settings.last_profile_name = profile.name
         self.settings.save()
 
