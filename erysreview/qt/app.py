@@ -385,7 +385,7 @@ class MainWindow(QMainWindow):
     def rerun(self, paths) -> None:
         """Re-segment images whose masks were made with old values — after the
         user confirmed that their reviews are reset (new cells, new ids)."""
-        if not paths:
+        if not paths or self._no_compute_in_rating():
             return
         try:
             self.ctl.check_model()
@@ -524,8 +524,16 @@ class MainWindow(QMainWindow):
             self._set_tool(TOOL_CURSOR)
 
     # ── Cellpose ──
+    def _no_compute_in_rating(self) -> bool:
+        """A second rating works on A's masks — recomputing them would end the
+        comparison (identical masks only). True = refused, user told."""
+        if self.ctl.profile.rater:
+            QMessageBox.information(self, self.S["ab_title"], self.S["ab_no_compute"])
+            return True
+        return False
+
     def resegment(self) -> None:
-        if not self.ctl.has_images:
+        if not self.ctl.has_images or self._no_compute_in_rating():
             return
         try:
             self.ctl.check_model()
@@ -579,7 +587,7 @@ class MainWindow(QMainWindow):
 
     # ── processing (Phase 3) ──
     def open_batch(self) -> None:
-        if not self.ctl.has_images:
+        if not self.ctl.has_images or self._no_compute_in_rating():
             return
         try:
             self.ctl.check_model()
@@ -732,8 +740,10 @@ class MainWindow(QMainWindow):
         if not ir.list_raters(self.ctl.folder):
             QMessageBox.information(self, self.S["ir_title"], self.S["ir_none"])
             return
-        InterraterWindow(self, self.P, self.S, self.ctl.folder, self.ctl.grouped, self.ctl.profile,
-                         me=self.settings.reviewer_name, rater=rater).exec()
+        p = self.ctl.profile
+        base = (load_profile(p.rater_base) if p.rater else None) or p
+        InterraterWindow(self, self.P, self.S, self.ctl.folder, self.ctl.grouped, p,
+                         me=self.settings.reviewer_name, rater=rater, base_profile=base).exec()
 
     def open_stats(self) -> None:
         if not self.ctl.profile.stats_enabled:
@@ -842,7 +852,7 @@ class MainWindow(QMainWindow):
             self.show_image(self.ctl.idx)
 
     def switch_study(self) -> None:
-        chosen, segment_now = pick_study(self, self.P, self.S, self.settings)
+        chosen, segment_now, compare_with = pick_study(self, self.P, self.S, self.settings)
         if chosen is None:
             return
         if chosen.type_by_key(chosen.active_type_key) is None:
@@ -852,6 +862,8 @@ class MainWindow(QMainWindow):
         self._profile_changed(reopen_folder=True)
         if segment_now and self.ctl.has_images:
             self.batch_in_background()
+        if compare_with:
+            self.open_interrater(compare_with)
 
     def _profile_changed(self, reopen_folder: bool) -> None:
         """Push the (new or edited) study to every widget."""

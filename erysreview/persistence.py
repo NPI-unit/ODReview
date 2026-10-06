@@ -58,6 +58,19 @@ def cache_dir_for(folder: Path) -> Path:
 # outputs/_rater_<slug>/ for its export. Masks are shared — that is the point.
 # While a study with a rater is open, the app reads and writes there.
 _REVIEW_NS: dict[str, str] = {}
+_TL = __import__("threading").local()
+
+
+class main_reviews_only:
+    """Within this block (on this thread) the main reviews are read whatever
+    rating is open — e.g. the study picker counting A's progress."""
+
+    def __enter__(self):
+        self._old = getattr(_TL, "main", False)
+        _TL.main = True
+
+    def __exit__(self, *exc):
+        _TL.main = self._old
 
 
 def rater_slug(name: str) -> str:
@@ -81,14 +94,14 @@ def review_dir(folder: Path, rater: str | None = "") -> Path:
     """Where reviews (and their counts) live: the cache, or a rater's folder.
     rater "" = the active namespace, None = the main reviews."""
     if rater == "":
-        rater = _REVIEW_NS.get(str(folder))
+        rater = None if getattr(_TL, "main", False) else _REVIEW_NS.get(str(folder))
     base = cache_dir_for(folder)
     return base / "raters" / rater_slug(rater) if rater else base
 
 
 def outputs_dir(folder: Path) -> Path:
     """The export folder of the active namespace (not created here)."""
-    rater = _REVIEW_NS.get(str(folder))
+    rater = None if getattr(_TL, "main", False) else _REVIEW_NS.get(str(folder))
     return folder / "outputs" / f"_rater_{rater_slug(rater)}" if rater else folder / "outputs"
 
 

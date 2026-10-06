@@ -161,12 +161,12 @@ def import_rater(zip_path: Path, folder: Path, name: str | None = None) -> dict:
     return {"name": rater, "imported": ok, "rejected": rejected}
 
 
-def create_self_rating(folder: Path, name: str, stems: list[str]) -> None:
+def create_self_rating(folder: Path, name: str, stems: list[str], blind: bool = False) -> None:
     """A second rating by me (intra-rater) or anyone at this computer: an
     empty namespace on today's masks. The masks' digests are kept, so a later
     re-segmentation takes the image out of the comparison."""
     rater_dir(folder, name).mkdir(parents=True, exist_ok=True)
-    _write_rater_meta(folder, name, kind="self",
+    _write_rater_meta(folder, name, kind="self", blind=bool(blind),
                       created_at=_dt.datetime.now().isoformat(timespec="seconds"),
                       masks={stem: _local_mask_digest(folder, stem) for stem in stems})
 
@@ -177,6 +177,34 @@ def masks_unchanged(folder: Path, rater: str | None, stem: str) -> bool:
         return True
     want = (rater_info(folder, rater).get("masks") or {}).get(stem)
     return want is None or want == _local_mask_digest(folder, stem)
+
+
+def rater_study(base: ProfileData, rater: str, blind: bool = False) -> ProfileData:
+    """The study to open a second rating with: the base study's settings and
+    folder, reading/writing the rater's namespace. Saved; reused if present."""
+    import copy as _copy
+    from .profile import load_profile, save_profile
+    name = f"{base.name} · {rater}"
+    existing = load_profile(name)
+    if existing is not None and existing.rater == rater:
+        return existing
+    p = _copy.deepcopy(base)
+    p.name, p.rater, p.rater_base, p.blind = name, rater, base.name, bool(blind)
+    p.created_at = p.updated_at = ""
+    p.sidebar_open_groups = []
+    save_profile(p)
+    return p
+
+
+def blind_locked(folder: Path, rater: str) -> tuple[bool, int, int]:
+    """(locked, finished, total) — a blind rating keeps the comparison closed
+    until every image it covers is marked finished."""
+    info = rater_info(folder, rater)
+    if not info.get("blind"):
+        return False, 0, 0
+    stems = list((info.get("masks") or {}).keys())
+    done = sum(1 for st in stems if (load_review(folder, rater, st) or ReviewState()).is_finished)
+    return done < len(stems), done, len(stems)
 
 
 # ─────────────────────────────────────────────

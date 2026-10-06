@@ -12,12 +12,28 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import interrater as ir
 from .style import _mix
+
+
+REFERENCES = [
+    "Cohen J. A coefficient of agreement for nominal scales. Educ Psychol Meas. 1960;20(1):37–46.",
+    "Fleiss JL. Measuring nominal scale agreement among many raters. Psychol Bull. 1971;76(5):378–382.",
+    "Landis JR, Koch GG. The measurement of observer agreement for categorical data. Biometrics. "
+    "1977;33(1):159–174.",
+    "Shrout PE, Fleiss JL. Intraclass correlations: uses in assessing rater reliability. Psychol Bull. "
+    "1979;86(2):420–428.",
+    "Bland JM, Altman DG. Statistical methods for assessing agreement between two methods of clinical "
+    "measurement. Lancet. 1986;1(8476):307–310.",
+    "McGraw KO, Wong SP. Forming inferences about some intraclass correlation coefficients. Psychol Methods. "
+    "1996;1(1):30–46.",
+    "Koo TK, Li MY. A guideline of selecting and reporting intraclass correlation coefficients for reliability "
+    "research. J Chiropr Med. 2016;15(2):155–163.",
+]
 
 
 def _fmt(S, v: float, nd: int = 2) -> str:
@@ -39,8 +55,12 @@ def _tile(title: str, value: str, sub: str, color: str, P: dict) -> QFrame:
 
 
 class InterraterWindow(QDialog):
-    def __init__(self, parent, P, S, folder: Path, grouped, profile, me: str = "", rater: str | None = None):
+    def __init__(self, parent, P, S, folder: Path, grouped, profile, me: str = "", rater: str | None = None,
+                 base_profile=None):
+        """`profile` decides types and filters; `base_profile` is the study
+        rated first (A) — a consensus study is made from it."""
         super().__init__(parent)
+        self.base_profile = base_profile or profile
         self.P, self.S, self.folder, self.grouped, self.profile = P, S, folder, grouped, profile
         self.me = me or S["ir_me"]
         self.setWindowTitle(S["ir_title"])
@@ -62,7 +82,13 @@ class InterraterWindow(QDialog):
                 self.tp_combo.addItem(tp, tp)
         self.tp_combo.currentIndexChanged.connect(lambda _i: self._draw_plots())
         head.addWidget(self.tp_combo)
+        self.all_cb = QCheckBox(S["ir_all"]); self.all_cb.setToolTip(S["ir_all_tip"])
+        self.all_cb.toggled.connect(lambda _on: self.refresh())
+        self.all_cb.setEnabled(len(ir.list_raters(folder)) >= 2)
+        head.addWidget(self.all_cb)
         v.addLayout(head)
+        self.lock = QLabel(""); self.lock.setObjectName("staleBox"); self.lock.setWordWrap(True); self.lock.hide()
+        v.addWidget(self.lock)
 
         self.tiles = QHBoxLayout(); self.tiles.setSpacing(12); v.addLayout(self.tiles)
 
@@ -89,13 +115,18 @@ class InterraterWindow(QDialog):
         mid.addWidget(pcard, 3)
         v.addLayout(mid, 1)
 
-        icc = QLabel(S["ir_icc_text"]); icc.setWordWrap(True); icc.setTextFormat(Qt.RichText)
+        icc = QLabel(S["ir_icc_text"] + "<br><br>" + S["ir_refs_title"] + "<br>" + "<br>".join(
+            f"<span style='color:{P['fg_secondary']}; font-size:11px'>{r}</span>" for r in REFERENCES))
+        icc.setWordWrap(True); icc.setTextFormat(Qt.RichText)
+        icc.setTextInteractionFlags(Qt.TextSelectableByMouse)
         icc.setObjectName("settingsCard"); icc.setStyleSheet("padding: 10px 14px;")
         v.addWidget(icc)
 
         foot = QHBoxLayout()
         self.foot = QLabel(""); self.foot.setStyleSheet(f"color: {P['fg_secondary']};"); self.foot.setWordWrap(True)
+        self.view_btn = QPushButton(S["ir_open_view"]); self.view_btn.clicked.connect(self.open_view)
         exp = QPushButton(S["ir_export"]); exp.clicked.connect(lambda: self._export())
+        foot.addWidget(self.view_btn)
         close = QPushButton(S["qt_close"]); close.setProperty("class", "primary"); close.clicked.connect(self.accept)
         foot.addWidget(self.foot, 1); foot.addWidget(exp); foot.addWidget(close)
         v.addLayout(foot)
@@ -109,6 +140,20 @@ class InterraterWindow(QDialog):
         if not rater:
             self.title.setText(S["ir_title"])
             self.foot.setText(S["ir_none"])
+            return
+        locked, done, total = ir.blind_locked(self.folder, rater)
+        self.lock.setVisible(locked)
+        self.view_btn.setEnabled(not locked)
+        if locked:
+            self.lock.setText(S["ir_blind_locked"].format(name=rater, done=done, total=total))
+            self.title.setText(S["ir_head"].format(a=self.me, b=rater))
+            self.ag = None
+            while self.tiles.count():
+                w = self.tiles.takeAt(0).widget()
+                if w:
+                    w.deleteLater()
+            self.table.clear(); self.table.setRowCount(0); self.table.setColumnCount(0)
+            self.fig.clear(); self.plot.draw_idle()
             return
         self.ag = ag = ir.compare(self.folder, self.grouped, self.profile, rater, self.me)
         self.title.setText(S["ir_head"].format(a=self.me, b=rater))
@@ -127,12 +172,38 @@ class InterraterWindow(QDialog):
                                    + " · " + S[self._kappa_word(k)], good(k, 0.8), P))
         self.tiles.addWidget(_tile(S["ir_icc"], _fmt(S, i), S["ir_ci"].format(lo=_fmt(S, ilo), hi=_fmt(S, ihi))
                                    + f" · n = {len(ag.groups)}", good(i, 0.75), P))
-        self.tiles.addWidget(_tile(S["ir_masks"], S["ir_masks_ok"], S["ir_masks_sub"].format(n=ag.n_images),
-                                   P["state_finished"], P))
+        if self.all_cb.isChecked():
+            names = [r for r in ir.list_raters(self.folder) if not ir.blind_locked(self.folder, r)[0]]
+            many = ir.compare_many(self.folder, self.grouped, self.profile, [None, *names], [self.me, *names])
+            fi, flo, fhi = many.icc
+            self.tiles.addWidget(_tile(S["ir_fleiss"].format(k=len(many.raters)), _fmt(S, many.fleiss),
+                                       S["ir_fleiss_sub"].format(n=many.n_cells, icc=_fmt(S, fi),
+                                                                 lo=_fmt(S, flo), hi=_fmt(S, fhi)),
+                                       good(many.fleiss, 0.8), P))
+        else:
+            sub = S["ir_masks_sub"].format(n=ag.n_images)
+            if ag.n_masks_changed:
+                sub += " · " + S["ir_masks_changed"].format(n=ag.n_masks_changed)
+            self.tiles.addWidget(_tile(S["ir_masks"], S["ir_masks_ok"], sub, P["state_finished"], P))
         self._fill_matrix()
         self._draw_plots()
         self.foot.setText(S["ir_foot"].format(n=ag.n_images, a=ag.manual_only_a, b=ag.manual_only_b,
                                               me=self.me, rater=rater))
+
+    def open_view(self) -> None:
+        from .compare_view import CompareWindow
+        rater = self.rater_combo.currentText()
+        if not rater:
+            return
+
+        def made_consensus():
+            ir.rater_study(self.base_profile, ir.CONSENSUS)
+            if self.rater_combo.findText(ir.CONSENSUS) < 0:
+                self.rater_combo.addItem(ir.CONSENSUS)
+        w = CompareWindow(self, self.P, self.S, self.folder, self.grouped, self.profile, rater, self.me,
+                          on_consensus=made_consensus)
+        w.exec()
+        self.refresh()
 
     def _kappa_word(self, k: float) -> str:
         # Landis & Koch (1977)

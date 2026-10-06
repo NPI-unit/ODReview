@@ -60,8 +60,10 @@ def _progress_of(p: ProfileData):
     if not folder.is_dir():
         return None, False
     try:
+        from ..persistence import main_reviews_only
         images = list_images(folder, exclude={folder / "outputs"})
-        return study_progress(folder, group_images(images, p)), True
+        with main_reviews_only():
+            return study_progress(folder, group_images(images, p)), True
     except Exception:  # noqa: BLE001
         return None, True
 
@@ -93,7 +95,13 @@ class _Card(QFrame):
         v.addWidget(self.rest)
         self.counted = False
         cached = _cached(picker.cache, p)
-        if not p.import_folder:
+        if p.rater:
+            tag = QLabel(S["ab_tag"].format(base=p.rater_base, rater=p.rater) + ("  🔒" if p.blind else ""))
+            tag.setStyleSheet(f"color: {P['accent_primary']}; font-size: 12px; font-weight: 600;")
+            v.addWidget(tag)
+            self.big.hide(); self.bar.hide(); self.rest.hide()
+            self.counted = True
+        elif not p.import_folder:
             self.set_progress(None, False)
         elif cached is not None:
             self.set_progress(cached, True, pending=True)
@@ -149,6 +157,7 @@ class StudyPicker(QDialog):
         self.P, self.S, self.settings = P, S, settings
         self.registry = settings.cellpose_models
         self.chosen: ProfileData | None = None
+        self.compare_with: str | None = None    # open the agreement window afterwards
         self.segment_now = False                # a new study asked to segment right away
         self._selected: _Card | None = None
         self.cache = load_progress_cache()
@@ -164,6 +173,8 @@ class StudyPicker(QDialog):
         col.addWidget(t); col.addWidget(sub)
         head.addLayout(col, 1)
         imp = QPushButton(S["qt_import_pkg"]); imp.clicked.connect(self._import)
+        ab = QPushButton(S["ab_button"]); ab.setToolTip(S["ab_sub"]); ab.clicked.connect(self._abgleich)
+        head.addWidget(ab)
         new = QPushButton(S["qt_new_study"]); new.setProperty("class", "primary")
         new.clicked.connect(self._new)
         head.addWidget(imp); head.addWidget(new)
@@ -217,7 +228,8 @@ class StudyPicker(QDialog):
     def _count_progress(self) -> None:
         if self._count_task is not None:
             self._count_task.cancel()
-        todo = [c.profile for c in self.cards if c.profile.import_folder and not c.counted]
+        todo = [c.profile for c in self.cards if c.profile.import_folder and not c.counted
+                and not c.profile.rater]
         if not todo:
             return
 
@@ -321,6 +333,15 @@ class StudyPicker(QDialog):
         delete_profile(p.name)
         self._fill()
 
+    def _abgleich(self) -> None:
+        from .abgleich import AbgleichDialog
+        cur = self._selected.profile.name if self._selected else None
+        dlg = AbgleichDialog(self, self.P, self.S, self.settings, current=cur)
+        if dlg.exec() == QDialog.Accepted and dlg.result_profile is not None:
+            self.chosen = dlg.result_profile
+            self.compare_with = dlg.compare_with
+            self.accept()
+
     def _import(self) -> None:
         """Import a package; the main window then opens the package's study."""
         win = self.parent()
@@ -333,9 +354,9 @@ class StudyPicker(QDialog):
         self.accept()
 
 
-def pick_study(parent, P, S, settings) -> tuple[ProfileData | None, bool]:
-    """(chosen study or None, segment it now?)."""
+def pick_study(parent, P, S, settings) -> tuple[ProfileData | None, bool, str | None]:
+    """(chosen study or None, segment it now?, rater to compare with)."""
     dlg = StudyPicker(parent, P, S, settings)
     if dlg.exec() != QDialog.Accepted:
-        return None, False
-    return dlg.chosen, dlg.segment_now
+        return None, False, None
+    return dlg.chosen, dlg.segment_now, dlg.compare_with
