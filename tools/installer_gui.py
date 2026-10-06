@@ -226,11 +226,11 @@ class Installer(QWidget):
             if i == 2:
                 cv.addWidget(self.bar)
         v.addWidget(c)
-        self.details_btn = QPushButton("▸ Details"); self.details_btn.setFlat(True)
+        self.details_btn = QPushButton("▾ Details"); self.details_btn.setFlat(True)
         self.details_btn.setStyleSheet("color: #2161D9; text-align: left; border: none;")
         self.details_btn.clicked.connect(self._toggle_details)
         v.addWidget(self.details_btn, 0, Qt.AlignLeft)
-        self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.hide()
+        self.log = QPlainTextEdit(); self.log.setReadOnly(True)      # shown: people want to see it work
         self.log.setStyleSheet("background: #1E232B; color: #C9D1DB; font-family: Menlo, monospace; font-size: 11px;")
         v.addWidget(self.log, 1)
         v.addStretch(0)
@@ -367,7 +367,11 @@ class Installer(QWidget):
                       "ein neuer Versuch macht dort weiter.")
         hint.setWordWrap(True); hint.setStyleSheet("color: #5A6577;")
         v.addWidget(hint)
-        v.addStretch(1)
+        cap = QLabel("<b>Protokoll</b> (die letzten Zeilen — vollständig in install.log)")
+        v.addWidget(cap)
+        self.err_log = QPlainTextEdit(); self.err_log.setReadOnly(True)
+        self.err_log.setStyleSheet("background: #1E232B; color: #C9D1DB; font-family: Menlo, monospace; font-size: 11px;")
+        v.addWidget(self.err_log, 1)
         foot = QHBoxLayout()
         logb = QPushButton("Protokoll öffnen")
         logb.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(ROOT / "install.log"))))
@@ -380,6 +384,9 @@ class Installer(QWidget):
 
     def show_error(self, reason: str) -> None:
         self.err_text.setText(reason)
+        lines = self.log.toPlainText().splitlines()
+        self.err_log.setPlainText("\n".join(lines[-80:]))
+        self.err_log.verticalScrollBar().setValue(self.err_log.verticalScrollBar().maximum())
         self.stack.setCurrentIndex(3)
 
     def retry(self) -> None:

@@ -98,6 +98,8 @@ def main() -> int:
     check(w2.stack.currentIndex() == 3 and "Kein Internet" in w2.err_text.text(),
           "a failing run ends on the error page with the script's reason")
     check(w2.rows[0].state == "ok" and w2.rows[2].state == "run", "the step list shows where it stopped")
+    check("##FAIL" in w2.err_log.toPlainText() and w2.err_log.isVisibleTo(w2),
+          "the error page shows the log")
     w2.grab().save(str(OUT / "installer_error.png"))
     w2.retry()
     check(w2.stack.currentIndex() == 0 and all(r.state == "todo" for r in w2.rows), "'Erneut versuchen' starts over")

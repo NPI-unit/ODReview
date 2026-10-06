@@ -78,7 +78,22 @@ VPY="$ROOT/.venv/bin/python"
 # ─── 3. Packages kept in vendor/wheels ───────────────────────────────────
 step 3 "Pakete im Ordner bereitstellen (vendor/wheels)"
 mkdir -p "$WHEELS"
-complete() { "$VPY" -m pip install --dry-run --quiet --no-index --find-links "$WHEELS" -r "$LOCK" >/dev/null 2>&1; }
+# Complete = a wheel for every pinned package lies in vendor/wheels. (Not
+# "pip install --dry-run": that is satisfied by what the .venv already has,
+# and then nothing was ever stored in the folder.)
+complete() {
+    "$VPY" - "$LOCK" "$WHEELS" <<'PYEOF'
+import re, sys, pathlib
+lock, wheels = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+have = [w.name.lower() for w in wheels.glob("*.whl")]
+for line in lock.read_text().splitlines():
+    if "==" in line and not line.startswith("#"):
+        n, v = line.strip().split("==", 1)
+        stem = re.sub(r"[-_.]+", "_", n).lower() + "-" + v.lower() + "-"
+        if not any(h.startswith(stem) for h in have):
+            sys.exit(1)
+PYEOF
+}
 if complete; then
     echo "      alle $(grep -c '==' "$LOCK") Pakete liegen schon im Ordner — keine Downloads nötig."
 elif online; then
@@ -93,14 +108,25 @@ fi
 
 # ─── 4. Install the exact tested versions ────────────────────────────────
 step 4 "Pakete installieren (getestete Versionen)"
-"$VPY" -m pip install --quiet --no-index --find-links "$WHEELS" -r "$LOCK" \
-    || fail "Installation der Pakete fehlgeschlagen — Details in install.log."
 # The full PySide6 package (≈ 900 MB of Qt add-ons) is not needed any more.
+# Removed FIRST: it shares files with PySide6-Essentials (PySide6/__init__.py …),
+# so uninstalling it afterwards would break the Essentials just installed.
+REINSTALL_QT=""
 for extra in PySide6 PySide6-Addons; do
     if "$VPY" -m pip show "$extra" >/dev/null 2>&1; then
         "$VPY" -m pip uninstall --quiet -y "$extra" && echo "      $extra entfernt (nicht mehr nötig)."
+        REINSTALL_QT=1
     fi
 done
+"$VPY" -m pip install --quiet --no-index --find-links "$WHEELS" -r "$LOCK" \
+    || fail "Installation der Pakete fehlgeschlagen — Details in install.log."
+# Also re-lay Essentials when it is not importable (shared files lost, see above).
+if [ -n "$REINSTALL_QT" ] || ! "$VPY" -c "import PySide6, PySide6.QtWidgets; PySide6.__version__" >/dev/null 2>&1; then
+    QT_PINS=$(grep -iE '^(pyside6-essentials|shiboken6)==' "$LOCK" | tr '\n' ' ')
+    "$VPY" -m pip install --quiet --force-reinstall --no-deps --no-index --find-links "$WHEELS" $QT_PINS \
+        || fail "Qt (PySide6-Essentials) konnte nicht installiert werden — Details in install.log."
+    echo "      Qt neu eingerichtet."
+fi
 echo "      fertig."
 
 # ─── 5. Cellpose model (cpsam, ~1.2 GB) ──────────────────────────────────
