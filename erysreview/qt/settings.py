@@ -115,11 +115,13 @@ class SettingsDialog(QDialog):
                  on_study_saved: Callable[[ProfileData, str], None],
                  on_local_changed: Callable[[str], None],
                  on_switch_study: Callable[[], None],
-                 start_page: str = "images"):
+                 start_page: str = "images", work: ProfileData | None = None):
         super().__init__(parent)
         self.P, self.S, self.settings = P, S, settings
         self.orig = copy.deepcopy(profile)
-        self.work = copy.deepcopy(profile)
+        # `work`: unsaved study edits carried over when the window is rebuilt
+        # for a new language / theme / text size.
+        self.work = copy.deepcopy(work if work is not None else profile)
         self.folder, self.images = folder, images
         self._on_study_saved = on_study_saved
         self._on_local_changed = on_local_changed
@@ -170,6 +172,13 @@ class SettingsDialog(QDialog):
         self.nav_group.addButton(b)
         self.nav_buttons[key] = b
         return b
+
+    def current_page(self) -> str:
+        idx = self.stack.currentIndex()
+        return next((k for k, i in self._pages.items() if i == idx), "images")
+
+    def has_changes(self) -> bool:
+        return bool(diff_profiles(self.orig, self.work))
 
     def show_page(self, key: str) -> None:
         if key in self._pages:
@@ -652,7 +661,8 @@ class SettingsDialog(QDialog):
         rows = [
             ("settings_language", _segmented([("de", "Deutsch"), ("en", "English")], st.language,
                                              lambda val: self._local("language", val))),
-            ("settings_theme", _segmented([("light", S["settings_theme_light"]), ("dark", S["settings_theme_dark"])],
+            ("settings_theme", _segmented([("system", S["settings_theme_system"]),
+                                           ("light", S["settings_theme_light"]), ("dark", S["settings_theme_dark"])],
                                           st.theme, lambda val: self._local("theme", val))),
             ("settings_font_scale", _segmented([(f, S[f"settings_font_{int(f * 100)}"]) for f in FONT_SCALE_CHOICES],
                                                st.font_scale, lambda val: self._local("font_scale", val))),
@@ -665,13 +675,8 @@ class SettingsDialog(QDialog):
         grid.addWidget(rev, len(rows), 1)
         cv.addLayout(grid)
         v.addWidget(card)
-        row = QHBoxLayout()
-        note = QLabel(S["qt_restart_note"]); note.setStyleSheet(f"color: {self.P['fg_secondary']};")
-        note.setWordWrap(True)
-        restart = QPushButton(S["qt_restart_now"]); restart.setProperty("class", "primary")
-        restart.clicked.connect(lambda: self._on_local_changed("restart"))
-        row.addWidget(note, 1); row.addWidget(restart)
-        v.addLayout(row)
+        note = QLabel(S["qt_look_live_note"]); note.setObjectName("checkLine"); note.setWordWrap(True)
+        v.addWidget(note)
 
     # Rechner · Bearbeiten
     def _page_edit(self, v: QVBoxLayout) -> None:

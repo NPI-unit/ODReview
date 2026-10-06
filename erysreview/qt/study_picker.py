@@ -1,6 +1,12 @@
 """'Studie öffnen' (mockup v3, Q-Studien): one card per study with folder,
 progress per proband ID and model status; actions for the selected study.
-Replaces the Tk profile manager. Returns the chosen ProfileData or None."""
+Replaces the Tk profile manager. Returns the chosen ProfileData or None.
+
+Counting progress reads every review file of a study — slow with many
+studies on a slow stick. So the window opens at once with names, folders and
+the last known numbers (cached in study_progress.json), counts on a worker
+thread, and fills each card in as its study is done. Opening a study never
+waits for the count."""
 
 from __future__ import annotations
 
@@ -18,7 +24,31 @@ from ..profile import (
     DEFAULT_PROFILE_NAME, ProfileData, delete_profile, duplicate_profile,
     ensure_default_profile, list_profiles, load_profile, rename_profile, save_profile,
 )
-from ..study import study_progress
+from ..persistence import app_support_dir, read_json, write_json_atomic
+from ..study import StudyProgress, study_progress
+from ..tasks import Task
+from .tasks import start_task
+
+CACHE_FILE = "study_progress.json"
+
+
+def _cache_path() -> Path:
+    return app_support_dir() / CACHE_FILE
+
+
+def load_progress_cache() -> dict:
+    data = read_json(_cache_path())
+    return data if isinstance(data, dict) else {}
+
+
+def _cached(cache: dict, p: ProfileData) -> StudyProgress | None:
+    e = cache.get(p.name)
+    if not isinstance(e, dict) or e.get("folder") != p.import_folder:
+        return None
+    try:
+        return StudyProgress(total=int(e["total"]), done=int(e["done"]), wip=int(e["wip"]), open=int(e["open"]))
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _progress_of(p: ProfileData):
@@ -53,25 +83,24 @@ class _Card(QFrame):
             tag.setStyleSheet(f"color: {P['accent_primary']}; font-size: 11px;")
             top.addWidget(tag)
         v.addLayout(top)
-        prog, folder_ok = _progress_of(p)
+        self.folder_label = QLabel(p.import_folder or S["qt_no_folder"]); self.folder_label.setWordWrap(True)
+        self.folder_label.setStyleSheet(f"color: {P['fg_secondary'] if p.import_folder else P['fg_muted']};"
+                                        f" font-size: 12px;")
+        v.addWidget(self.folder_label)
+        self.big = QLabel(""); v.addWidget(self.big)
+        self.bar = QProgressBar(); self.bar.setTextVisible(False); v.addWidget(self.bar)
+        self.rest = QLabel(""); self.rest.setStyleSheet(f"color: {P['fg_secondary']}; font-size: 12px;")
+        v.addWidget(self.rest)
+        self.counted = False
+        cached = _cached(picker.cache, p)
         if not p.import_folder:
-            folder_txt, col = S["qt_no_folder"], P["fg_muted"]
-        elif not folder_ok:
-            folder_txt, col = f"{S['qt_folder_missing']}: {p.import_folder}", P["accent_warn"]
+            self.set_progress(None, False)
+        elif cached is not None:
+            self.set_progress(cached, True, pending=True)
         else:
-            folder_txt, col = p.import_folder, P["fg_secondary"]
-        fl = QLabel(folder_txt); fl.setWordWrap(True); fl.setStyleSheet(f"color: {col}; font-size: 12px;")
-        v.addWidget(fl)
-        if prog is not None:
-            big = QLabel(f'<span style="font-size:22px;font-weight:700;color:{P["state_finished"]};">'
-                         f'{prog.done}</span>&nbsp;<span style="color:{P["fg_secondary"]};">'
-                         f'/ {S["study_menu_progress"].format(done="", total=prog.total).lstrip(" /")}</span>')
-            v.addWidget(big)
-            bar = QProgressBar(); bar.setRange(0, max(1, prog.total)); bar.setValue(prog.done)
-            bar.setTextVisible(False); v.addWidget(bar)
-            rest = QLabel(S["study_menu_rest"].format(wip=prog.wip, open=prog.open))
-            rest.setStyleSheet(f"color: {P['fg_secondary']}; font-size: 12px;")
-            v.addWidget(rest)
+            self.big.hide()
+            self.bar.setRange(0, 0)              # busy
+            self.rest.setText(S["qt_progress_counting"])
         try:
             resolve_model(p.cellpose.model, picker.registry)
             m_txt, m_col = f"{p.cellpose.model} ✓", P["state_finished"]
@@ -79,6 +108,28 @@ class _Card(QFrame):
             m_txt, m_col = f"{p.cellpose.model} ⚠", P["accent_warn"]
         ml = QLabel(m_txt); ml.setStyleSheet(f"color: {m_col}; font-size: 12px;")
         v.addStretch(1); v.addWidget(ml)
+
+    def set_progress(self, prog: StudyProgress | None, folder_ok: bool, pending: bool = False) -> None:
+        """Show a study's progress; `pending` = the last known numbers while
+        the fresh count still runs."""
+        P, S, p = self.picker.P, self.picker.S, self.profile
+        if not pending:
+            self.counted = True
+        if p.import_folder and not folder_ok:
+            self.folder_label.setText(f"{S['qt_folder_missing']}: {p.import_folder}")
+            self.folder_label.setStyleSheet(f"color: {P['accent_warn']}; font-size: 12px;")
+        if prog is None:
+            self.big.hide(); self.bar.hide()
+            self.rest.setVisible(bool(p.import_folder) and folder_ok)
+            self.rest.setText(S["qt_progress_unknown"])
+            return
+        self.big.setText(f'<span style="font-size:22px;font-weight:700;color:{P["state_finished"]};">'
+                         f'{prog.done}</span>&nbsp;<span style="color:{P["fg_secondary"]};">'
+                         f'/ {S["study_menu_progress"].format(done="", total=prog.total).lstrip(" /")}</span>')
+        self.big.show(); self.bar.show(); self.rest.show()
+        self.bar.setRange(0, max(1, prog.total)); self.bar.setValue(prog.done)
+        txt = S["study_menu_rest"].format(wip=prog.wip, open=prog.open)
+        self.rest.setText(txt + (f"  ·  {S['qt_progress_updating']}" if pending else ""))
 
     def set_selected(self, on: bool) -> None:
         self.setProperty("selected", on)
@@ -98,7 +149,11 @@ class StudyPicker(QDialog):
         self.P, self.S, self.settings = P, S, settings
         self.registry = settings.cellpose_models
         self.chosen: ProfileData | None = None
+        self.segment_now = False                # a new study asked to segment right away
         self._selected: _Card | None = None
+        self.cache = load_progress_cache()
+        self._count_task = None
+        self._alive = True
         self.setWindowTitle(S["qt_studies_title"])
         self.resize(1080, 720)
         v = QVBoxLayout(self); v.setContentsMargins(40, 32, 40, 24); v.setSpacing(18)
@@ -149,6 +204,7 @@ class StudyPicker(QDialog):
             self.cards.append(card)
         grid.setRowStretch(len(names) // 3 + 1, 1)
         self.area.setWidget(holder)
+        self._count_progress()
         self._selected = None
         target = next((c for c in self.cards if c.profile.name == last), None)
         if target is None and self.cards:
@@ -156,6 +212,49 @@ class StudyPicker(QDialog):
         if target is not None:
             self.select(target)
         self._update_buttons()
+
+    # ── counting in the background ──
+    def _count_progress(self) -> None:
+        if self._count_task is not None:
+            self._count_task.cancel()
+        todo = [c.profile for c in self.cards if c.profile.import_folder and not c.counted]
+        if not todo:
+            return
+
+        def work(progress, cancelled):
+            for prof in todo:
+                if cancelled():
+                    return None
+                prog, ok = _progress_of(prof)
+                progress(None, (prof.name, prof.import_folder, prog, ok))
+            return None
+
+        def on_progress(_v, payload):
+            name, folder, prog, ok = payload
+            if prog is not None:
+                self.cache[name] = {"folder": folder, "total": prog.total, "done": prog.done,
+                                    "wip": prog.wip, "open": prog.open}
+            if not self._alive:
+                return
+            card = next((c for c in self.cards if c.profile.name == name), None)
+            if card is not None:
+                card.set_progress(prog, ok)
+
+        def on_done(_r, _e):
+            try:
+                write_json_atomic(_cache_path(), self.cache)
+            except OSError:
+                pass
+
+        # The relay hangs on the main window, not on this dialog: the count
+        # may outlive the dialog and must still end (and quit its thread).
+        self._count_task = start_task(self.parent() or self, Task(work=work), on_progress, on_done)
+
+    def done(self, r) -> None:          # accept / reject / close
+        self._alive = False
+        if self._count_task is not None:
+            self._count_task.cancel()
+        super().done(r)
 
     def select(self, card: _Card) -> None:
         if self._selected is not None:
@@ -186,11 +285,15 @@ class StudyPicker(QDialog):
         return name
 
     def _new(self) -> None:
-        name = self._ask_name(self.S["pm_new_name_prompt"])
-        if name:
-            p = ProfileData(name=name)
-            save_profile(p)
-            self._fill(select_name=name)
+        """The 'Neue Studie' assistant; a study made there opens at once."""
+        from .new_study import NewStudyWizard
+        win = self.parent()
+        on_import = (lambda: (self.reject(), win.package_import())) if hasattr(win, "package_import") else None
+        wiz = NewStudyWizard(self, self.P, self.S, self.settings, on_import=on_import)
+        if wiz.exec() == QDialog.Accepted and wiz.result_profile is not None:
+            self.chosen = wiz.result_profile
+            self.segment_now = wiz.segment_now
+            self.accept()
 
     def _duplicate(self) -> None:
         src = self._selected.profile
@@ -230,6 +333,9 @@ class StudyPicker(QDialog):
         self.accept()
 
 
-def pick_study(parent, P, S, settings) -> ProfileData | None:
+def pick_study(parent, P, S, settings) -> tuple[ProfileData | None, bool]:
+    """(chosen study or None, segment it now?)."""
     dlg = StudyPicker(parent, P, S, settings)
-    return dlg.chosen if dlg.exec() == QDialog.Accepted else None
+    if dlg.exec() != QDialog.Accepted:
+        return None, False
+    return dlg.chosen, dlg.segment_now

@@ -138,8 +138,27 @@ PALETTES = {
 }
 
 
+# "system" follows the operating system's appearance. The front end that can
+# ask the OS (Qt: styleHints().colorScheme()) sets which one that is right now;
+# without one, "system" means light.
+THEME_SYSTEM = "system"
+_system_scheme = "light"
+
+
+def set_system_scheme(name: str) -> None:
+    global _system_scheme
+    _system_scheme = name if name in PALETTES else "light"
+
+
+def resolve_theme(name: str) -> str:
+    """'light' or 'dark' for a stored theme setting (incl. 'system')."""
+    if name == THEME_SYSTEM:
+        return _system_scheme
+    return name if name in PALETTES else "dark"
+
+
 def palette(name: str) -> dict:
-    return PALETTES.get(name, PALETTES["dark"])
+    return PALETTES[resolve_theme(name)]
 
 
 # ─────────────────────────────────────────────

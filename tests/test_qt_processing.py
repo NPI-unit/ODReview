@@ -155,6 +155,15 @@ def main() -> int:
     check((folder / "outputs").is_dir() and any((folder / "outputs").rglob("*_summary.csv")),
           "export writes the group summaries")
     check(ReviewState.load(folder, "A_02_Prä_1").is_finished, "exported segmented images are marked finished")
+    d2 = processing.ExportDialog(win, win.P, win.S, win.ctl.folder, win.ctl.grouped)
+    exported = [d2.tree.topLevelItem(i).text(4) for i in range(d2.tree.topLevelItemCount())]
+    check(any(t.startswith("✓") for t in exported) and d2.tree.headerItem().text(4) == "Exportiert",
+          f"the 'Exportiert' column shows when a group was exported ({exported})")
+    from erysreview.export import pending_preset
+    pend = pending_preset(d2.rows, d2.states)
+    check(not any(pend[k] for k, (_n, when) in d2.states.items() if when is not None)
+          and all(d2.checked.values()),
+          "'Fertig, nicht exportiert' skips exported groups; with none pending, all are pre-selected")
 
     win.close()
     tmp.cleanup()

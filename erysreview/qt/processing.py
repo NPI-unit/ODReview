@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from .. import batch
 from ..evaluation import inclusion_with_overrides, load_group_selection, save_group_selection
-from ..export import export_scope_rows, scope_preset
+from ..export import export_scope_rows, export_states, pending_preset, scope_preset
 from ..grouping import UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT
 from ..sidebar_model import image_status
 from ..tasks import Task
@@ -276,8 +276,13 @@ class ExportDialog(QDialog):
     def __init__(self, parent, P, S, folder: Path, grouped):
         super().__init__(parent)
         self.S = S
+        self.P = P
         self.rows = export_scope_rows(folder, grouped)
-        self.checked = {(tp, sub): True for tp, sub, *_ in self.rows}
+        self.states = export_states(folder, grouped)
+        # Pre-selected: finished but not exported yet — or everything, when
+        # there is no such group.
+        pending = pending_preset(self.rows, self.states)
+        self.checked = pending if any(pending.values()) else {(tp, sub): True for tp, sub, *_ in self.rows}
         self.setWindowTitle(S["export_scope_title"])
         self.resize(900, 640)
         v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
@@ -286,12 +291,14 @@ class ExportDialog(QDialog):
         bv.addWidget(t)
         hint = QLabel(S["export_scope_hint"]); hint.setWordWrap(True); hint.setStyleSheet(f"color: {P['fg_secondary']};")
         bv.addWidget(hint)
-        bv.addWidget(_segment([("all", S["export_scope_all"]), ("computed", S["export_scope_computed"]),
+        bv.addWidget(_segment([("pending", S["export_scope_pending"]),
+                               ("all", S["export_scope_all"]), ("computed", S["export_scope_computed"]),
                                ("edited", S["export_scope_only_edited"]), ("none", S["export_scope_none"])],
                               self._preset), 0, Qt.AlignLeft)
-        self.tree = QTreeWidget(); self.tree.setColumnCount(3); self.tree.setRootIsDecorated(False)
-        self.tree.setHeaderLabels([S["export_scope_group"], S["export_scope_images"], S["export_scope_state"]])
-        self.tree.setColumnWidth(0, 420)
+        self.tree = QTreeWidget(); self.tree.setColumnCount(5); self.tree.setRootIsDecorated(False)
+        self.tree.setHeaderLabels([S["export_scope_group"], S["export_scope_images"], S["export_scope_state"],
+                                   S["export_scope_finished"], S["export_scope_exported"]])
+        self.tree.setColumnWidth(0, 300)
         self.tree.itemChanged.connect(self._changed)
         bv.addWidget(self.tree, 1)
         self.mark = QCheckBox(S["export_mark_finished"]); self.mark.setToolTip(S["export_mark_finished_hint"])
@@ -308,9 +315,19 @@ class ExportDialog(QDialog):
     def _fill(self) -> None:
         S = self.S
         self.tree.blockSignals(True); self.tree.clear()
+        from PySide6.QtGui import QColor
+        import time as _time
         for tp, sub, n, nc, ed in self.rows:
+            n_fin, when = self.states.get((tp, sub), (0, None))
             it = QTreeWidgetItem([f"{_disp(S, tp=tp)} / {_disp(S, sub=sub)}", f"{nc} / {n}",
-                                  S["export_scope_edited"] if ed else S["export_scope_plain"]])
+                                  S["export_scope_edited"] if ed else S["export_scope_plain"],
+                                  f"{n_fin} / {n}",
+                                  "✓ " + _time.strftime(S["export_scope_date_fmt"], _time.localtime(when))
+                                  if when else "—"])
+            if when:
+                it.setForeground(4, QColor(self.P["state_finished"]))
+            if n and n_fin == n:
+                it.setForeground(3, QColor(self.P["state_finished"]))
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(0, Qt.Checked if self.checked[(tp, sub)] else Qt.Unchecked)
             it.setData(0, ROLE, (tp, sub))
@@ -323,7 +340,8 @@ class ExportDialog(QDialog):
         self._update()
 
     def _preset(self, mode: str) -> None:
-        self.checked.update(scope_preset(self.rows, mode))
+        self.checked.update(pending_preset(self.rows, self.states) if mode == "pending"
+                            else scope_preset(self.rows, mode))
         self._fill()
 
     def _update(self) -> None:

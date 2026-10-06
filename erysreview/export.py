@@ -334,6 +334,33 @@ def export_scope_rows(folder: Path, grouped) -> list[tuple[str, str, int, int, b
     return rows
 
 
+def export_states(folder: Path, grouped) -> dict[tuple[str, str], tuple[int, float | None]]:
+    """{(tp, sub): (n_finished, exported_at)} for the export picker's
+    'Fertig' and 'Exportiert' columns. exported_at is the modification time of
+    the group's summary CSV (what export writes last), None if never exported."""
+    from .persistence import ReviewState
+    out = {}
+    for tp in grouped.timepoints():
+        for sub in grouped.subjects_in(tp):
+            imgs = grouped.tree[tp][sub]
+            n_fin = sum(ReviewState.load(folder, i.path.stem).is_finished for i in imgs)
+            name = f"{tp}_{sub}"
+            csv = folder / "outputs" / tp / name / f"{name}_summary.csv"
+            try:
+                when = csv.stat().st_mtime
+            except OSError:
+                when = None
+            out[(tp, sub)] = (n_fin, when)
+    return out
+
+
+def pending_preset(rows, states) -> dict[tuple[str, str], bool]:
+    """Groups that are finished (every image) but not exported yet."""
+    return {(tp, sub): bool(n) and states.get((tp, sub), (0, None))[0] == n
+            and states.get((tp, sub), (0, None))[1] is None
+            for tp, sub, n, _nc, _ed in rows}
+
+
 def scope_preset(rows, mode: str) -> dict[tuple[str, str], bool]:
     """Which groups a preset button selects: "all" | "none" | "edited" | "computed"."""
     return {(tp, sub): (True if mode == "all" else

@@ -37,7 +37,7 @@ from .canvas import QtEryCanvas
 from .notebox import QtNoteBox
 from .sidebar import QtSidebar
 from .study_card import StudyCard
-from .style import build_palette, build_qss
+from .style import apply_look
 from .tasks import run_task_modal
 from .toolbar import QtToolbar
 
@@ -67,21 +67,32 @@ class _ActivityFilter(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: AppSettings | None = None):
+    def __init__(self, settings: AppSettings | None = None, controller: AppController | None = None):
+        """`controller`: take over a running session (folder, image, edits)
+        from a window being replaced — how language, theme and text size
+        change without a restart (restyle)."""
         super().__init__()
         self.settings = settings or AppSettings.load()
         self.S = get_strings(self.settings.language)
         self.P = palette(self.settings.theme)
-        profile = None
-        if self.settings.last_profile_name:
-            profile = load_profile(self.settings.last_profile_name)
-        self._pick_at_start = profile is None
-        if profile is None:
-            profile = ensure_default_profile()   # replaced by the picker once shown
-        if profile.type_by_key(profile.active_type_key) is None:
-            profile.active_type_key = profile.default_type_key()
-        self.ctl = AppController(self.settings, profile)
-        self.ctl.activate_profile(profile)
+        self._handover = False
+        self._settings_dlg = None
+        self._pending_restyle = None
+        if controller is not None:
+            self.ctl = controller
+            profile = controller.profile
+            self._pick_at_start = False
+        else:
+            profile = None
+            if self.settings.last_profile_name:
+                profile = load_profile(self.settings.last_profile_name)
+            self._pick_at_start = profile is None
+            if profile is None:
+                profile = ensure_default_profile()   # replaced by the picker once shown
+            if profile.type_by_key(profile.active_type_key) is None:
+                profile.active_type_key = profile.default_type_key()
+            self.ctl = AppController(self.settings, profile)
+            self.ctl.activate_profile(profile)
 
         self.setWindowTitle(self.S["title_with_profile"].format(profile=profile.name))
         self.resize(max(1100, self.settings.window_w), max(700, self.settings.window_h))
@@ -97,7 +108,14 @@ class MainWindow(QMainWindow):
         self._profile_save.timeout.connect(lambda: save_profile(self.ctl.profile))
 
         self._set_tool(self.settings.active_tool)
-        if self._pick_at_start:
+        hints = QApplication.instance().styleHints()
+        hints.colorSchemeChanged.connect(self._on_system_scheme)
+        if controller is not None:
+            if self.ctl.has_images:
+                self.empty_btn.hide()
+                self.sidebar.populate(self.ctl.folder, self.ctl.images, self.ctl.grouped)
+                QTimer.singleShot(0, lambda: self.show_image(self.ctl.idx))
+        elif self._pick_at_start:
             QTimer.singleShot(50, self.switch_study)
         elif profile.import_folder and Path(profile.import_folder).is_dir():
             QTimer.singleShot(50, lambda: self.open_folder(Path(profile.import_folder), True))
@@ -533,6 +551,32 @@ class MainWindow(QMainWindow):
             self.sidebar.refresh_all()
             self.show_image(self.ctl.idx)
 
+    def batch_in_background(self):
+        """Segment every not yet segmented image without blocking the window
+        (a new study's 'Jetzt im Hintergrund'): the batch window runs beside
+        the main window, which picks up the masks when it is done."""
+        try:
+            self.ctl.check_model()
+        except ModelUnavailable as e:
+            QMessageBox.warning(self, self.S["model_missing_title"],
+                                self.S["model_missing_msg"].format(name=e.name))
+            return
+        dlg = BatchDialog(self, self.P, self.S, self.ctl.folder, self.ctl.images, self.ctl.grouped,
+                          self.ctl.profile, self.settings.cellpose_models)
+        dlg._select("unseg")
+        dlg.setModal(False)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+
+        def after(_r):
+            if dlg.ran and self.ctl.has_images:
+                self.sidebar.refresh_all()
+                self.show_image(self.ctl.idx)
+        dlg.finished.connect(after)
+        dlg.show()
+        dlg._start()
+        self._bg_batch = dlg
+        return dlg
+
     def export(self) -> None:
         if self.ctl.folder is None or self.ctl.grouped is None:
             return
@@ -672,14 +716,20 @@ class MainWindow(QMainWindow):
             n_manual=len(sk["has_manual_cells"]), n_nomask=len(sk["no_mask"])))
 
     # ── studies & settings (Phase 2) ──
-    def open_settings(self, page: str = "images") -> None:
+    def open_settings(self, page: str = "images", work=None) -> None:
         dlg = SettingsDialog(self, self.P, self.S, self.settings, self.ctl.profile,
                              self.ctl.folder, self.ctl.images,
                              on_study_saved=self._apply_profile_edit,
                              on_local_changed=self._on_local_setting,
                              on_switch_study=lambda: QTimer.singleShot(0, self.switch_study),
-                             start_page=page)
+                             start_page=page, work=work)
+        self._settings_dlg = dlg
         dlg.exec()
+        self._settings_dlg = None
+        if self._pending_restyle is not None:
+            page, work = self._pending_restyle
+            self._pending_restyle = None
+            self.restyle(reopen=(page, work))
 
     def _apply_profile_edit(self, new, choice: str) -> None:
         old_name = self.ctl.profile.name
@@ -700,6 +750,15 @@ class MainWindow(QMainWindow):
     def _on_local_setting(self, field: str) -> None:
         if field == "restart":
             self.restart()
+        elif field in ("language", "theme", "font_scale"):
+            dlg = self._settings_dlg
+            if dlg is not None:
+                # Rebuild once the dialog is closed, then reopen it on the same
+                # page with any unsaved study edits carried over.
+                self._pending_restyle = (dlg.current_page(), dlg.work if dlg.has_changes() else None)
+                dlg.done(0)
+            else:
+                self.restyle()
         elif field == "toolbar_layout":
             self.toolbar.rebuild()
             self.toolbar.set_active_tool(self.settings.active_tool)
@@ -711,7 +770,7 @@ class MainWindow(QMainWindow):
             self.show_image(self.ctl.idx)
 
     def switch_study(self) -> None:
-        chosen = pick_study(self, self.P, self.S, self.settings)
+        chosen, segment_now = pick_study(self, self.P, self.S, self.settings)
         if chosen is None:
             return
         if chosen.type_by_key(chosen.active_type_key) is None:
@@ -719,6 +778,8 @@ class MainWindow(QMainWindow):
         self.ctl.flush_time()
         self.ctl.activate_profile(chosen)
         self._profile_changed(reopen_folder=True)
+        if segment_now and self.ctl.has_images:
+            self.batch_in_background()
 
     def _profile_changed(self, reopen_folder: bool) -> None:
         """Push the (new or edited) study to every widget."""
@@ -758,6 +819,44 @@ class MainWindow(QMainWindow):
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
 
+    def restyle(self, reopen=None) -> "MainWindow":
+        """Apply language, theme and text size now: restyle the application
+        and rebuild the main window around the same session (controller —
+        folder, current image and review stay). Every window built
+        afterwards picks up the new strings and colours. Returns the new window."""
+        app = QApplication.instance()
+        apply_look(app, self.settings)
+        self.notebox.request_close()
+        self.ctl.flush_time()
+        new = MainWindow(self.settings, controller=self.ctl)
+        new.setGeometry(self.geometry())
+        new.splitter.setSizes(self.splitter.sizes())
+        act = getattr(app, "_activity", None)
+        if act is not None:
+            act.window = new
+        self._handover = True
+        new.show()
+        self.close()
+        self.deleteLater()
+        if reopen is not None:
+            page, work = reopen
+            QTimer.singleShot(0, lambda: new.open_settings(page, work=work))
+        return new
+
+    def _on_system_scheme(self, *_):
+        from ..theme import THEME_SYSTEM, resolve_theme
+        from .style import system_scheme
+        if self.settings.theme != THEME_SYSTEM or self._handover:
+            return
+        if system_scheme() == resolve_theme(THEME_SYSTEM):
+            return
+        dlg = self._settings_dlg
+        if dlg is not None:
+            self._pending_restyle = (dlg.current_page(), dlg.work if dlg.has_changes() else None)
+            dlg.done(0)
+        else:
+            self.restyle()
+
     def restart(self) -> None:
         """Start a fresh instance and close this one (saves like a normal quit).
         Language, theme and text size are read once at startup — a restart is
@@ -782,7 +881,10 @@ class MainWindow(QMainWindow):
         if sizes and sizes[0] > 50:
             self.settings.sidebar_width = int(sizes[0])
         self._profile_save.stop()
-        self.ctl.close()
+        if self._handover:
+            save_profile(self.ctl.profile)          # the session lives on in the new window
+        else:
+            self.ctl.close()
         e.accept()
 
 
@@ -816,12 +918,11 @@ def make_app(argv=None) -> QApplication:
     unhide_qt_plugins()             # must run before the QApplication exists
     app = QApplication.instance() or QApplication(argv or sys.argv)
     app.setStyle("Fusion")           # the same drawing on macOS and (later) Windows
-    settings = AppSettings.load()
-    f = QFont(app.font())
-    f.setPointSizeF(f.pointSizeF() * float(settings.font_scale or 1.0))
-    app.setFont(f)
-    app.setPalette(build_palette(palette(settings.theme)))   # not the system's dark/light
-    app.setStyleSheet(build_qss(palette(settings.theme)))
+    apply_look(app, AppSettings.load())     # our palette, not the system's dark/light
+    from .tasks import shutdown
+    if not getattr(app, "_shutdown_hooked", False):
+        app.aboutToQuit.connect(shutdown)
+        app._shutdown_hooked = True
     return app
 
 

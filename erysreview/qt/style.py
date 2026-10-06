@@ -150,6 +150,21 @@ QMenu::item:selected {{ background: {T['accent_primary']}; color: {T['fg_on_acce
 QMenu::item:disabled {{ color: {T['fg_muted']}; }}
 QMessageBox, QInputDialog, QProgressDialog {{ background: {T['bg']}; }}
 QCheckBox, QRadioButton {{ color: {T['fg']}; spacing: 8px; }}
+QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 8px;
+    border: 1px solid {T['fg_muted']}; background: {T['panel_bg']}; }}
+QRadioButton::indicator:checked {{ border: 5px solid {T['accent_primary']}; width: 6px; height: 6px;
+    background: {T['fg_on_accent']}; }}
+QRadioButton::indicator:disabled {{ border-color: {T['border']}; }}
+QScrollBar:vertical {{ background: transparent; width: 12px; margin: 2px; }}
+QScrollBar:horizontal {{ background: transparent; height: 12px; margin: 2px; }}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+    background: {_mix(T['bg'], T['fg'], 0.28)}; border-radius: 4px; min-height: 28px; min-width: 28px; }}
+QScrollBar::handle:hover {{ background: {_mix(T['bg'], T['fg'], 0.45)}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; background: none; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
+QHeaderView::section {{ background: {T['sidebar_bg']}; color: {T['fg_secondary']}; border: none;
+    border-bottom: 1px solid {T['border']}; padding: 4px 6px; }}
+QTreeWidget, QTreeView, QListView, QTableView {{ alternate-background-color: {T['tree_alt_bg']}; }}
 QSpinBox, QDoubleSpinBox {{
     border: 1px solid {T['line']}; border-radius: 6px; padding: 3px 22px 3px 8px; min-height: 26px;
     background: {T['panel_bg']}; color: {T['fg']};
@@ -205,5 +220,59 @@ QLabel#checkLine {{ color: {T['state_finished']}; background: {_mix(T['panel_bg'
 QLabel#checkLine[bad="true"] {{ color: {T['accent_warn']}; background: {_mix(T['panel_bg'], T['accent_warn'], 0.10)}; }}
 QFrame#studyCard {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 14px; }}
 QFrame#studyCard[selected="true"] {{ border: 2px solid {T['accent_primary']}; }}
+QFrame#choiceCard {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 10px; }}
+QFrame#choiceCard[on="true"] {{ border: 2px solid {T['accent_primary']}; background: {T['accent_soft']}; }}
+QFrame#choiceCard QLabel, QFrame#choiceCard QRadioButton {{ background: transparent; }}
+QFrame#probeBox {{ background: {T['sidebar_bg']}; border-radius: 10px; }}
+QLabel#probeThumb {{ background: {T['sidebar_alt_bg']}; border-radius: 8px; }}
 #notebox {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 12px; }}
 """
+
+
+def system_scheme() -> str:
+    """'light' or 'dark': what the operating system shows right now."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
+    app = QGuiApplication.instance()
+    if app is None:
+        return "light"
+    hints = app.styleHints()
+    # While we force a scheme (below), colorScheme() reports ours, not the
+    # system's — so lift the override for the question.
+    forced = hints.colorScheme()
+    if hasattr(hints, "unsetColorScheme"):
+        hints.unsetColorScheme()
+    scheme = hints.colorScheme()
+    if hasattr(hints, "setColorScheme") and forced != scheme and forced != Qt.ColorScheme.Unknown:
+        hints.setColorScheme(forced)
+    return "dark" if scheme == Qt.ColorScheme.Dark else "light"
+
+
+def apply_look(app, settings) -> str:
+    """Theme, text size and colour scheme for the whole application, live.
+
+    Besides our palette and stylesheet, the scheme is also handed to the
+    platform (Qt ≥ 6.8: styleHints().setColorScheme): on macOS that sets the
+    app's appearance, so the native parts — the menu bar's menus, file
+    dialogs, the colour picker — are light or dark with the app, not with the
+    system. Returns the resolved scheme ('light' / 'dark')."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFont
+    from ..theme import THEME_SYSTEM, palette, resolve_theme, set_system_scheme
+    hints = app.styleHints()
+    if settings.theme == THEME_SYSTEM:
+        if hasattr(hints, "unsetColorScheme"):
+            hints.unsetColorScheme()
+        set_system_scheme(system_scheme())
+    resolved = resolve_theme(settings.theme)
+    if hasattr(hints, "setColorScheme") and settings.theme != THEME_SYSTEM:
+        hints.setColorScheme(Qt.ColorScheme.Dark if resolved == "dark" else Qt.ColorScheme.Light)
+    if not hasattr(app, "_base_point_size"):
+        app._base_point_size = app.font().pointSizeF()
+    f = QFont(app.font())
+    f.setPointSizeF(app._base_point_size * float(settings.font_scale or 1.0))
+    app.setFont(f)
+    P = palette(settings.theme)
+    app.setPalette(build_palette(P))
+    app.setStyleSheet(build_qss(P))
+    return resolved

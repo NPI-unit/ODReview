@@ -122,7 +122,7 @@ def main() -> int:
     dlg.close()
 
     # ── study picker ──
-    answers = iter([("Studie C", True), ("Studie C2", True), ("Studie D", True)])
+    answers = iter([("Studie C2", True), ("Studie D", True)])
     QInputDialog.getText = staticmethod(lambda *a, **k: next(answers))
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
     pk = study_picker.StudyPicker(win, win.P, win.S, win.settings)
@@ -130,8 +130,17 @@ def main() -> int:
     check([c.profile.name for c in pk.cards] == sorted(list_profiles()) or len(pk.cards) == 2,
           "one card per study")
     check(pk._selected.profile.name == "Studie A", "the last study is pre-selected")
+    QTest.qWait(300)
+    card_a = next(c for c in pk.cards if c.profile.name == "Studie A")
+    check(card_a.counted and card_a.big.isVisible() and (support / "study_progress.json").is_file(),
+          "progress is counted in the background and cached")
+    pk2 = study_picker.StudyPicker(win, win.P, win.S, win.settings)
+    c2 = next(c for c in pk2.cards if c.profile.name == "Studie A")
+    check(not c2.big.isHidden() and not c2.counted, "a second opening shows the cached numbers at once")
+    pk2.reject(); QTest.qWait(200)
     pk.grab().save(str(OUT / "qt_study_picker.png"))
-    pk._new(); check("Studie C" in list_profiles() and pk._selected.profile.name == "Studie C", "new study")
+    save_profile(ProfileData(name="Studie C")); pk._fill(select_name="Studie C")   # 'Neue Studie': test_qt_new_study
+    check(pk._selected.profile.name == "Studie C", "a new study shows up as a card")
     pk._duplicate(); check("Studie C2" in list_profiles(), "duplicate")
     pk._rename(); check("Studie D" in list_profiles() and "Studie C2" not in list_profiles(), "rename")
     pk._delete(); check("Studie D" not in list_profiles(), "delete (after confirmation)")
@@ -144,6 +153,8 @@ def main() -> int:
     check(win.windowTitle().endswith("Studie B") and not win.ctl.has_images and win.empty_btn.isVisible(),
           "switching to a study without a folder clears the view")
     win.close()
+    from erysreview.qt.tasks import shutdown
+    shutdown()
     tmp.cleanup()
     print(f"OK — {CHECKS} checks: settings window, consequence sheet and study picker work "
           f"(screenshots in tests/_out/).")

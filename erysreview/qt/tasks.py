@@ -97,6 +97,20 @@ def run_task_modal(parent: QWidget, task: Task, title: str, label: str,
     return out.get("result")
 
 
+_RUNNING: set = set()
+
+
+def shutdown(timeout_ms: int = 3000) -> None:
+    """Cancel every background task and wait for its thread — at quit, so no
+    QThread is destroyed while it still runs."""
+    for rt in list(_RUNNING):
+        rt.cancel()
+    for rt in list(_RUNNING):
+        rt.thread.quit()
+        rt.thread.wait(timeout_ms)
+    _RUNNING.clear()
+
+
 class RunningTask:
     """Handle for start_task: cancel() asks the work to stop (it checks
     `is_cancelled` between steps); the thread cleans up after itself."""
@@ -129,6 +143,7 @@ def start_task(parent: QWidget, task: Task, on_progress, on_done) -> RunningTask
     def deliver(result, error):
         thread.quit()
         thread.wait()
+        _RUNNING.discard(holder.get("rt"))
         worker.deleteLater()
         relay.deleteLater()
         holder.clear()                      # drops the last Python reference to the thread
@@ -143,5 +158,8 @@ def start_task(parent: QWidget, task: Task, on_progress, on_done) -> RunningTask
     worker.finished.connect(relay.finished, Qt.QueuedConnection)
     thread.started.connect(worker.run)
     holder["thread"] = thread               # alive until deliver() ran
+    rt = RunningTask(thread, worker, relay, cancel)
+    holder["rt"] = rt
+    _RUNNING.add(rt)
     thread.start()
-    return RunningTask(thread, worker, relay, cancel)
+    return rt

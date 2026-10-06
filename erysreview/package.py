@@ -40,6 +40,29 @@ KEEP_ALL = "keep_all"
 # ─────────────────────────────────────────────
 # Create
 # ─────────────────────────────────────────────
+def entry_sizes(folder: Path, image_path: Path) -> tuple[int, int, int]:
+    """(image, masks, review) bytes one image adds to a package, uncompressed.
+    Missing files count 0."""
+    def size(p):
+        try:
+            return p.stat().st_size if p is not None else 0
+        except OSError:
+            return 0
+    npy, meta = mask_read_paths(folder, image_path)
+    return (size(image_path), size(npy) + size(meta),
+            size(ReviewState.review_path(folder, image_path.stem)))
+
+
+def fmt_bytes(n: int, decimal_sep: str = ",") -> str:
+    """'148 MB', '1,8 GB', '< 1 MB' — rounded the way a person reads it."""
+    mb = n / 1e6
+    if mb < 1:
+        return "< 1 MB"
+    if mb < 1000:
+        return f"{mb:.0f} MB"
+    return f"{mb / 1000:.1f} GB".replace(".", decimal_sep)
+
+
 def create_package(
     folder: Path,
     grouped: GroupedFolder,

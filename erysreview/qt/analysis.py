@@ -51,7 +51,9 @@ class PackageCreateDialog(QDialog):
         g.addWidget(self.reviewer, 1, 1)
         bv.addWidget(card)
         self.include = QCheckBox(S["pkg_include_images"]); self.include.setChecked(True)
+        self.include.toggled.connect(lambda *_: self._update())
         bv.addWidget(self.include)
+        self._sizes: dict[str, tuple[int, int, int]] = {}
         row = QHBoxLayout()
         lab = QLabel(S["pkg_pick_images"]); lab.setStyleSheet("font-weight: 600;")
         row.addWidget(lab, 1)
@@ -91,6 +93,7 @@ class PackageCreateDialog(QDialog):
                     it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                     it.setCheckState(0, Qt.Checked)
                     it.setData(0, ROLE, info.path.stem)
+                    self._sizes[info.path.stem] = pkg.entry_sizes(self.folder, info.path)
                     si.addChild(it)
             if tp_item is not None:
                 tp_item.setExpanded(True)
@@ -113,9 +116,24 @@ class PackageCreateDialog(QDialog):
             self.tree.topLevelItem(i).setCheckState(0, Qt.Checked if on else Qt.Unchecked)
         self._update()
 
+    def estimate(self) -> tuple[int, int, int]:
+        """(images, masks, reviews) bytes of the current selection, uncompressed."""
+        sel = self.selected()
+        img = sum(self._sizes.get(s, (0, 0, 0))[0] for s in sel) if self.include.isChecked() else 0
+        masks = sum(self._sizes.get(s, (0, 0, 0))[1] for s in sel)
+        rev = sum(self._sizes.get(s, (0, 0, 0))[2] for s in sel)
+        return img, masks, rev
+
     def _update(self) -> None:
+        S = self.S
         n = len(self.selected())
-        self.count.setText(self.S["pkg_n_images"].format(n=n))
+        img, masks, rev = self.estimate()
+        dec = S["qt_decimal_sep"]
+        size = S["pkg_size"].format(total=pkg.fmt_bytes(img + masks + rev, dec))
+        parts = S["pkg_size_parts"].format(images=pkg.fmt_bytes(img, dec), masks=pkg.fmt_bytes(masks, dec),
+                                           reviews=pkg.fmt_bytes(rev, dec))
+        self.count.setText(f"{S['pkg_n_images'].format(n=n)}  <b>{size}</b><br>"
+                           f"<span style='font-size:11px'>{parts}</span>")
         self.go.setEnabled(n > 0)
 
     def _create(self, dest: str | None = None) -> None:
@@ -125,6 +143,17 @@ class PackageCreateDialog(QDialog):
             default = f"{self.profile.name}_{self.folder.name}.eryspkg.zip".replace(" ", "_")
             dest, _ = QFileDialog.getSaveFileName(self, S["pkg_save_as"], default, "ZIP (*.zip)")
         if not dest:
+            return
+        import shutil
+        need = sum(self.estimate())
+        try:
+            free = shutil.disk_usage(Path(dest).parent).free
+        except OSError:
+            free = None
+        if free is not None and free < need:
+            dec = S["qt_decimal_sep"]
+            QMessageBox.warning(self, S["pkg_create_title"], S["pkg_no_space"].format(
+                need=pkg.fmt_bytes(need, dec), free=pkg.fmt_bytes(free, dec)))
             return
         reviewer = self.reviewer.text().strip()
         work = lambda progress, cancelled: pkg.create_package(

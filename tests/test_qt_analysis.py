@@ -91,6 +91,11 @@ def main() -> int:
                                        win.ctl.profile, "Finn")
     dlg.resize(820, 640); dlg.show(); QTest.qWait(20)
     check(len(dlg.selected()) == 8, "all segmented images are pre-selected")
+    img_b, mask_b, _rev = dlg.estimate()
+    check(img_b > 0 and mask_b > 0 and "≈" in dlg.count.text(), f"the size estimate is shown ({dlg.count.text()!r})")
+    dlg.include.setChecked(False)
+    check(dlg.estimate()[0] == 0, "…and drops the images when they are left out")
+    dlg.include.setChecked(True)
     dlg.grab().save(str(OUT / "qt_pkg_create.png"))
     zip_path = root / "paket.zip"
     dlg._create(str(zip_path))
@@ -182,7 +187,9 @@ def main() -> int:
                 clashes.append(f"{type(obj).__name__}.{name}")
     check(not clashes, f"no attribute hides a Qt method ({clashes})")
 
-    win.close(); tmp.cleanup()
+    win.close()
+    from erysreview.qt.tasks import shutdown
+    shutdown(); tmp.cleanup()
     print(f"OK — {CHECKS} checks: packages, statistics, overview and cell areas work "
           f"(screenshots in tests/_out/).")
     return 0
