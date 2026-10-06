@@ -122,3 +122,13 @@ def to_rows(groups: list[GroupAreas]) -> list[dict]:
                 "flaeche_max_px2": round(st.maximum, 1),
             })
     return rows
+
+
+def write_csv(groups: list[GroupAreas], dest) -> None:
+    """The Zellflächen table as CSV (UTF-8 with BOM, so Excel reads umlauts)."""
+    import csv
+    rows = to_rows(groups)
+    with open(dest, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["ebene"])
+        w.writeheader()
+        w.writerows(rows)

@@ -114,3 +114,21 @@ def grouped_values(records: list[dict], by: str, metric_key: str
         key = r[by]
         out.setdefault(key, []).append(metric_value(r, metric_key))
     return dict(sorted(out.items(), key=lambda kv: natural_key(kv[0])))
+
+
+def fmt_duration(seconds: float) -> str:
+    """h:mm:ss, or m:ss below an hour (the Übersicht's time columns)."""
+    s = int(round(seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def time_totals(records: list[dict]) -> tuple[float, dict[str, float]]:
+    """(total review time, time per subject) over the group records."""
+    per: dict[str, float] = {}
+    total = 0.0
+    for r in records:
+        total += r["time_s"]
+        per[r["subject"]] = per.get(r["subject"], 0.0) + r["time_s"]
+    return total, dict(sorted(per.items(), key=lambda kv: natural_key(kv[0])))

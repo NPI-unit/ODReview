@@ -223,12 +223,7 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
 
 
 def _fmt_time(seconds: float) -> str:
-    s = int(round(seconds))
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    if h:
-        return f"{h}:{m:02d}:{sec:02d}"
-    return f"{m}:{sec:02d}"
+    return statsmod.fmt_duration(seconds)
 
 
 # ─────────────────────────────────────────────

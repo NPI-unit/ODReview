@@ -113,20 +113,20 @@ class QtToolbar(QWidget):
         return h
 
     def _build_grouped(self) -> None:
+        """Layout A: one row, everything on one level — no group captions; the
+        groups are kept apart by spacing and the segmented tool frames."""
         h = self._row("toolbar")
-        h.setAlignment(Qt.AlignBottom)
-        h.addWidget(self._study_button(), 0, Qt.AlignBottom)
-        edit = QWidget(); eh = QHBoxLayout(edit); eh.setContentsMargins(0, 0, 0, 0); eh.setSpacing(8)
-        eh.addWidget(self._segment([TOOL_ADD, TOOL_REMOVE, TOOL_TYPE]))
+        h.setAlignment(Qt.AlignVCenter)
+        h.addWidget(self._study_button())
+        h.addSpacing(6)
+        h.addWidget(self._segment([TOOL_ADD, TOOL_REMOVE, TOOL_TYPE]))
         self._type_holder = QHBoxLayout(); self._type_holder.setSpacing(4)
-        eh.addLayout(self._type_holder)
-        h.addWidget(self._group(self.S["tb_group_edit"], edit), 0, Qt.AlignBottom)
-        h.addWidget(self._group(self.S["tb_group_check"], self._segment([TOOL_NOTE, TOOL_CURSOR])),
-                    0, Qt.AlignBottom)
-        view = QWidget(); vh = QHBoxLayout(view); vh.setContentsMargins(0, 0, 0, 0); vh.setSpacing(6)
-        vh.addWidget(self._action("overlay", "tool_overlay", "overlay"))
-        vh.addWidget(self._action("reset_zoom", "tool_reset_zoom", "reset_zoom", icon_only=True))
-        h.addWidget(self._group(self.S["tb_group_view"], view), 0, Qt.AlignBottom)
+        h.addLayout(self._type_holder)
+        h.addSpacing(6)
+        h.addWidget(self._segment([TOOL_NOTE, TOOL_CURSOR]))
+        h.addSpacing(6)
+        h.addWidget(self._action("overlay", "tool_overlay", "overlay"))
+        h.addWidget(self._action("reset_zoom", "tool_reset_zoom", "reset_zoom", icon_only=True))
         h.addStretch(1)
         self._finish(h)
         self._chips_mode = False

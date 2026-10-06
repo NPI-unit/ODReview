@@ -108,7 +108,7 @@ class StudyPicker(QDialog):
         sub = QLabel(S["qt_studies_sub"]); sub.setStyleSheet(f"color: {P['fg_secondary']};")
         col.addWidget(t); col.addWidget(sub)
         head.addLayout(col, 1)
-        imp = QPushButton(S["qt_import_pkg"]); imp.setEnabled(False); imp.setToolTip(S["qt_later"])
+        imp = QPushButton(S["qt_import_pkg"]); imp.clicked.connect(self._import)
         new = QPushButton(S["qt_new_study"]); new.setProperty("class", "primary")
         new.clicked.connect(self._new)
         head.addWidget(imp); head.addWidget(new)
@@ -217,6 +217,13 @@ class StudyPicker(QDialog):
             return
         delete_profile(p.name)
         self._fill()
+
+    def _import(self) -> None:
+        """Import a package; the main window then opens the package's study."""
+        win = self.parent()
+        if hasattr(win, "package_import"):
+            self.reject()
+            win.package_import()
 
     def _default(self) -> None:
         self.chosen = load_profile(DEFAULT_PROFILE_NAME) or ensure_default_profile()

@@ -25,6 +25,9 @@ from ..persistence import (
     AppSettings, TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE, TOOLS_ORDER,
 )
 from ..profile import ensure_default_profile, load_profile, save_profile
+from .analysis import (
+    AreasWindow, DashboardWindow, PackageCreateDialog, StatsWindow, import_package_flow,
+)
 from .processing import BatchDialog, EvalSelectDialog, ExportDialog, ImageInfoDialog
 from .settings import SettingsDialog
 from .study_picker import pick_study
@@ -160,12 +163,22 @@ class MainWindow(QMainWindow):
         self._act(m_file, S["batch_title"] + " …", self.open_batch, ["Ctrl+B"])
         self._act(m_file, S["menu_export"], self.export, ["Ctrl+S"])
         m_file.addSeparator()
+        self._act(m_file, S["menu_package_create"], self.package_create)
+        self._act(m_file, S["menu_package_import"], self.package_import)
+        m_file.addSeparator()
         self._act(m_file, S["menu_quit"], self.close, QKeySequence.Quit)
         m_edit = mb.addMenu(S["qt_menu_edit"])
         self._act(m_edit, S["tool_undo"], self.undo, QKeySequence.Undo)
         m_view = mb.addMenu(S["qt_menu_view"])
         self._act(m_view, S["tool_overlay"], self.toggle_overlay)
         self._act(m_view, S["tool_reset_zoom"], lambda: self.canvas.reset_zoom())
+        m_an = mb.addMenu(S["menu_analysis"])
+        self.act_stats = self._act(m_an, S["menu_stats"], self.open_stats)
+        self._act(m_an, S["menu_dashboard"], self.open_dashboard)
+        self._act(m_an, S["menu_overview_xlsx"], self.overview_xlsx)
+        self._act(m_an, S["menu_areas"], self.open_areas)
+        m_an.addSeparator()
+        self._act(m_an, S["menu_training_export"], self.training_export)
         m_help = mb.addMenu(S["menu_help"])
         self._act(m_help, S["menu_help_hotkeys"],
                   lambda: QMessageBox.information(self, S["help_hotkeys_title"], S["help_hotkeys"]))
@@ -531,6 +544,90 @@ class MainWindow(QMainWindow):
         self.sidebar.set_idx(self.ctl.idx)
         self._update_status()
         self._set_status(self.S["status_bulk_done"].format(n=n))
+
+    # ── packages & analysis (Phase 4) ──
+    def _need_folder(self, title: str) -> bool:
+        if self.ctl.folder is None or self.ctl.grouped is None:
+            QMessageBox.information(self, title, self.S["stats_no_data"])
+            return False
+        self.ctl.flush_time()
+        return True
+
+    def package_create(self) -> None:
+        if not self._need_folder(self.S["pkg_create_title"]):
+            return
+        dlg = PackageCreateDialog(self, self.P, self.S, self.ctl.folder, self.ctl.grouped,
+                                  self.ctl.profile, self.settings.reviewer_name)
+        dlg.exec()
+        if dlg.reviewer_used is not None and dlg.reviewer_used != self.settings.reviewer_name:
+            self.settings.reviewer_name = dlg.reviewer_used
+            self.settings.save()
+
+    def package_import(self) -> bool:
+        result = import_package_flow(self, self.P, self.S, self.ctl.profile)
+        if result is None:
+            return False
+        # Activate the package's study so types and parameters match its masks.
+        prof = result["profile"]
+        save_profile(prof)
+        self.ctl.activate_profile(prof)
+        target = Path(result["target"])
+        if target.is_dir():
+            self.ctl.remember_folder(str(target))
+        self._profile_changed(reopen_folder=True)
+        return True
+
+    def open_stats(self) -> None:
+        if not self.ctl.profile.stats_enabled:
+            QMessageBox.information(self, self.S["stats_title"], self.S["pe_stats_enabled"])
+            return
+        if self._need_folder(self.S["stats_title"]):
+            StatsWindow(self, self.P, self.S, self.ctl.folder, self.ctl.profile, self.ctl.grouped).exec()
+
+    def open_dashboard(self) -> None:
+        if self._need_folder(self.S["dash_title"]):
+            DashboardWindow(self, self.P, self.S, self.ctl.folder, self.ctl.profile, self.ctl.grouped).exec()
+
+    def open_areas(self) -> None:
+        if not self._need_folder(self.S["areas_title"]):
+            return
+        groups = run_task_modal(self, self.ctl.areas_task(), self.S["areas_title"], self.S["areas_running"])
+        AreasWindow(self, self.P, self.S, groups).exec()
+
+    def overview_xlsx(self) -> None:
+        S = self.S
+        if not self._need_folder(S["menu_overview_xlsx"]):
+            return
+        dest, _ = QFileDialog.getSaveFileName(self, S["overview_save_as"], "Uebersicht.xlsx",
+                                              f"{S['overview_filetype']} (*.xlsx)")
+        if not dest:
+            return
+        try:
+            written = run_task_modal(self, self.ctl.overview_task(Path(dest)), S["menu_overview_xlsx"],
+                                     S["overview_building"])
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, S["menu_overview_xlsx"], S["overview_save_err"].format(err=e))
+            return
+        QMessageBox.information(self, S["menu_overview_xlsx"],
+                                S["overview_save_ok"].format(path=written) if written else S["stats_no_data"])
+
+    def training_export(self) -> None:
+        S = self.S
+        if not self._need_folder(S["menu_training_export"]):
+            return
+        dest = QFileDialog.getExistingDirectory(self, S["training_pick_folder"])
+        if not dest:
+            return
+        try:
+            summary = run_task_modal(self, self.ctl.training_task(Path(dest)), S["menu_training_export"],
+                                     S["training_running"])
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, S["menu_training_export"], S["overview_save_err"].format(err=e))
+            return
+        sk = summary["skipped"]
+        QMessageBox.information(self, S["menu_training_export"], S["training_done"].format(
+            n=summary["n_written"], path=dest, n_unfinished=len(sk["not_finished"]),
+            n_manual=len(sk["has_manual_cells"]), n_nomask=len(sk["no_mask"])))
 
     # ── studies & settings (Phase 2) ──
     def open_settings(self, page: str = "images") -> None:
