@@ -212,7 +212,25 @@ class ConflictDialog(QDialog):
         self.accept()
 
 
-def import_package_flow(parent, P, S, active_profile, ask_zip=None, ask_target=None) -> dict | None:
+def _ask_import_mode(parent, S, info: str) -> str | None:
+    box = QMessageBox(parent)
+    box.setWindowTitle(S["pkg_import_title"])
+    box.setText(info + "\n\n" + S["ir_mode_q"])
+    box.setInformativeText(S["ir_mode_hint"])
+    cmp_btn = box.addButton(S["ir_mode_compare"], QMessageBox.AcceptRole)
+    take_btn = box.addButton(S["ir_mode_take"], QMessageBox.AcceptRole)
+    box.addButton(S["settings_cancel"], QMessageBox.RejectRole)
+    box.setDefaultButton(cmp_btn)
+    box.exec()
+    if box.clickedButton() is cmp_btn:
+        return "compare"
+    if box.clickedButton() is take_btn:
+        return "take"
+    return None
+
+
+def import_package_flow(parent, P, S, active_profile, ask_zip=None, ask_target=None,
+                        on_compare=None, ask_mode=None) -> dict | None:
     """Pick a package, confirm, choose the target, merge. Runs on the GUI thread
     like the Tk version: the merge asks per conflicting image (K4)."""
     zip_str = ask_zip() if ask_zip else QFileDialog.getOpenFileName(
@@ -228,7 +246,15 @@ def import_package_flow(parent, P, S, active_profile, ask_zip=None, ask_target=N
         reviewer=manifest.get("reviewer") or "?", n=manifest.get("n_images", 0),
         images=S["confirm_yes"] if manifest.get("includes_images") else S["confirm_no"],
         profile=manifest.get("profile", {}).get("name", "?"))
-    if QMessageBox.question(parent, S["pkg_import_title"], info) != QMessageBox.Yes:
+    if on_compare is not None:
+        # Interrater (mockup v6): compare with my reviews instead of taking them over.
+        mode = ask_mode() if ask_mode else _ask_import_mode(parent, S, info)
+        if mode is None:
+            return None
+        if mode == "compare":
+            on_compare(zip_path)
+            return None
+    elif QMessageBox.question(parent, S["pkg_import_title"], info) != QMessageBox.Yes:
         return None
     target_str = ask_target() if ask_target else QFileDialog.getExistingDirectory(parent, S["pkg_pick_target"])
     if not target_str:

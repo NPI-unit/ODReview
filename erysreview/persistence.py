@@ -367,7 +367,12 @@ class ReviewState:
 
     @classmethod
     def load(cls, folder: Path, image_stem: str) -> "ReviewState":
-        raw = read_json(cls.review_path(folder, image_stem))
+        return cls.load_file(cls.review_path(folder, image_stem))
+
+    @classmethod
+    def load_file(cls, path: Path) -> "ReviewState":
+        """A review from any file — e.g. a second rater's (interrater.py)."""
+        raw = read_json(path)
         if not raw:
             return cls()
         try:

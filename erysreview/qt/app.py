@@ -221,6 +221,7 @@ class MainWindow(QMainWindow):
         self._act(m_an, S["menu_dashboard"], self.open_dashboard)
         self._act(m_an, S["menu_overview_xlsx"], self.overview_xlsx)
         self._act(m_an, S["menu_areas"], self.open_areas)
+        self._act(m_an, S["ir_menu"], self.open_interrater)
         m_an.addSeparator()
         self._act(m_an, S["menu_training_export"], self.training_export)
         m_help = mb.addMenu(S["menu_help"])
@@ -694,7 +695,8 @@ class MainWindow(QMainWindow):
             self.settings.save()
 
     def package_import(self) -> bool:
-        result = import_package_flow(self, self.P, self.S, self.ctl.profile)
+        on_compare = self._compare_package if self.ctl.folder is not None and self.ctl.grouped else None
+        result = import_package_flow(self, self.P, self.S, self.ctl.profile, on_compare=on_compare)
         if result is None:
             return False
         # Activate the package's study so types and parameters match its masks.
@@ -706,6 +708,23 @@ class MainWindow(QMainWindow):
             self.ctl.remember_folder(str(target))
         self._profile_changed(reopen_folder=True)
         return True
+
+    def _compare_package(self, zip_path) -> None:
+        from .interrater import compare_package_flow
+        name = compare_package_flow(self, self.P, self.S, self.ctl.folder, Path(zip_path))
+        if name:
+            self.open_interrater(name)
+
+    def open_interrater(self, rater: str | None = None) -> None:
+        from .. import interrater as ir
+        from .interrater import InterraterWindow
+        if not self._need_folder(self.S["ir_title"]):
+            return
+        if not ir.list_raters(self.ctl.folder):
+            QMessageBox.information(self, self.S["ir_title"], self.S["ir_none"])
+            return
+        InterraterWindow(self, self.P, self.S, self.ctl.folder, self.ctl.grouped, self.ctl.profile,
+                         me=self.settings.reviewer_name, rater=rater).exec()
 
     def open_stats(self) -> None:
         if not self.ctl.profile.stats_enabled:
