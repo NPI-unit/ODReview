@@ -96,8 +96,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.toolbar)
 
         split = QSplitter(Qt.Horizontal)
-        self.sidebar = QtSidebar(P, S, self.ctl.profile, on_select=self.show_image,
-                                 on_open_folder=self.ask_open_folder)
+        self.sidebar = QtSidebar(P, S, self.ctl.profile, on_select=self.show_image)
         self.sidebar.setMinimumWidth(220)
         center = QWidget()
         cl = QVBoxLayout(center); cl.setContentsMargins(0, 0, 0, 0)
@@ -122,6 +121,7 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel(S["status_ready"])
         self.saved_label = QLabel("")
+        self.saved_label.setMinimumWidth(110)     # "gespeichert" must not clip
         self.tool_label = QLabel("")
         self.statusBar().addWidget(self.status_label, 1)
         self.statusBar().addPermanentWidget(self.saved_label)
@@ -379,7 +379,13 @@ class MainWindow(QMainWindow):
                          self.ctl.profile.cellpose.model,
                          [(S["study_menu_edit"], None), (S["study_menu_switch"], None)])
         card.adjustSize()
-        card.move(button.mapToGlobal(QPoint(-16, button.height() - 4)))
+        # Left of the button by the shadow margin, but never off-screen: with
+        # the window at the screen's left edge that put the card at x < 0.
+        pos = button.mapToGlobal(QPoint(-16, button.height() - 4))
+        area = (button.screen() or QApplication.primaryScreen()).availableGeometry()
+        pos.setX(max(area.left(), min(pos.x(), area.right() - card.width())))
+        pos.setY(max(area.top(), min(pos.y(), area.bottom() - card.height())))
+        card.move(pos)
         card.show()
 
     # ── status / misc ──

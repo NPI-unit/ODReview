@@ -76,9 +76,13 @@ QLineEdit, QPlainTextEdit {{
     background: {T['panel_bg']}; color: {T['fg']};
 }}
 
-QTreeWidget {{ background: {T['sidebar_bg']}; border: none; outline: 0; }}
-QTreeWidget::item {{ padding: 3px 2px; }}
-QTreeWidget::item:selected {{ background: {T['accent_primary']}; color: {T['fg_on_accent']}; border-radius: 4px; }}
+#sidebar {{ background: {T['sidebar_bg']}; }}
+#sidebarFilter {{ background: {T['sidebar_bg']}; border-bottom: 1px solid {T['border']}; }}
+#sidebarDetails {{ background: {T['panel_bg']}; border-top: 1px solid {T['border']}; }}
+QTreeWidget {{ background: {T['sidebar_bg']}; border: none; outline: 0; padding: 4px; }}
+QTreeWidget::item {{ padding: 4px 4px; border-radius: 6px; }}
+QTreeWidget::item:selected {{ background: {T['accent_primary']}; color: {T['fg_on_accent']}; }}
+QTreeWidget::item:hover:!selected {{ background: {T['sidebar_alt_bg']}; }}
 QSplitter::handle {{ background: {T['border']}; width: 1px; }}
 
 QStatusBar {{ background: {T['status_bg']}; border-top: 1px solid {T['border']}; }}

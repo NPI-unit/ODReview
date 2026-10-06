@@ -50,3 +50,18 @@ def subject_counter(folder: Path, images, profile: ProfileData) -> tuple[int, in
         return summary["n_active"], target, stems
     except Exception:  # noqa: BLE001 — a broken group must not break the tree
         return 0, target, set()
+
+
+def group_details(folder: Path, images, profile: ProfileData) -> dict:
+    """Everything the detail panel shows for one subject/timepoint group:
+    the evaluation summary (counted cells, target, per type, % changed) plus
+    how many images are finished and how many there are."""
+    from .evaluation import group_eval
+    try:
+        summary, _stems = group_eval(folder, images, profile)
+    except Exception:  # noqa: BLE001
+        summary = {"n_active": 0, "n_images": 0, "by_type": {}, "pct_changed": 0.0,
+                   "target": max(1, profile.target_cells), "reached": False}
+    finished = sum(1 for i in images if image_status(folder, i.path)[0] == "finished")
+    return {**summary, "n_finished": finished, "n_total": len(images)}
+
