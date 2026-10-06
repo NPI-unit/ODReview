@@ -24,6 +24,7 @@ def build_qss(P: dict) -> str:
     T = tokens(P)
     return f"""
 QMainWindow, QDialog {{ background: {T['bg']}; }}
+QScrollArea, QScrollArea > QWidget > QWidget {{ background: {T['bg']}; }}
 QWidget {{ color: {T['fg']}; }}
 QToolTip {{ background: {T['tooltip_bg']}; color: {T['tooltip_fg']}; border: none; padding: 6px 10px; }}
 
@@ -71,6 +72,12 @@ QComboBox {{
     border: 1px solid {T['line']}; border-radius: 6px; padding: 0 8px;
     min-height: 32px; background: {T['panel_bg']}; color: {T['fg']};
 }}
+QSpinBox, QDoubleSpinBox {{
+    border: 1px solid {T['line']}; border-radius: 6px; padding: 3px 8px; min-height: 26px;
+    background: {T['panel_bg']}; color: {T['fg']};
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {{ width: 18px; border: none; }}
 QLineEdit, QPlainTextEdit {{
     border: 1px solid {T['line']}; border-radius: 6px; padding: 4px 8px;
     background: {T['panel_bg']}; color: {T['fg']};
@@ -94,5 +101,23 @@ QStatusBar QLabel {{ color: {T['fg_secondary']}; padding: 0 6px; }}
 QProgressBar {{ border: none; background: {T['sidebar_alt_bg']}; border-radius: 4px; max-height: 8px; }}
 QProgressBar::chunk {{ background: {T['state_finished']}; border-radius: 4px; }}
 
+#settingsNav {{ background: {T['sidebar_bg']}; border-right: 1px solid {T['border']}; }}
+QPushButton#navItem {{ border: none; text-align: left; padding: 0 10px; min-height: 34px;
+    background: transparent; border-radius: 8px; }}
+QPushButton#navItem:hover {{ background: {T['sidebar_alt_bg']}; }}
+QPushButton#navItem:checked {{ background: {T['accent_primary']}; color: {T['fg_on_accent']}; font-weight: 600; }}
+QPushButton#studySwitch {{ border: 2px solid {T['accent_primary']}; border-radius: 10px; min-height: 40px;
+    text-align: left; padding: 0 12px; font-weight: 600; margin: 6px 0 4px 0; }}
+QLabel#badgeStudy {{ color: {T['accent_primary']}; background: {T['accent_soft']}; border-radius: 9px;
+    padding: 2px 8px; font-size: 11px; margin: 0 0 8px 0; }}
+QLabel#badgeLocal {{ color: {T['fg_secondary']}; background: {T['sidebar_alt_bg']}; border-radius: 9px;
+    padding: 2px 8px; font-size: 11px; margin: 4px 0 8px 0; }}
+QFrame#settingsCard {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 12px; }}
+QFrame#settingsFooter {{ background: {T['panel_bg']}; border-top: 1px solid {T['border']}; }}
+QLabel#checkLine {{ color: {T['state_finished']}; background: {_mix(T['panel_bg'], T['state_finished'], 0.10)};
+    border-radius: 8px; padding: 8px 10px; }}
+QLabel#checkLine[bad="true"] {{ color: {T['accent_warn']}; background: {_mix(T['panel_bg'], T['accent_warn'], 0.10)}; }}
+QFrame#studyCard {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 14px; }}
+QFrame#studyCard[selected="true"] {{ border: 2px solid {T['accent_primary']}; }}
 #notebox {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 12px; }}
 """

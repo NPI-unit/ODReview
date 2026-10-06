@@ -327,3 +327,27 @@ def ensure_default_profile() -> ProfileData:
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def duplicate_profile(src: ProfileData, new_name: str) -> ProfileData:
+    """A copy of `src` under `new_name`, saved. Folder and settings carry over;
+    the per-profile UI state (open groups, recents) starts fresh."""
+    import copy
+    p = copy.deepcopy(src)
+    p.name = new_name.strip()
+    p.created_at = p.updated_at = ""
+    p.sidebar_open_groups = []
+    p.recent_folders = []
+    save_profile(p)
+    return p
+
+
+def rename_profile(p: ProfileData, new_name: str) -> ProfileData:
+    """Save `p` under `new_name` and remove the old file. The caller updates
+    settings.last_profile_name if this was the active study."""
+    old = p.name
+    p.name = new_name.strip()
+    save_profile(p)
+    if profile_path(old) != profile_path(p.name):
+        delete_profile(old)
+    return p

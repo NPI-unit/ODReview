@@ -25,6 +25,8 @@ from ..persistence import (
     AppSettings, TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE, TOOLS_ORDER,
 )
 from ..profile import ensure_default_profile, load_profile, save_profile
+from .settings import SettingsDialog
+from .study_picker import pick_study
 from ..study import study_progress
 from ..theme import palette
 from .canvas import QtEryCanvas
@@ -58,8 +60,9 @@ class MainWindow(QMainWindow):
         profile = None
         if self.settings.last_profile_name:
             profile = load_profile(self.settings.last_profile_name)
+        self._pick_at_start = profile is None
         if profile is None:
-            profile = ensure_default_profile()   # the study picker comes in Phase 2
+            profile = ensure_default_profile()   # replaced by the picker once shown
         if profile.type_by_key(profile.active_type_key) is None:
             profile.active_type_key = profile.default_type_key()
         self.ctl = AppController(self.settings, profile)
@@ -79,7 +82,9 @@ class MainWindow(QMainWindow):
         self._profile_save.timeout.connect(lambda: save_profile(self.ctl.profile))
 
         self._set_tool(self.settings.active_tool)
-        if profile.import_folder and Path(profile.import_folder).is_dir():
+        if self._pick_at_start:
+            QTimer.singleShot(50, self.switch_study)
+        elif profile.import_folder and Path(profile.import_folder).is_dir():
             QTimer.singleShot(50, lambda: self.open_folder(Path(profile.import_folder), True))
 
     # ── layout ──
@@ -137,7 +142,11 @@ class MainWindow(QMainWindow):
         S = self.S
         mb = self.menuBar()
         m_file = mb.addMenu(S["menu_file"])
+        self._act(m_file, S["qt_studies_title"] + " …", self.switch_study, "Ctrl+Shift+O")
         self._act(m_file, S["menu_open_folder"], self.ask_open_folder, QKeySequence.Open)
+        prefs = self._act(m_file, S["settings_title"] + " …", lambda: self.open_settings(),
+                          QKeySequence.Preferences)
+        prefs.setMenuRole(QAction.PreferencesRole)      # macOS: app menu › Einstellungen
         self.m_recent = m_file.addMenu(S["menu_recent_folders"])
         self._fill_recent()
         self._act(m_file, S["menu_refresh"], self.refresh, ["F5", "Ctrl+R"])
@@ -377,7 +386,8 @@ class MainWindow(QMainWindow):
         card = StudyCard(self, self.P, S, self.ctl.profile.name,
                          str(self.ctl.folder) if self.ctl.folder else None, prog, model_ok,
                          self.ctl.profile.cellpose.model,
-                         [(S["study_menu_edit"], None), (S["study_menu_switch"], None)])
+                         [(S["study_menu_edit"], lambda: self.open_settings("images")),
+                          (S["study_menu_switch"], self.switch_study)])
         card.adjustSize()
         # Left of the button by the shadow margin, but never off-screen: with
         # the window at the screen's left edge that put the card at x < 0.
@@ -387,6 +397,73 @@ class MainWindow(QMainWindow):
         pos.setY(max(area.top(), min(pos.y(), area.bottom() - card.height())))
         card.move(pos)
         card.show()
+
+    # ── studies & settings (Phase 2) ──
+    def open_settings(self, page: str = "images") -> None:
+        dlg = SettingsDialog(self, self.P, self.S, self.settings, self.ctl.profile,
+                             self.ctl.folder, self.ctl.images,
+                             on_study_saved=self._apply_profile_edit,
+                             on_local_changed=self._on_local_setting,
+                             on_switch_study=lambda: QTimer.singleShot(0, self.switch_study),
+                             start_page=page)
+        dlg.exec()
+
+    def _apply_profile_edit(self, new, choice: str) -> None:
+        old_name = self.ctl.profile.name
+        change = self.ctl.apply_edited_profile(new)
+        if new.name != old_name:
+            from ..profile import delete_profile
+            delete_profile(old_name)                # renamed in the settings
+            self.ctl.activate_profile(new)
+        self._profile_changed(reopen_folder=False)
+        if change.margin_changed and self.canvas.image is not None:
+            self.canvas.set_margin_n(new.margin_n)
+        if new.import_folder and str(self.ctl.folder or "") != new.import_folder \
+                and Path(new.import_folder).is_dir():
+            self.open_folder(Path(new.import_folder), restore_index=False)
+        if choice == "batch":
+            self._later()
+
+    def _on_local_setting(self, field: str) -> None:
+        if field == "toolbar_layout":
+            self.toolbar.rebuild()
+            self.toolbar.set_active_tool(self.settings.active_tool)
+            if self.ctl.has_images:
+                self.show_image(self.ctl.idx)       # restores the parameter banner
+        elif field == "cellpose_models" and self.ctl.has_images:
+            self.show_image(self.ctl.idx)
+
+    def switch_study(self) -> None:
+        chosen = pick_study(self, self.P, self.S, self.settings)
+        if chosen is None:
+            return
+        if chosen.type_by_key(chosen.active_type_key) is None:
+            chosen.active_type_key = chosen.default_type_key()
+        self.ctl.flush_time()
+        self.ctl.activate_profile(chosen)
+        self._profile_changed(reopen_folder=True)
+
+    def _profile_changed(self, reopen_folder: bool) -> None:
+        """Push the (new or edited) study to every widget."""
+        p = self.ctl.profile
+        self.setWindowTitle(self.S["title_with_profile"].format(profile=p.name))
+        self.canvas.set_profile(p)
+        self.toolbar.set_profile(p)
+        self.sidebar.set_profile(p)
+        if reopen_folder:
+            self.ctl.folder, self.ctl.images, self.ctl.grouped = None, [], None
+            self.canvas.clear()
+            self.sidebar.populate(None, [], None)
+            self.empty_btn.show()
+            self._fill_recent()
+            if p.import_folder and Path(p.import_folder).is_dir():
+                self.open_folder(Path(p.import_folder), restore_index=True)
+            else:
+                self._update_status()
+            return
+        if self.ctl.has_images:
+            self.sidebar.populate(self.ctl.folder, self.ctl.images, self.ctl.grouped)
+            self.show_image(self.ctl.idx)
 
     # ── status / misc ──
     def _update_status(self) -> None:
