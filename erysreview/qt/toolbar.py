@@ -61,7 +61,20 @@ class QtToolbar(QWidget):
             btn.setChecked(True)
 
     def set_param_mismatch(self, message: str | None) -> None:
+        # Kept for API compatibility; the state is shown on the Cellpose
+        # button now (set_cellpose_state), not as a text in the toolbar.
         self.banner.setText(message or "")
+
+    def set_cellpose_state(self, state: str, tooltip: str) -> None:
+        """'ok' — quiet; 'stale' — orange border + dot (masks made with other
+        values); 'unsegmented' — the main action, blue "Rechnen"."""
+        b = self.btn_resegment
+        b.setText(f"{GLYPHS['resegment']}  " + (self.S["qt_compute"] if state == "unsegmented"
+                                                 else self.S["tool_resegment"]))
+        b.setProperty("cpstate", state)
+        b.style().unpolish(b); b.style().polish(b)
+        b.setToolTip(tooltip)
+        self._cp_dot.setVisible(state == "stale")
 
     def set_profile(self, profile) -> None:
         self.profile = profile
@@ -73,6 +86,12 @@ class QtToolbar(QWidget):
         if profile.type_by_key(profile.active_type_key) is None:
             profile.active_type_key = profile.default_type_key()
         self._fill_type_selector()
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if obj is getattr(self, "btn_resegment", None) and ev.type() == QEvent.Resize:
+            self._cp_dot.move(obj.width() - 13, 1)
+        return False
 
     # ── building ──
     def _build(self) -> None:
@@ -129,12 +148,16 @@ class QtToolbar(QWidget):
         self._fill_type_selector()
 
     def _finish(self, h: QHBoxLayout) -> None:
-        self.banner = QLabel(""); self.banner.setObjectName("banner")
-        self.banner.setCursor(Qt.PointingHandCursor)
-        self.banner.mousePressEvent = lambda _e: self.cb["resegment"]()
-        h.addWidget(self.banner)
+        self.banner = QLabel("")            # no longer shown (see set_cellpose_state)
+        self.banner.hide()
         h.addWidget(self._action("undo", "tool_undo", "undo", icon_only=True))
-        h.addWidget(self._action("resegment", "tool_resegment", "resegment"))
+        self.btn_resegment = self._action("resegment", "tool_resegment", "resegment")
+        self.btn_resegment.setObjectName("cellposeBtn")
+        # The orange dot of the 'stale' state, pinned to the button's corner.
+        self._cp_dot = QLabel(self.btn_resegment); self._cp_dot.setObjectName("cpDot")
+        self._cp_dot.setFixedSize(12, 12); self._cp_dot.move(0, 0); self._cp_dot.hide()
+        self.btn_resegment.installEventFilter(self)
+        h.addWidget(self.btn_resegment)
         h.addWidget(self._action("info", "tool_info", "info", icon_only=True))
         exp = QPushButton(f"{GLYPHS['export']}  {self.S['tool_export']}")
         exp.setObjectName("export"); exp.setCursor(Qt.PointingHandCursor)

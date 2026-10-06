@@ -118,6 +118,15 @@ QPushButton[class~="icon"] {{ min-width: 40px; max-width: 40px; padding: 0; font
 QPushButton[class~="primary"] {{ border: none; background: {T['accent_primary']};
     color: {T['fg_on_accent']}; font-weight: 600; }}
 QPushButton[class~="primary"]:disabled {{ background: {T['sidebar_alt_bg']}; color: {T['fg_muted']}; }}
+QPushButton#cellposeBtn[cpstate="stale"] {{ border: 2px solid {T['accent_warn']};
+    background: {_mix(T['panel_bg'], T['accent_warn'], 0.12)}; }}
+QPushButton#cellposeBtn[cpstate="unsegmented"] {{ border: none; background: {T['accent_primary']};
+    color: {T['fg_on_accent']}; font-weight: 600; }}
+QLabel#staleBox {{ color: {T['accent_warn']}; background: {_mix(T['panel_bg'], T['accent_warn'], 0.12)};
+    border-radius: 8px; padding: 8px 10px; }}
+QPushButton#rerunBtn {{ border: 1px solid {T['accent_warn']}; color: {T['accent_warn']};
+    background: {_mix(T['panel_bg'], T['accent_warn'], 0.10)}; font-size: 12px; min-height: 28px; }}
+QLabel#cpDot {{ background: {T['accent_warn']}; border: 2px solid {T['panel_bg']}; border-radius: 6px; }}
 QPushButton#export {{ border: none; background: {T['state_finished']}; color: #FFFFFF;
     font-weight: 600; padding: 0 14px; min-height: 40px; }}
 QPushButton[class~="chip"] {{ border-radius: 16px; min-height: 32px; padding: 0 10px; }}

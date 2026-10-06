@@ -54,15 +54,23 @@ def _segment(options: list[tuple[str, str]], on_pick: Callable[[str], None]) -> 
 # ─────────────────────────────────────────────
 class BatchDialog(QDialog):
     def __init__(self, parent, P, S, folder: Path, images: list[Path], grouped, profile,
-                 model_registry: dict, keep_awake_default: bool = True):
+                 model_registry: dict, keep_awake_default: bool = True,
+                 rerun: list[Path] | None = None, discard: Callable | None = None):
+        """rerun: re-segment exactly these images (masks with old values);
+        `discard(info)` resets one image right before it is segmented."""
         super().__init__(parent)
+        self._rerun_mode = rerun is not None
+        self._discard = discard
         self.P, self.S, self.folder, self.profile = P, S, folder, profile
         self.registry = model_registry
         self.plan = batch.BatchPlan.build(images, grouped)
         self.checked = self.plan.default_checked(folder)
+        if self._rerun_mode:
+            wanted = {p.name for p in rerun}
+            self.checked = {n: n in wanted for n in self.checked}
         self.ran = False
         self._running = None
-        self.setWindowTitle(S["batch_title"])
+        self.setWindowTitle(S["qt_rerun_title"] if rerun is not None else S["batch_title"])
         self.resize(1000, 720)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
         self.stack = QStackedWidget(); root.addWidget(self.stack)
@@ -106,6 +114,7 @@ class BatchDialog(QDialog):
         self.target_cb = QCheckBox(S["batch_target_mode"].format(target=self.profile.target_cells))
         self.awake_cb = QCheckBox(S["batch_keep_awake"]); self.awake_cb.setChecked(True)
         opts.addWidget(self.target_cb); opts.addWidget(self.awake_cb); opts.addStretch(1)
+        self.target_cb.setVisible(not self._rerun_mode)
         bv.addLayout(opts)
         v.addWidget(body, 1)
         f = _footer(v)
@@ -194,7 +203,13 @@ class BatchDialog(QDialog):
     def _start(self) -> None:
         S = self.S
         segment = lambda info: batch.segment_one(self.folder, info, self.profile, self.registry)
-        if self.target_cb.isChecked():
+        if self._rerun_mode:
+            sel = [self.plan.info_by_name[n] for n, on in self.checked.items() if on]
+            total = len(sel)
+            label = lambda i, n, name: S["qt_rerun_running"].format(i=i, n=n, name=name)
+            work = lambda progress, cancelled: batch.run_rerun(
+                self.folder, sel, self._discard, segment, progress, cancelled, label)
+        elif self.target_cb.isChecked():
             sel = [(tp, sub, infos) for tp, sub, infos in self.plan.groups()
                    if any(self.checked.get(i.path.name) for i in infos)]
             total = sum(len(i) for _t, _s, i in sel)

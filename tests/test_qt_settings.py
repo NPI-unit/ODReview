@@ -111,8 +111,9 @@ def main() -> int:
           "the study file holds the saved values")
     check(len(win.sidebar._group_items) == 3 and all(k[0] != "_ungrouped" for k in win.sidebar._group_items),
           "the main window regrouped with the new parser")
-    check(win.toolbar.banner.text() != "" if win.ctl.idx == 0 else True,
-          "the open image now flags its masks as made with other values")
+    win.show_image(next(i for i, p in enumerate(win.ctl.images) if p.name == "A_01_Prä_1.tif"))
+    check(win.toolbar.btn_resegment.property("cpstate") == "stale",
+          "the open image now flags its masks as made with other values (Cellpose button)")
     check(not dlg.btn_save.isEnabled(), "after saving there are no pending changes")
 
     dlg._local("toolbar_layout", "two_row")

@@ -20,7 +20,8 @@ from ..study import StudyProgress
 class StudyCard(QWidget):
     def __init__(self, parent, P: dict, S: dict, name: str, folder: str | None,
                  progress: StudyProgress | None, model_ok: bool | None, model_name: str,
-                 actions: list[tuple[str, Callable[[], None] | None]]):
+                 actions: list[tuple[str, Callable[[], None] | None]],
+                 n_stale: int = 0, on_rerun_all: Callable[[], None] | None = None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -43,6 +44,14 @@ class StudyCard(QWidget):
             legend = QLabel(S["study_menu_rest"].format(wip=progress.wip, open=progress.open))
             legend.setStyleSheet(f"color: {P['fg_secondary']}; font-size: 12px;")
             v.addWidget(legend)
+        if n_stale:
+            box = QLabel(f"⟳ <b>{S['qt_stale_count'].format(n=n_stale)}</b>")
+            box.setObjectName("staleBox")
+            v.addWidget(box)
+            rr = QPushButton(S["qt_rerun_all"].format(n=n_stale)); rr.setObjectName("rerunBtn")
+            if on_rerun_all is not None:
+                rr.clicked.connect(lambda: (self.close(), on_rerun_all()))
+            v.addWidget(rr, 0, Qt.AlignLeft)
         v.addWidget(self._sep())
         grid = QGridLayout(); grid.setHorizontalSpacing(12); grid.setVerticalSpacing(4)
         rows = [(S["qt_card_folder"], folder or "–", P["fg"])]

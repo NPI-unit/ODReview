@@ -15,12 +15,12 @@ from typing import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QTreeWidget,
+    QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..grouping import UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT
-from ..sidebar_model import FILTERS, group_details, image_status, passes_filter
+from ..sidebar_model import FILTER_STALE, FILTERS, group_details, image_status, is_stale, passes_filter
 from ..theme import STATUS_ICONS_3, STATUS_TO_COLOR
 from .style import _mix
 
@@ -34,8 +34,11 @@ def _num(n: int) -> str:
 class QtSidebar(QWidget):
     def __init__(self, P: dict, S: dict, profile, on_select: Callable[[int], None], parent=None,
                  on_subject_eval: Callable[[str, str], None] | None = None,
-                 on_subject_status: Callable[[str, str, bool], None] | None = None):
+                 on_subject_status: Callable[[str, str, bool], None] | None = None,
+                 on_rerun: Callable[[list[Path]], None] | None = None):
         super().__init__(parent)
+        self._on_rerun = on_rerun or (lambda paths: None)
+        self._stale: dict[tuple[str, str], list[Path]] = {}
         self._on_subject_eval = on_subject_eval or (lambda tp, sub: None)
         self._on_subject_status = on_subject_status or (lambda tp, sub, done: None)
         self.P, self.S, self.profile = P, S, profile
@@ -62,7 +65,7 @@ class QtSidebar(QWidget):
         lab = QLabel(S["filter_label"].rstrip(": ")); lab.setStyleSheet(f"color: {P['fg_secondary']};")
         self.filter_combo = QComboBox()
         self.filter_combo.setAccessibleName(S["filter_label"].rstrip(": "))
-        for value, key in FILTERS:
+        for value, key in FILTERS + [FILTER_STALE]:
             self.filter_combo.addItem(S["qt_filter_all"] if value == "all" else S[key], value)
         self.filter_combo.activated.connect(
             lambda i: self._set_filter(self.filter_combo.itemData(i)))
@@ -91,7 +94,14 @@ class QtSidebar(QWidget):
             vlab = QLabel("–")
             grid.addWidget(k, r, 0); grid.addWidget(vlab, r, 1)
             self.det_values[key] = vlab
+        self.det_stale_key = QLabel(S["qt_det_stale"]); self.det_stale_val = QLabel("")
+        for w in (self.det_stale_key, self.det_stale_val):
+            w.setStyleSheet(f"color: {P['accent_warn']}; font-weight: 600;")
+        grid.addWidget(self.det_stale_key, 3, 0); grid.addWidget(self.det_stale_val, 3, 1)
         dv.addLayout(grid)
+        self.det_rerun = QPushButton(""); self.det_rerun.setObjectName("rerunBtn")
+        self.det_rerun.clicked.connect(self._rerun_current_group)
+        dv.addWidget(self.det_rerun, 0, Qt.AlignLeft)
         self.det_chips = QLabel(""); self.det_chips.setWordWrap(True)
         self.det_chips.setTextFormat(Qt.RichText)
         dv.addWidget(self.det_chips)
@@ -148,7 +158,9 @@ class QtSidebar(QWidget):
         self._item_by_idx.clear()
         self._group_items.clear()
         self._group_of_idx.clear()
+        self._stale.clear()
         if self.grouped is None:
+            self._update_filter_count()
             self._building = False
             return
         bold = QFont(); bold.setBold(True)
@@ -172,6 +184,7 @@ class QtSidebar(QWidget):
                 sub_item.setExpanded(f"sub::{tp}::{sub}" in expanded)
             tp_item.setExpanded(first_build or f"tp::{tp}" in expanded)
         self._building = False
+        self._update_filter_count()
 
     def _fill_group(self, sub_item: QTreeWidgetItem, tp: str, sub: str) -> None:
         infos = self.grouped.tree[tp][sub]
@@ -179,27 +192,47 @@ class QtSidebar(QWidget):
             self._item_by_idx.pop(sub_item.child(k).data(0, ROLE_KEY), None)
             sub_item.removeChild(sub_item.child(k))
         n_finished = 0
+        stale_paths: list[Path] = []
         for info in infos:
             status, has_note = image_status(self.folder, info.path)
+            stale = is_stale(self.folder, info.path, self.profile.cellpose)
+            if stale:
+                stale_paths.append(info.path)
             n_finished += status == "finished"
-            if not passes_filter(self._filter, status, has_note):
+            if not passes_filter(self._filter, status, has_note, stale):
                 continue
             idx = self._idx_by_name.get(info.path.name)
             if idx is None:
                 continue
-            text = f"{STATUS_ICONS_3[status]}  {info.path.name}" + ("  ❝" if has_note else "")
+            text = (f"{STATUS_ICONS_3[status]}  {info.path.name}" + ("  ❝" if has_note else "")
+                    + ("   ⟳" if stale else ""))
             it = QTreeWidgetItem([text])
             it.setData(0, ROLE_KIND, "img"); it.setData(0, ROLE_KEY, idx)
             it.setForeground(0, QBrush(QColor(self.P[STATUS_TO_COLOR[status]])))
             it.setToolTip(0, info.path.name)
             sub_item.addChild(it)
             self._item_by_idx[idx] = it
+        self._stale[(tp, sub)] = stale_paths
         name = (self.S["sb_ungrouped"] if sub == UNGROUPED_SUBJECT
                 else f"{self.S['pe_role_subject']} {sub}")
-        sub_item.setText(0, f"{name}  ·  {n_finished}/{len(infos)}")
+        text = f"{name}  ·  {n_finished}/{len(infos)}"
         state = ("state_finished" if infos and n_finished == len(infos)
                  else "state_in_progress" if n_finished else "state_unsegmented")
         sub_item.setForeground(0, QBrush(QColor(self.P[state])))
+        sub_item.setToolTip(0, text)
+        if stale_paths:
+            # Text + an orange "⟳ n" badge: rich text needs a label in the row.
+            sub_item.setText(0, "")
+            warn, bg = self.P["accent_warn"], _mix(self.P["sidebar_bg"], self.P["accent_warn"], 0.16)
+            lab = QLabel(f'<b style="color:{self.P[state]};">{text}</b>&nbsp;&nbsp;'
+                         f'<span style="color:{warn}; background-color:{bg};">&nbsp;⟳ {len(stale_paths)}&nbsp;</span>')
+            lab.setStyleSheet("background: transparent;")
+            lab.setAttribute(Qt.WA_TransparentForMouseEvents)
+            self.tree.setItemWidget(sub_item, 0, lab)
+        else:
+            self.tree.removeItemWidget(sub_item, 0)
+            sub_item.setText(0, text)
+        self._update_filter_count()
         if self._current is not None and self._group_of_idx.get(self._current) == (tp, sub):
             self._show_details((tp, sub))
 
@@ -218,6 +251,11 @@ class QtSidebar(QWidget):
         self.det_values["qt_det_counted"].setText(f"{d['n_images']} / {d['n_total']}")
         self.det_values["qt_det_changed"].setText(
             f"{d['pct_changed']:.1f} %".replace(".", self.S["qt_decimal_sep"]))
+        stale = self._stale.get(key, [])
+        for w in (self.det_stale_key, self.det_stale_val, self.det_rerun):
+            w.setVisible(bool(stale))
+        self.det_stale_val.setText(self.S["qt_n_images"].format(n=len(stale)))
+        self.det_rerun.setText("⟳  " + self.S["qt_rerun_these"].format(n=len(stale)))
         chips = []
         for t in self.profile.cell_types:
             n = d["by_type"].get(t.key, 0)
@@ -243,6 +281,21 @@ class QtSidebar(QWidget):
         m.addAction(self.S["status_mark_all_done"], lambda: self._on_subject_status(tp, sub, True))
         m.addAction(self.S["status_mark_all_open"], lambda: self._on_subject_status(tp, sub, False))
         m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _update_filter_count(self) -> None:
+        n = sum(len(v) for v in self._stale.values())
+        i = self.filter_combo.findData("stale")
+        if i >= 0:
+            self.filter_combo.setItemText(i, f"⟳ {self.S['qt_filter_stale']} ({n})")
+
+    def stale_paths(self) -> list[Path]:
+        return [p for v in self._stale.values() for p in v]
+
+    def _rerun_current_group(self) -> None:
+        key = self._group_of_idx.get(self._current) if self._current is not None else None
+        paths = self._stale.get(key, []) if key else []
+        if paths:
+            self._on_rerun(list(paths))
 
     def _iter_items(self):
         stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]

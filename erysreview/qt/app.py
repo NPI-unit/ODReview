@@ -104,7 +104,8 @@ class MainWindow(QMainWindow):
         split = QSplitter(Qt.Horizontal)
         self.sidebar = QtSidebar(P, S, self.ctl.profile, on_select=self.show_image,
                                  on_subject_eval=self.choose_counted,
-                                 on_subject_status=self.set_subject_status)
+                                 on_subject_status=self.set_subject_status,
+                                 on_rerun=self.rerun)
         self.sidebar.setMinimumWidth(220)
         center = QWidget()
         cl = QVBoxLayout(center); cl.setContentsMargins(0, 0, 0, 0)
@@ -262,13 +263,61 @@ class MainWindow(QMainWindow):
         self.sidebar.set_idx(self.ctl.idx)
         if loaded is None:
             return
-        self.toolbar.set_param_mismatch(
-            self.S["status_not_segmented"] if loaded.unsegmented
-            else (self.S["status_param_mismatch"] if loaded.mismatch else None))
+        self._show_cellpose_state(loaded)
         self.canvas.set_image(loaded.image, loaded.masks, loaded.review)
         self.canvas.reset_zoom()
         self._update_status()
         self._update_tool_label()
+
+    def _show_cellpose_state(self, loaded) -> None:
+        """The Cellpose button carries the image's state (mockup v4): quiet,
+        orange 'old values' with the reason in the tooltip, or blue 'Rechnen'."""
+        S = self.S
+        self._stale_now = False
+        if loaded.unsegmented:
+            self.toolbar.set_cellpose_state("unsegmented", S["qt_tip_unseg"])
+        elif loaded.mismatch:
+            from ..sidebar_model import stale_reason
+            why = stale_reason(self.ctl.folder, loaded.path, self.ctl.profile.cellpose)
+            names = {"model": "settings_cp_model", "diameter": "settings_cp_diameter",
+                     "flow_threshold": "settings_cp_flow", "cellprob_threshold": "settings_cp_cellprob"}
+            def num(v):
+                if v is None:
+                    return "?"
+                return f"{v:g}".replace(".", S["qt_decimal_sep"]) if isinstance(v, (int, float)) else str(v)
+            label = lambda f: S[names[f]].split(" (")[0]          # "Diameter (px)" -> "Diameter"
+            old = ", ".join(f"{label(f)} {num(h)}" for f, h, _w in why) or "?"
+            new = ", ".join(f"{num(w)}" for _f, _h, w in why) or "?"
+            self.toolbar.set_cellpose_state("stale", S["qt_tip_stale"].format(old=old, new=new))
+            self._stale_now = True
+        else:
+            self.toolbar.set_cellpose_state("ok", S["qt_tip_ok"])
+
+    def rerun(self, paths) -> None:
+        """Re-segment images whose masks were made with old values — after the
+        user confirmed that their reviews are reset (new cells, new ids)."""
+        if not paths:
+            return
+        try:
+            self.ctl.check_model()
+        except ModelUnavailable as e:
+            QMessageBox.warning(self, self.S["model_missing_title"],
+                                self.S["model_missing_msg"].format(name=e.name))
+            return
+        if QMessageBox.question(self, self.S["qt_rerun_title"],
+                                self.S["qt_rerun_msg"].format(n=len(paths))) != QMessageBox.Yes:
+            return
+        self.ctl.flush_time()
+        by_name = {p.name: p for p in self.ctl.images}
+        dlg = BatchDialog(self, self.P, self.S, self.ctl.folder, self.ctl.images, self.ctl.grouped,
+                          self.ctl.profile, self.settings.cellpose_models,
+                          rerun=[by_name.get(p.name, p) for p in paths],
+                          discard=lambda info: self.ctl.discard_image(info.path))
+        dlg.exec()
+        if dlg.ran:
+            self.ctl.reload_review()
+            self.sidebar.refresh_all()
+            self.show_image(self.ctl.idx)
 
     def step(self, delta: int) -> None:
         if self.ctl.has_images:
@@ -394,9 +443,12 @@ class MainWindow(QMainWindow):
             model_ok = True
         except ModelUnavailable:
             model_ok = False
+        stale = self.sidebar.stale_paths()
         card = StudyCard(self, self.P, S, self.ctl.profile.name,
                          str(self.ctl.folder) if self.ctl.folder else None, prog, model_ok,
                          self.ctl.profile.cellpose.model,
+                         n_stale=len(stale), on_rerun_all=lambda: self.rerun(stale),
+                         actions=
                          [(S["study_menu_edit"], lambda: self.open_settings("images")),
                           (S["study_menu_switch"], self.switch_study)])
         card.adjustSize()
@@ -556,8 +608,11 @@ class MainWindow(QMainWindow):
             return
         c = status_counts(self.canvas.cell_infos, self.ctl.review, self.ctl.profile,
                           self.canvas.border_ids, self.canvas.duplicate_ids)
-        self._set_status(format_status(self.S, self.ctl.idx, len(self.ctl.images),
-                                       self.ctl.current_path.name, c, self.ctl.review.is_finished))
+        text = format_status(self.S, self.ctl.idx, len(self.ctl.images),
+                             self.ctl.current_path.name, c, self.ctl.review.is_finished)
+        if getattr(self, "_stale_now", False):
+            text += "   " + self.S["qt_status_stale"]
+        self._set_status(text)
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)

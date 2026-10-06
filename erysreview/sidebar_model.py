@@ -6,13 +6,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .cellpose_runner import has_cache
+from .cellpose_runner import cached_params, has_cache, params_match
 from .persistence import ReviewState
 from .profile import ProfileData
 
 FILTERS = [("all", "filter_all"), ("unsegmented", "filter_unsegmented"),
            ("unfinished", "filter_unfinished"), ("finished", "filter_finished"),
            ("with_notes", "filter_with_notes")]
+# Qt only (the Tk sidebar keeps its five): masks made with other parameters.
+FILTER_STALE = ("stale", "qt_filter_stale")
 
 
 def image_status(folder: Path | None, image_path: Path) -> tuple[str, bool]:
@@ -29,7 +31,28 @@ def image_status(folder: Path | None, image_path: Path) -> tuple[str, bool]:
     return ("finished" if review.is_finished else "in_progress"), has_note
 
 
-def passes_filter(mode: str, status: str, has_note: bool) -> bool:
+def is_stale(folder: Path | None, image_path: Path, params) -> bool:
+    """Masks exist but were made with other Cellpose parameters/model than the
+    study now asks for — counted with values that no longer apply."""
+    return (folder is not None and has_cache(folder, image_path)
+            and not params_match(folder, image_path, params))
+
+
+def stale_reason(folder: Path, image_path: Path, params) -> list[tuple[str, object, object]]:
+    """[(field, made with, study wants)] for a stale image — what the tooltip names."""
+    cp = cached_params(folder, image_path) or {}
+    out = []
+    for f in ("model", "diameter", "flow_threshold", "cellprob_threshold"):
+        want = getattr(params, f)
+        have = cp.get(f)
+        if have is None or (str(have) != str(want) if f == "model" else float(have) != float(want)):
+            out.append((f, have, want))
+    return out
+
+
+def passes_filter(mode: str, status: str, has_note: bool, stale: bool = False) -> bool:
+    if mode == "stale":
+        return stale
     if mode == "with_notes":
         return has_note
     if mode == "unsegmented":

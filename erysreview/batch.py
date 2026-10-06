@@ -201,3 +201,27 @@ class KeepAwake:
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
         except Exception:  # noqa: BLE001
             pass
+
+
+def run_rerun(folder: Path, infos: list[ImageGroupInfo], discard: Callable[[ImageGroupInfo], None],
+              segment: Callable[[ImageGroupInfo], None], progress: Progress,
+              is_cancelled: IsCancelled, label: Callable[[int, int, str], str]) -> BatchResult:
+    """Re-segment images whose masks are stale. Each image's masks and review
+    are discarded right before it is segmented, so a cancel leaves every image
+    not yet reached exactly as it was. The caller has confirmed the reset."""
+    errors: list[tuple[str, str]] = []
+    done = 0
+    n = len(infos)
+    for idx, info in enumerate(infos, start=1):
+        if is_cancelled():
+            break
+        progress(idx - 1, label(idx, n, info.path.name))
+        try:
+            discard(info)
+            segment(info)
+            done += 1
+        except Exception as e:  # noqa: BLE001 — collected for the summary
+            errors.append((info.path.name, str(e)))
+        progress(idx)
+    return done, 0, errors, ""
+

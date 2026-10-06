@@ -339,6 +339,22 @@ class AppController:
             pass
         self.review = ReviewState()
 
+    def stale_images(self) -> list[Path]:
+        """Images whose masks were made with other parameters than the study's."""
+        from .sidebar_model import is_stale
+        if self.folder is None:
+            return []
+        return [p for p in self.images if is_stale(self.folder, p, self.profile.cellpose)]
+
+    def discard_image(self, path: Path) -> None:
+        """Masks + review of any image (the batch re-run calls this per image,
+        on its worker thread — it touches only files)."""
+        discard_cache(self.folder, path)
+        try:
+            ReviewState.review_path(self.folder, path.stem).unlink()
+        except FileNotFoundError:
+            pass
+
     def segment_task(self, path: Path) -> Task:
         folder, cp, gpu = self.folder, self.profile.cellpose, self.profile.use_gpu
         registry = self.settings.cellpose_models
