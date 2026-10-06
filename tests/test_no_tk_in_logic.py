@@ -1,8 +1,8 @@
-"""Guard for the Qt port: the logic modules must load without Tk.
+"""Guard: the app has no Tk any more (Phase 5) — nothing may load tkinter.
 
-Anything imported here may be used by a non-Tk front end (and by headless
-code paths). If one of them pulls in tkinter or a Tk matplotlib backend
-again — usually through an import from canvas/dialogs/extras — this fails.
+Every module of the package, Qt front end included, is imported on its own;
+if one of them pulls in tkinter or a Tk matplotlib backend, this fails. A
+second check: no file of the package mentions tkinter at all.
 """
 
 from __future__ import annotations
@@ -13,12 +13,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-LOGIC = [
-    "areas", "batch", "canvas_core", "cellpose_runner", "controller", "counts", "db", "editor", "evaluation", "export",
-    "grouping", "i18n", "image_state", "nameparser", "overlay", "overview",
-    "package", "persistence", "profile", "qt.app", "sidebar_model", "sizefilter", "stats", "study",
-    "summary", "tasks", "theme",
-]
+PKG = ROOT / "erysreview"
+LOGIC = sorted(
+    ".".join(p.relative_to(PKG).with_suffix("").parts)
+    for p in PKG.rglob("*.py")
+    if p.name != "__init__.py" and " " not in p.name and "__pycache__" not in p.parts
+)
 
 PROBE = """
 import sys, importlib
@@ -41,9 +41,12 @@ def main() -> int:
             failures.append(f"{mod}: loads {out.stdout.strip()}")
         else:
             print(f"  ok  erysreview.{mod} loads without Tk")
+    for p in PKG.rglob("*.py"):
+        if " " not in p.name and "tkinter" in p.read_text(encoding="utf-8"):
+            failures.append(f"{p.relative_to(ROOT)} mentions tkinter")
     if failures:
         raise SystemExit("FAIL:\n  " + "\n  ".join(failures))
-    print(f"OK — {len(LOGIC)} logic modules import without tkinter.")
+    print(f"OK — {len(LOGIC)} modules import without tkinter; no file mentions it.")
     return 0
 
 

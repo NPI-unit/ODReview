@@ -7,9 +7,10 @@ chips up to CHIP_MAX_TYPES and falls back to the dropdown above that.
 
 from __future__ import annotations
 
+import os
+
 import sys
 import tempfile
-import tkinter as tk
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -20,7 +21,7 @@ from erysreview.persistence import AppSettings, ReviewState, TypeDef
 from erysreview.profile import ProfileData
 from erysreview.study import study_progress
 from erysreview.theme import palette
-from erysreview.toolbar import CHIP_MAX_TYPES, Toolbar
+from erysreview.theme import CHIP_MAX_TYPES
 
 CHECKS = 0
 
@@ -89,44 +90,42 @@ def progress_checks() -> None:
 
 
 def chip_checks() -> None:
-    root = tk.Tk(); root.withdraw()
-    noop = lambda *a, **k: None
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from erysreview.qt.app import make_app
+    from erysreview.qt.toolbar import QtToolbar
+    make_app(["test"])
     settings = AppSettings(toolbar_layout="two_row")
+    picked: list[str] = []
+    cbs = {k: (lambda *a, **kw: None) for k in ("tool", "resegment", "overlay", "reset_zoom", "undo",
+                                                "info", "export", "study")}
+    cbs["type"] = picked.append
 
-    def make(n_types: int) -> Toolbar:
+    def make(n_types: int) -> QtToolbar:
         prof = ProfileData()
         prof.cell_types = [TypeDef(key=f"t{i}", name=f"Typ {i}", color="#3366AA")
                            for i in range(n_types)]
         prof.active_type_key = "t0"
-        return Toolbar(root, palette(settings.theme), get_strings("de"), settings, prof,
-                       on_tool_change=noop, on_type_change=noop, on_resegment=noop,
-                       on_toggle_overlay=noop, on_reset_zoom=noop, on_undo=noop,
-                       on_info=noop, on_export=noop)
+        return QtToolbar(palette(settings.theme), get_strings("de"), settings, prof, cbs)
 
     tb = make(CHIP_MAX_TYPES)
-    check(len(tb._chips) == CHIP_MAX_TYPES and tb.type_combo is None,
+    check(len(tb.chips) == CHIP_MAX_TYPES and tb.type_combo is None,
           f"{CHIP_MAX_TYPES} types: chips, no dropdown")
-    picked = []
-    tb._cb_type = picked.append
-    tb._chips["t2"].invoke()
-    check(picked == ["t2"] and tb.profile.active_type_key == "t2"
-          and str(tb._chips["t2"].cget("style")) == "ErysChipActive.TButton",
+    tb.chips["t2"].click()
+    check(picked == ["t2"] and tb.chips["t2"].isChecked() and not tb.chips["t0"].isChecked(),
           "a chip click selects the type and highlights it")
 
     tb2 = make(CHIP_MAX_TYPES + 1)
-    check(not tb2._chips and tb2.type_combo is not None,
+    check(not tb2.chips and tb2.type_combo is not None,
           f"{CHIP_MAX_TYPES + 1} types: back to the dropdown")
 
     tb.profile.cell_types.append(TypeDef(key="extra", name="Extra"))
     tb.refresh_type_combo(tb.profile)
-    check(not tb._chips and tb.type_combo is not None,
+    check(not tb.chips and tb.type_combo is not None,
           "growing past the limit later switches too")
 
     settings.toolbar_layout = "grouped"
     tb.rebuild()
-    check(tb.type_combo is not None and len(tb._rows) == 1,
-          "rebuild to the grouped layout: one row with the dropdown")
-    root.destroy()
+    check(tb.type_combo is not None, "rebuild to the one-row layout: the dropdown")
 
 
 def main() -> int:

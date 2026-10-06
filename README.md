@@ -38,7 +38,7 @@ Cellpose 4 segments erythrocytes reliably, but a real lab workflow needs more:
 - **Persist** every click, so you can leave and come back days later
 - **Configure** all of this per study without touching code
 
-ErysReview gives you exactly that, in a single Tk window.
+ErysReview gives you exactly that, in a single window (Qt / PySide6).
 
 ---
 

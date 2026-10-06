@@ -1,7 +1,7 @@
-"""Entry point: ``python -m erysreview``."""
+"""Entry point: ``python -m erysreview`` starts the app (Qt front end)."""
 
-from .app import main
+from .qt.app import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

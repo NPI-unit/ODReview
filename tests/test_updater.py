@@ -4,9 +4,9 @@ No network: the version comparison is pure, and every failure path is forced by
 substituting urlopen. A gate that needs the internet fails on the lab machines
 this software runs on, which is exactly where it would matter least.
 
-The feature ships INACTIVE (release repo not created yet) — the wiring in
-app.py is commented out. This gate keeps the code compiling and correct so that
-turning it on later is one line and not an archaeology project.
+The feature ships INACTIVE (release repo not created yet) — the Qt app does not
+call it yet. This gate keeps the code compiling and correct so that turning it
+on later is a small step and not an archaeology project.
 
 Runs as a plain script:  ./.venv/bin/python tests/test_updater.py
 """
@@ -109,11 +109,9 @@ def main() -> int:
     from erysreview.persistence import AppSettings
     check(AppSettings().update_check_enabled is False,
           "the startup check is off by default while the repo is private")
-    app_src = (Path(__file__).resolve().parent.parent / "erysreview" / "app.py").read_text()
-    check("# m_help.add_command(label=S[\"menu_check_updates\"]" in app_src,
-          "the menu entry is present but commented out")
-    check("# self.root.after(3000, self._maybe_check_updates)" in app_src,
-          "the startup check is present but commented out")
+    app_src = (Path(__file__).resolve().parent.parent / "erysreview" / "qt" / "app.py").read_text()
+    check("updater" not in app_src and "menu_check_updates" not in app_src,
+          "the Qt app has no update menu entry and no startup check yet (wiring follows with the release repo)")
 
     print(f"OK — {CHECKS} checks: version comparison is correct and every network "
           f"failure degrades to None; feature ships inactive.")

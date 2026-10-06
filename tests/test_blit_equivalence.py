@@ -2,7 +2,7 @@
 
 Toggling a cell used to redraw the whole figure, which re-resamples all three
 full-size image layers: ~510 ms per click on 1200x1920 review data, ~97 % of
-the click. `EryCanvas._blit_cell()` instead rebuilds only the rectangle around
+the click. `CanvasCore._blit_cell()` instead rebuilds only the rectangle around
 the edited cell and copies that to the screen.
 
 Cutting a redraw down to a rectangle is only allowed if nobody can tell. So
@@ -37,14 +37,14 @@ this one — it is an environment trap, not a defect in the code under test.
 from __future__ import annotations
 
 import sys
-import tkinter as tk
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from erysreview.canvas import EryCanvas
 from erysreview.persistence import AppSettings, ReviewState
 from erysreview.profile import ProfileData
 
@@ -108,7 +108,7 @@ def _toggle_and_compare(cv, cid: int, label: str) -> None:
     ok = cv._act_remove_toggle(float(info.cx), float(info.cy))
     check(ok, f"{label}: the toggle landed on cell {cid}")
     if not cv.BLIT_ENABLED:
-        # Where the fast path is switched off (EryCanvas.BLIT_ENABLED — it is
+        # Where the fast path is switched off (CanvasCore.BLIT_ENABLED — it is
         # Windows-only because the rebuilt rectangle was measured to render the
         # edited cell visibly darker on macOS), pin what matters there instead:
         # the edit lands and the full path draws it. Skipping outright would let
@@ -126,11 +126,20 @@ def _toggle_and_compare(cv, cid: int, label: str) -> None:
 
 def main() -> int:
     img, masks = _synthetic()
-    root = tk.Tk()
-    root.geometry("900x640+0+0")
+    from erysreview.qt.app import make_app
+    from erysreview.qt.canvas import QtEryCanvas
+    app = make_app(["test"])
+
+    class _Root:                       # the Tk root's update() → Qt's event loop
+        def update(self):
+            app.processEvents()
+
+        def destroy(self):
+            cv.close()
+    root = _Root()
     profile = ProfileData()
-    cv = EryCanvas(root, AppSettings(), profile, save_callback=lambda: None)
-    cv.pack(fill="both", expand=True)
+    cv = QtEryCanvas(AppSettings(), profile, save_callback=lambda: None)
+    cv.resize(900, 640); cv.show()
     root.update()
     cv.set_image(img, masks, ReviewState())
     root.update()
@@ -200,7 +209,7 @@ def main() -> int:
               f"new cell {new_id}: drawn by the full path on this platform")
 
     root.destroy()
-    from erysreview.canvas import EryCanvas as _EC
+    _EC = QtEryCanvas
     how = ("pixel-identical to a full redraw" if _EC.BLIT_ENABLED
            else "off on this platform; edits go through the full redraw")
     print(f"OK — {CHECKS} checks: the single-cell blit is {how}.")
