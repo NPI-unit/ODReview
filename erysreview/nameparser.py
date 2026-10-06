@@ -18,6 +18,8 @@ grouping at load time, so what you preview is exactly what you get.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import re
 
 ROLE_SUBJECT = "subject"
@@ -104,3 +106,27 @@ def validate_roles(field_roles: list[str]) -> tuple[bool, str]:
     if counts[ROLE_IMAGE_NUM] > 1:
         return (False, "too_many_image_num")
     return (True, "")
+
+
+def sample_filenames(folder: str | Path | None) -> list[str]:
+    """Image filenames directly in `folder`, sorted — the examples the filename
+    parser is configured against.
+
+    Same exclusions as cellpose_runner.list_images — the preview must see
+    exactly the files the import will see. On a FAT/exFAT stick macOS writes an
+    AppleDouble `._<name>` twin beside every image, and "." sorts before
+    letters, so `._Bedrest BDC-5_A3_….tif` became the first sample. Since "_"
+    is a delimiter, `._Bedrest` tokenizes to "." + "Bedrest" — one token more
+    than the real name — so every role row rendered one position too low, and
+    saving that (one role too many) made len(tokens) < len(field_roles) for
+    every real file: the whole study fell into _ungrouped.
+    """
+    if not folder:
+        return []
+    p = Path(folder)
+    if not p.is_dir():
+        return []
+    return [f.name for f in sorted(p.iterdir())
+            if f.is_file() and f.suffix.lower() in _EXTS
+            and not f.name.startswith(".") and not f.name.endswith("_overlay.png")]
+

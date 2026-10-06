@@ -180,6 +180,14 @@ class AppSettings:
     notebox_h: int = 180
     sidebar_width: int = 270
     overlay_visible: bool = True
+    # Reveal a hidden overlay when the user edits a cell (see
+    # EryCanvas._autoshow_overlay). Off: the overlay stays as the user left it.
+    overlay_autoshow: bool = True
+    # Toolbar layout: "grouped" (one row) or "two_row" (cell types as chips).
+    toolbar_layout: str = "grouped"
+    # What happens to existing masks after the study's Cellpose parameters
+    # changed: "later" (only the toolbar banner says so), "ask", "batch".
+    resegment_default: str = "later"
     active_tool: str = TOOL_ADD
     last_profile_name: str | None = None
     reviewer_name: str = ""           # stamped into shared packages + import logs
@@ -221,6 +229,12 @@ class AppSettings:
                 notebox_h=int(raw.get("notebox_h", 180)),
                 sidebar_width=int(raw.get("sidebar_width", 270)),
                 overlay_visible=bool(raw.get("overlay_visible", True)),
+                overlay_autoshow=bool(raw.get("overlay_autoshow", True)),
+                toolbar_layout=(raw.get("toolbar_layout") if raw.get("toolbar_layout")
+                                in ("grouped", "two_row") else "grouped"),
+                resegment_default=(raw.get("resegment_default")
+                                   if raw.get("resegment_default")
+                                   in ("later", "ask", "batch") else "later"),
                 active_tool=active_tool,
                 last_profile_name=raw.get("last_profile_name"),
                 reviewer_name=str(raw.get("reviewer_name", "")),
@@ -245,6 +259,9 @@ class AppSettings:
             "notebox_w": self.notebox_w, "notebox_h": self.notebox_h,
             "sidebar_width": self.sidebar_width,
             "overlay_visible": self.overlay_visible,
+            "overlay_autoshow": self.overlay_autoshow,
+            "toolbar_layout": self.toolbar_layout,
+            "resegment_default": self.resegment_default,
             "active_tool": self.active_tool,
             "last_profile_name": self.last_profile_name,
             "reviewer_name": self.reviewer_name,

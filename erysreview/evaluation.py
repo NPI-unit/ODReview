@@ -130,3 +130,31 @@ def group_eval_summary(
 ) -> dict:
     """Aggregate counts restricted to the effective evaluation set of one group."""
     return group_eval(folder, images_in_group, profile)[0]
+
+
+def inclusion_with_overrides(images, counts, overrides, target):
+    """Effective inclusion set + cumulative active count, honoring overrides.
+
+    overrides[stem] in {True, False, None(=auto)}. Same rule as
+    effective_eval_stems, but on counts the eval dialog already holds, so the
+    dialog can re-run it on every click without touching disk.
+    """
+    included = set()
+    cum = 0
+    reached = False
+    for info in images:
+        stem = info.path.stem
+        n = counts.get(stem)
+        if n is None:
+            continue
+        ov = overrides.get(stem)
+        if ov is True:
+            included.add(stem); cum += n
+        elif ov is False:
+            continue
+        else:
+            if not reached:
+                included.add(stem); cum += n
+                if cum >= target:
+                    reached = True
+    return included, cum

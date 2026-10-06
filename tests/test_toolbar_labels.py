@@ -45,7 +45,8 @@ def check(cond: bool, label: str) -> None:
     print(f"  ok  {label}")
 
 
-def main() -> int:
+def run(layout: str) -> int:
+    print(f"— layout {layout}")
     root = tk.Tk()
     # A fixed width matters: without one the toplevel shrinks to fit its
     # content, so the toolbar's own width follows its compact state and the
@@ -55,7 +56,7 @@ def main() -> int:
     root.geometry("1200x200")
     root.withdraw()
     noop = lambda *a, **k: None
-    settings = AppSettings()
+    settings = AppSettings(toolbar_layout=layout)
     tb = Toolbar(root, palette(settings.theme), get_strings("de"), settings,
                  ProfileData(),
                  on_tool_change=noop, on_type_change=noop, on_resegment=noop,
@@ -127,6 +128,13 @@ def main() -> int:
     root.destroy()
     print(f"OK — {CHECKS} checks: compact and full labels stay in sync; no button "
           f"can inherit another's label; the relabel threshold is measured.")
+    return 0
+
+
+def main() -> int:
+    # Both toolbar layouts carry the same buttons and the same relabelling.
+    for layout in ("grouped", "two_row"):
+        run(layout)
     return 0
 
 

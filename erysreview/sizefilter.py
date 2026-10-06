@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .canvas import CellInfo
+from .overlay import CellInfo
 from .profile import SizeFilter
 
 

@@ -22,7 +22,7 @@ import numpy as np
 # Allow running the file directly (python tests/test_overlay.py).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from erysreview.canvas import (
+from erysreview.overlay import (
     COLOR_INACTIVE_U8, CellInfo, OverlayColors, build_overlay_rgba,
     cell_contours, compute_cell_infos, patch_overlay_cell,
 )

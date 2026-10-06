@@ -27,7 +27,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from . import __version__
-from .canvas import build_overlay_rgba, normalize_image_for_display
+from .overlay import build_overlay_rgba, normalize_image_for_display
 from .cellpose_runner import load_image
 from .grouping import GroupedFolder, ImageGroupInfo, UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT
 from .image_state import compute_image_state
@@ -316,3 +316,28 @@ def export_folder_structured(folder: Path, profile: ProfileData,
         pass
 
     return root
+
+
+def export_scope_rows(folder: Path, grouped) -> list[tuple[str, str, int, int, bool]]:
+    """One row per (timepoint, subject) for the export-scope picker:
+    (tp, sub, n_images, n_with_masks, edited). `edited` = any segmented image
+    of the group carries a user edit."""
+    from .cellpose_runner import has_cache
+    from .persistence import ReviewState
+    rows = []
+    for tp in grouped.timepoints():
+        for sub in grouped.subjects_in(tp):
+            imgs = grouped.tree[tp][sub]
+            cached = [i for i in imgs if has_cache(folder, i.path)]
+            edited = any(ReviewState.load(folder, i.path.stem).has_user_edits() for i in cached)
+            rows.append((tp, sub, len(imgs), len(cached), edited))
+    return rows
+
+
+def scope_preset(rows, mode: str) -> dict[tuple[str, str], bool]:
+    """Which groups a preset button selects: "all" | "none" | "edited" | "computed"."""
+    return {(tp, sub): (True if mode == "all" else
+                        False if mode == "none" else
+                        ed if mode == "edited" else nc > 0)
+            for tp, sub, _n, nc, ed in rows}
+

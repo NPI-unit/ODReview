@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 from skimage.draw import disk as sk_disk
 
-from .canvas import CellInfo, compute_cell_infos, is_border_cell
+from .overlay import CellInfo, compute_cell_infos, is_border_cell
 from .cellpose_runner import load_cached_masks
 from .sizefilter import detect_size_outliers
 from .grouping import ImageGroupInfo

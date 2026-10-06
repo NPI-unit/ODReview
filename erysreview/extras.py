@@ -15,6 +15,7 @@ from typing import Callable
 from . import package as pkg
 from . import stats as statsmod
 from .cellpose_runner import has_cache
+from .evaluation import inclusion_with_overrides
 from .counts import image_counts
 from .dialogs import _center_on_parent, confirm_dialog, info_dialog
 from .grouping import (
@@ -23,32 +24,6 @@ from .grouping import (
 from .persistence import ReviewState
 from .profile import ProfileData
 from .theme import font
-
-
-def _eval_compute(images, counts, overrides, target):
-    """Effective inclusion set + cumulative active count, honoring overrides.
-
-    overrides[stem] in {True, False, None(=auto)}. Mirrors evaluation.py.
-    """
-    included = set()
-    cum = 0
-    reached = False
-    for info in images:
-        stem = info.path.stem
-        n = counts.get(stem)
-        if n is None:
-            continue
-        ov = overrides.get(stem)
-        if ov is True:
-            included.add(stem); cum += n
-        elif ov is False:
-            continue
-        else:
-            if not reached:
-                included.add(stem); cum += n
-                if cum >= target:
-                    reached = True
-    return included, cum
 
 
 def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
@@ -117,7 +92,7 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
     summary.pack(side="left")
 
     def _refresh():
-        included, _ = _eval_compute(images_in_group, counts, overrides, target)
+        included, _ = inclusion_with_overrides(images_in_group, counts, overrides, target)
         for iid in tree.get_children():
             tree.delete(iid)
         cum = 0
@@ -137,14 +112,14 @@ def eval_select_dialog(parent, folder, images_in_group, profile: ProfileData,
                 "—" if n is None else n,
                 "—" if n is None else (cum if is_in else ""),
             ))
-        _, total = _eval_compute(images_in_group, counts, overrides, target)
+        _, total = inclusion_with_overrides(images_in_group, counts, overrides, target)
         summary.config(text=S["eval_dlg_summary"].format(n=total, target=target))
 
     def _toggle(evt):
         stem = tree.identify_row(evt.y)
         if not stem or counts.get(stem) is None:
             return
-        included, _ = _eval_compute(images_in_group, counts, overrides, target)
+        included, _ = inclusion_with_overrides(images_in_group, counts, overrides, target)
         # Toggle effective membership: in -> exclude, out -> include.
         overrides[stem] = False if stem in included else True
         _refresh()

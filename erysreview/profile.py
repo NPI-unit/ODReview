@@ -42,6 +42,32 @@ DEFAULT_TYPES_TRIBAL = [
 ]
 
 
+# Valid ranges for the numeric study settings. Spinbox arrows bound a field
+# but typed input does not, so an out-of-range value (how the "diameter
+# 200/2000" values got in) is snapped before it reaches Cellpose — and a
+# nonsense size-filter factor must not silently exclude every cell (EH-3).
+LIMITS: dict[str, tuple[float, float]] = {
+    "diameter": (5.0, 500.0),
+    "flow_threshold": (0.0, 3.0),
+    "cellprob_threshold": (-6.0, 6.0),
+    "size_min_factor": (0.05, 0.95),
+    "size_max_factor": (1.05, 5.0),
+    "overlay_alpha": (0.15, 1.0),
+}
+
+
+def clamp_field(field: str, raw, default: float) -> float:
+    """`raw` as float, clamped to LIMITS[field]; `default` if not a number."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if v != v:          # NaN
+        return default
+    lo, hi = LIMITS[field]
+    return max(lo, min(hi, v))
+
+
 @dataclass
 class SizeFilter:
     """Flags cells whose area is implausible for a single erythrocyte.

@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from erysreview.canvas import CellInfo
+from erysreview.overlay import CellInfo
 from erysreview.profile import SizeFilter
 from erysreview.sizefilter import detect_size_outliers
 

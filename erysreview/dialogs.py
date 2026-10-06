@@ -8,6 +8,7 @@ import threading
 import time
 import tkinter as tk
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from tkinter import colorchooser, filedialog, simpledialog, ttk
 from typing import Callable, Optional
@@ -19,7 +20,7 @@ from .cellpose_runner import (
 from .persistence import AppSettings, CellposeParams, TypeDef
 from .theme import FONT_SCALE_CHOICES, OUTLINE_ORDER, font
 from .profile import (
-    ProfileData, SizeFilter,
+    ProfileData, SizeFilter, clamp_field,
     delete_profile, ensure_default_profile, list_profiles, load_profile, save_profile,
 )
 
@@ -35,16 +36,13 @@ def _center_on_parent(top: tk.Toplevel, parent: tk.Misc) -> None:
     top.geometry(f"{w}x{h}+{px}+{py}")
 
 
-def _clampf(var, lo: float, hi: float, default: float) -> float:
-    """Read a Tk numeric var as float and clamp to [lo, hi]. The Spinbox arrows
-    bound the range but typed input does not, so an out-of-range value (how the
-    'diameter 200/2000' values got in) is snapped here before it reaches
-    Cellpose. Falls back to `default` if the field holds non-numeric garbage."""
+def _clampf(var, field: str, default: float) -> float:
+    """Read a Tk numeric var and clamp it to the field's range (profile.LIMITS)."""
     try:
-        v = float(var.get())
-    except (tk.TclError, ValueError):
+        raw = var.get()
+    except tk.TclError:
         return default
-    return max(lo, min(hi, v))
+    return clamp_field(field, raw, default)
 
 
 def _sanitize_key(name: str, taken: set[str]) -> str:
@@ -150,6 +148,12 @@ class CellposeSpinner(BusyDialog):
             strings=strings,
             submessage=strings["cp_running_image"].format(name=image_name),
         )
+
+
+def run_task_pumping(widget: tk.Misc, task):
+    """Run a tasks.Task (no progress, no cancel) the Tk way — see below."""
+    from .tasks import run_sync
+    return run_in_thread_pumping(widget, lambda: run_sync(task))
 
 
 def run_in_thread_pumping(widget: tk.Misc, work_fn: Callable):
@@ -370,16 +374,7 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict,
     tab_r = tk.Frame(nb); nb.add(tab_r, text=S["pe_section_grouping"])
 
     # Sample filename — shared by both the simple preview and the regex test.
-    def _sample_files() -> list[str]:
-        out: list[str] = []
-        if working.import_folder:
-            p = Path(working.import_folder)
-            if p.is_dir():
-                for f in sorted(p.iterdir()):
-                    if f.is_file() and f.suffix.lower() in nameparser._EXTS:
-                        out.append(f.name)
-        return out
-    sample_files = _sample_files()
+    sample_files = nameparser.sample_filenames(working.import_folder)
     sample_default = sample_files[0] if sample_files else "TRIBAL_195_Prä_19.11.25_021.tif"
 
     # ── Simple parser (delimiters + roles) ──
@@ -794,10 +789,10 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict,
         copy_originals_to_outputs=bool(copy_orig_var.get()),
         cell_types=type_state["types"],
         cellpose=CellposeParams(
-            diameter=_clampf(diam_var, 5.0, 500.0, working.cellpose.diameter),
-            flow_threshold=_clampf(flow_var, 0.0, 3.0, working.cellpose.flow_threshold),
+            diameter=_clampf(diam_var, "diameter", working.cellpose.diameter),
+            flow_threshold=_clampf(flow_var, "flow_threshold", working.cellpose.flow_threshold),
             cellprob_threshold=_clampf(
-                cellprob_var, -6.0, 6.0, working.cellpose.cellprob_threshold),
+                cellprob_var, "cellprob_threshold", working.cellpose.cellprob_threshold),
             model=model_var.get() or BUILTIN_MODEL,
         ),
         use_gpu=bool(use_gpu_var.get()),
@@ -807,10 +802,10 @@ def profile_editor_dialog(parent: tk.Misc, profile: ProfileData, strings: dict,
             enabled=bool(sf_enabled_var.get()),
             # Clamped like the Cellpose params (EH-3): a typed-in nonsense value
             # must not silently exclude every cell in the study.
-            min_factor=_clampf(sf_min_var, 0.05, 0.95, working.size_filter.min_factor),
-            max_factor=_clampf(sf_max_var, 1.05, 5.0, working.size_filter.max_factor),
+            min_factor=_clampf(sf_min_var, "size_min_factor", working.size_filter.min_factor),
+            max_factor=_clampf(sf_max_var, "size_max_factor", working.size_filter.max_factor),
         ),
-        overlay_alpha=_clampf(alpha_var, 0.15, 1.0, working.overlay_alpha),
+        overlay_alpha=_clampf(alpha_var, "overlay_alpha", working.overlay_alpha),
         type_outlines_enabled=bool(outlines_var.get()),
         sidebar_open_groups=working.sidebar_open_groups,
         details_collapsed=working.details_collapsed,
@@ -834,17 +829,9 @@ def export_scope_dialog(parent: tk.Misc, folder: Path, grouped, strings: dict) -
     whole group out changes nothing about the groups that are exported — which
     is what makes chunking safe for weaker machines.
     """
-    from .persistence import ReviewState
-    from .cellpose_runner import has_cache
+    from .export import export_scope_rows, scope_preset
     S = strings
-    rows: list[tuple[str, str, int, int, bool]] = []   # tp, sub, n_img, n_cached, edited
-    for tp in grouped.timepoints():
-        for sub in grouped.subjects_in(tp):
-            imgs = grouped.tree[tp][sub]
-            cached = [i for i in imgs if has_cache(folder, i.path)]
-            edited = any(ReviewState.load(folder, i.path.stem).has_user_edits()
-                         for i in cached)
-            rows.append((tp, sub, len(imgs), len(cached), edited))
+    rows = export_scope_rows(folder, grouped)   # tp, sub, n_img, n_cached, edited
 
     checked = {(tp, sub): True for tp, sub, _, _, _ in rows}
     result: dict = {"ok": False}
@@ -885,10 +872,7 @@ def export_scope_dialog(parent: tk.Misc, folder: Path, grouped, strings: dict) -
     tree.bind("<Button-1>", toggle)
 
     def preset(mode):
-        for tp, sub, _n, nc, ed in rows:
-            checked[(tp, sub)] = (True if mode == "all" else
-                                  False if mode == "none" else
-                                  ed if mode == "edited" else nc > 0)
+        checked.update(scope_preset(rows, mode))
         redraw()
 
     btns = tk.Frame(frm); btns.pack(fill="x", pady=(10, 0))
@@ -1029,27 +1013,50 @@ def model_registry_dialog(parent: tk.Misc, registry: dict, strings: dict) -> dic
     return reg if result["saved"] else None
 
 
-def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
-                    ) -> tuple[Optional[AppSettings], bool, bool]:
-    """Returns (new_settings_or_None, language_changed, theme_changed)."""
+def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict,
+                    study_name: Optional[str] = None,
+                    ) -> tuple[Optional[AppSettings], bool, bool, Optional[str]]:
+    """Returns (new_settings_or_None, language_changed, needs_restart, action).
+
+    Two sections: the active study (it travels in packages, so it is only
+    linked from here — edit / switch) and everything that belongs to this
+    computer. `action` is "edit" or "switch" when the user left through one of
+    the study buttons; the values shown are saved in that case too, so a
+    change made before clicking is not silently dropped.
+    """
     S = strings
     top = tk.Toplevel(parent); top.title(S["settings_title"])
     top.transient(parent); top.grab_set(); top.resizable(False, False)
+    state: dict = {"saved": False, "action": None}
 
-    pad = {"padx": 16, "pady": 8}
+    pad = {"padx": 12, "pady": 6}
+    if study_name is not None:
+        sf = ttk.LabelFrame(top, text=S["settings_section_study"])
+        sf.pack(fill="x", padx=16, pady=(14, 6))
+        tk.Label(sf, text=S["settings_study_active"].format(name=study_name),
+                 font=font(12, "bold")).pack(side="left", **pad)
+        def leave_for(action):
+            state["saved"] = True; state["action"] = action; top.destroy()
+        ttk.Button(sf, text=S["settings_study_switch"],
+                   command=lambda: leave_for("switch")).pack(side="right", **pad)
+        ttk.Button(sf, text=S["settings_study_edit"],
+                   command=lambda: leave_for("edit")).pack(side="right", pady=6)
+
+    lf = ttk.LabelFrame(top, text=S["settings_section_local"])
+    lf.pack(fill="x", padx=16, pady=6)
     row = 0
-    tk.Label(top, text=S["settings_language"]).grid(row=row, column=0, sticky="w", **pad)
+    tk.Label(lf, text=S["settings_language"]).grid(row=row, column=0, sticky="w", **pad)
     lang_var = tk.StringVar(value=settings.language)
-    ttk.Combobox(top, textvariable=lang_var, values=["de", "en"],
+    ttk.Combobox(lf, textvariable=lang_var, values=["de", "en"],
                  state="readonly", width=10).grid(row=row, column=1, sticky="w", **pad)
     row += 1
 
-    tk.Label(top, text=S["settings_theme"]).grid(row=row, column=0, sticky="w", **pad)
+    tk.Label(lf, text=S["settings_theme"]).grid(row=row, column=0, sticky="w", **pad)
     # Map display labels back to internal keys
     theme_disp = {S["settings_theme_dark"]: "dark", S["settings_theme_light"]: "light"}
     theme_disp_inv = {v: k for k, v in theme_disp.items()}
     theme_var = tk.StringVar(value=theme_disp_inv.get(settings.theme, S["settings_theme_dark"]))
-    ttk.Combobox(top, textvariable=theme_var,
+    ttk.Combobox(lf, textvariable=theme_var,
                  values=[S["settings_theme_dark"], S["settings_theme_light"]],
                  state="readonly", width=10
                  ).grid(row=row, column=1, sticky="w", **pad)
@@ -1057,49 +1064,72 @@ def settings_dialog(parent: tk.Misc, settings: AppSettings, strings: dict
 
     # WCAG 1.4.4 — the user must be able to enlarge the text. Applied at
     # startup by theme.set_font_scale(), so it needs a restart like the theme.
-    tk.Label(top, text=S["settings_font_scale"]).grid(row=row, column=0, sticky="w", **pad)
+    tk.Label(lf, text=S["settings_font_scale"]).grid(row=row, column=0, sticky="w", **pad)
     font_disp = {S[f"settings_font_{int(v * 100)}"]: v for v in FONT_SCALE_CHOICES}
     font_disp_inv = {v: k for k, v in font_disp.items()}
     font_var = tk.StringVar(value=font_disp_inv.get(
         settings.font_scale, S["settings_font_100"]))
-    ttk.Combobox(top, textvariable=font_var, values=list(font_disp.keys()),
+    ttk.Combobox(lf, textvariable=font_var, values=list(font_disp.keys()),
                  state="readonly", width=10
                  ).grid(row=row, column=1, sticky="w", **pad)
     row += 1
 
-    tk.Label(top, text=S["settings_reviewer"]).grid(row=row, column=0, sticky="w", **pad)
+    tk.Label(lf, text=S["settings_reviewer"]).grid(row=row, column=0, sticky="w", **pad)
     reviewer_var = tk.StringVar(value=settings.reviewer_name)
-    tk.Entry(top, textvariable=reviewer_var, width=18).grid(row=row, column=1, sticky="w", **pad)
+    tk.Entry(lf, textvariable=reviewer_var, width=18).grid(row=row, column=1, sticky="w", **pad)
     row += 1
 
-    btns = tk.Frame(top); btns.grid(row=row, column=0, columnspan=2, pady=14, sticky="e", padx=16)
-    state = {"saved": False}
+    autoshow_var = tk.BooleanVar(value=settings.overlay_autoshow)
+    ttk.Checkbutton(lf, text=S["settings_overlay_autoshow"], variable=autoshow_var
+                    ).grid(row=row, column=0, columnspan=2, sticky="w", **pad)
+    row += 1
+
+    # Radio buttons, not dropdowns: every choice visible, no popup to open.
+    def radios(label_key: str, var: tk.StringVar, choices) -> None:
+        nonlocal row
+        tk.Label(lf, text=S[label_key]).grid(row=row, column=0, sticky="nw", **pad)
+        box = tk.Frame(lf); box.grid(row=row, column=1, sticky="w", **pad)
+        for value, text_key in choices:
+            ttk.Radiobutton(box, text=S[text_key], value=value, variable=var
+                            ).pack(anchor="w", pady=1)
+        row += 1
+
+    layout_var = tk.StringVar(value=settings.toolbar_layout)
+    radios("settings_toolbar", layout_var, (("grouped", "settings_toolbar_grouped"),
+                                            ("two_row", "settings_toolbar_two_row")))
+    reseg_var = tk.StringVar(value=settings.resegment_default)
+    radios("settings_resegment", reseg_var, (("later", "settings_reseg_later"),
+                                             ("ask", "settings_reseg_ask"),
+                                             ("batch", "settings_reseg_batch")))
+
+    btns = tk.Frame(top); btns.pack(fill="x", pady=14, padx=16)
     def on_cancel(): state["saved"] = False; top.destroy()
     def on_save():   state["saved"] = True;  top.destroy()
-    tk.Button(btns, text=S["settings_cancel"], width=12, command=on_cancel).pack(side="left", padx=4)
-    tk.Button(btns, text=S["settings_save"], width=12, command=on_save).pack(side="left", padx=4)
+    tk.Button(btns, text=S["settings_save"], width=12, command=on_save).pack(side="right", padx=4)
+    tk.Button(btns, text=S["settings_cancel"], width=12, command=on_cancel).pack(side="right", padx=4)
     top.bind("<Escape>", lambda e: on_cancel())
     _center_on_parent(top, parent); parent.wait_window(top)
     if not state["saved"]:
-        return (None, False, False)
+        return (None, False, False, None)
     new_lang = lang_var.get()
     new_theme = theme_disp.get(theme_var.get(), settings.theme)
-    new = AppSettings(
+    # replace(), not AppSettings(...): a field this dialog doesn't show
+    # (registered models, note box geometry, ...) must survive a save.
+    new = replace(
+        settings,
         language=new_lang,
         theme=new_theme,
-        window_w=settings.window_w, window_h=settings.window_h,
-        sidebar_width=settings.sidebar_width,
-        overlay_visible=settings.overlay_visible,
-        active_tool=settings.active_tool,
-        last_profile_name=settings.last_profile_name,
         reviewer_name=reviewer_var.get().strip(),
         font_scale=font_disp.get(font_var.get(), settings.font_scale),
+        overlay_autoshow=bool(autoshow_var.get()),
+        toolbar_layout=layout_var.get(),
+        resegment_default=reseg_var.get(),
     )
     # A font-size change needs the same restart notice as a theme change, so it
     # rides on the third flag rather than adding a fourth to every caller.
     needs_restart = (new_theme != settings.theme
                      or new.font_scale != settings.font_scale)
-    return (new, new_lang != settings.language, needs_restart)
+    return (new, new_lang != settings.language, needs_restart, state["action"])
 
 
 # ─────────────────────────────────────────────
@@ -1178,48 +1208,21 @@ def batch_dialog(
     model_registry: dict | None = None,
 ) -> None:
     S = strings
-    from .grouping import (ImageGroupInfo, UNGROUPED_TIMEPOINT, UNGROUPED_SUBJECT)
-    from .counts import image_counts
+    from . import batch
+    from .grouping import UNGROUPED_TIMEPOINT, UNGROUPED_SUBJECT
 
     top = tk.Toplevel(parent); top.title(S["batch_title"])
     top.transient(parent); top.grab_set(); top.minsize(640, 600)
 
+    # Grouping, selection rules and the runs live in batch.py; this function
+    # only owns the widgets. The local names keep the tree code below as is.
+    plan = batch.BatchPlan.build(images, grouped)
+    tp_order, subs_by_tp, info_by_name = plan.tp_order, plan.subs_by_tp, plan.info_by_name
+    checked = plan.default_checked(folder)
     target = max(1, getattr(profile, "target_cells", 2000))
-    avg_seconds_per_image = 30.0
-
-    # ── Build (timepoint -> [(subject, [ImageGroupInfo])]) preserving order ──
-    info_by_name: dict[str, ImageGroupInfo] = {}
-    subs_by_tp: dict[str, list[tuple[str, list]]] = {}
-    tp_order: list[str] = []
-    if grouped is not None and getattr(grouped, "tree", None):
-        for tp in grouped.timepoints():
-            for sub in grouped.subjects_in(tp):
-                infos = list(grouped.tree[tp][sub])
-                subs_by_tp.setdefault(tp, [])
-                if tp not in tp_order:
-                    tp_order.append(tp)
-                subs_by_tp[tp].append((sub, infos))
-                for info in infos:
-                    info_by_name[info.path.name] = info
-    # Any image not represented in `grouped` -> ungrouped bucket.
-    leftover = [p for p in images if p.name not in info_by_name]
-    if leftover:
-        infos = [ImageGroupInfo(path=p, timepoint=UNGROUPED_TIMEPOINT,
-                                subject=UNGROUPED_SUBJECT, image_num=None,
-                                is_ungrouped=True) for p in leftover]
-        subs_by_tp.setdefault(UNGROUPED_TIMEPOINT, [])
-        if UNGROUPED_TIMEPOINT not in tp_order:
-            tp_order.append(UNGROUPED_TIMEPOINT)
-        subs_by_tp[UNGROUPED_TIMEPOINT].append((UNGROUPED_SUBJECT, infos))
-        for info in infos:
-            info_by_name[info.path.name] = info
-
-    checked = {nm: not has_cache(folder, info.path) for nm, info in info_by_name.items()}
     n_total = len(info_by_name)
-
     tp_values = list(tp_order)
-    sub_values = list(dict.fromkeys(
-        sub for tp in tp_order for sub, _ in subs_by_tp[tp]))
+    sub_values = plan.subjects
 
     def _disp_tp(tp): return S["sb_ungrouped"] if tp == UNGROUPED_TIMEPOINT else tp
     def _disp_sub(sub): return S["sb_ungrouped"] if sub == UNGROUPED_SUBJECT else sub
@@ -1244,40 +1247,31 @@ def batch_dialog(
             return False
         return True
 
+    def _visible_groups():
+        return [(tp, sub, infos) for tp, sub, infos in plan.groups()
+                if _group_visible(tp, sub)]
+
     def _visible_infos():
-        out = []
-        for tp in tp_order:
-            for sub, infos in subs_by_tp[tp]:
-                if _group_visible(tp, sub):
-                    out += infos
-        return out
+        return [i for _tp, _sub, infos in _visible_groups() for i in infos]
 
     # ── Row: status quick-selects (operate on the visible/filtered set) ──
     bar = tk.Frame(container); bar.pack(fill="x", pady=(0, 4))
+    def _after_select():
+        _update_marks(); _refresh_footer()
     def select_all():
-        for i in _visible_infos(): checked[i.path.name] = True
-        _update_marks(); _refresh_footer()
+        batch.select_where(checked, _visible_infos(), lambda i: True); _after_select()
     def select_unsegmented():
-        for i in _visible_infos(): checked[i.path.name] = (image_status_fn(i.path) == "unsegmented")
-        _update_marks(); _refresh_footer()
+        batch.select_where(checked, _visible_infos(),
+                           lambda i: image_status_fn(i.path) == "unsegmented"); _after_select()
     def select_unfinished():
-        for i in _visible_infos(): checked[i.path.name] = (image_status_fn(i.path) != "finished")
-        _update_marks(); _refresh_footer()
+        batch.select_where(checked, _visible_infos(),
+                           lambda i: image_status_fn(i.path) != "finished"); _after_select()
     def invert_selection():
-        for i in _visible_infos(): checked[i.path.name] = not checked[i.path.name]
-        _update_marks(); _refresh_footer()
+        batch.invert(checked, _visible_infos()); _after_select()
     def select_first_n_per_group():
         try: n = max(0, int(per_n_var.get()))
         except (tk.TclError, ValueError): return
-        first_n = set()
-        for tp in tp_order:
-            for sub, infos in subs_by_tp[tp]:
-                if _group_visible(tp, sub):
-                    first_n.update(i.path.name for i in infos[:n])
-        for i in _visible_infos():
-            nm = i.path.name
-            checked[nm] = checked[nm] and (nm in first_n)
-        _update_marks(); _refresh_footer()
+        batch.keep_first_n(checked, _visible_groups(), n); _after_select()
     tk.Button(bar, text=S["batch_select_all"], command=select_all).pack(side="left", padx=2)
     tk.Button(bar, text=S["batch_select_unsegmented"], command=select_unsegmented).pack(side="left", padx=2)
     tk.Button(bar, text=S["batch_select_unfinished"], command=select_unfinished).pack(side="left", padx=2)
@@ -1385,7 +1379,7 @@ def batch_dialog(
 
     def _refresh_footer():
         n = sum(1 for v in checked.values() if v)
-        est_min = max(1, int(round(n * avg_seconds_per_image / 60.0)))
+        est_min = batch.estimate_minutes(n)
         footer_left.config(text=S["batch_n_selected"].format(n=n, total=n_total, minutes=est_min))
 
     _rebuild_tree(); _refresh_footer()
@@ -1402,42 +1396,6 @@ def batch_dialog(
         else:
             top.destroy()
     top.bind("<Escape>", _on_escape)
-
-    def _start_awake():
-        # Returns an opaque token for _stop_awake, or None. Cross-platform:
-        # macOS -> caffeinate (auto-quits with our PID via -w, so a crash can't
-        # leave it running); Windows -> SetThreadExecutionState.
-        if not awake_var.get():
-            return None
-        import sys, os
-        try:
-            if sys.platform == "darwin":
-                import subprocess
-                proc = subprocess.Popen(
-                    ["caffeinate", "-i", "-w", str(os.getpid())])
-                return ("mac", proc)
-            if sys.platform == "win32":
-                import ctypes
-                ES_CONTINUOUS, ES_SYSTEM, ES_DISPLAY = 0x80000000, 0x1, 0x2
-                ctypes.windll.kernel32.SetThreadExecutionState(
-                    ES_CONTINUOUS | ES_SYSTEM | ES_DISPLAY)
-                return ("win", None)
-        except Exception:
-            return None
-        return None
-
-    def _stop_awake(token):
-        if not token:
-            return
-        kind, obj = token
-        try:
-            if kind == "mac" and obj is not None:
-                obj.terminate()
-            elif kind == "win":
-                import ctypes
-                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)  # ES_CONTINUOUS
-        except Exception:
-            pass
 
     def _progress_ui(maximum):
         state["running"] = True     # from here Escape means "cancel the run"
@@ -1468,24 +1426,9 @@ def batch_dialog(
         tk.Button(container, text="OK", width=12,
                   command=lambda: (on_done(), top.destroy())).pack()
 
-    def _compute_one(info):
-        """Segment one image. Called from inside work(), i.e. ALREADY on the
-        worker thread that _run_worker starts — so it must not touch Tk at all.
-
-        Merge note: this used to wrap the call in run_in_thread_pumping(), which
-        pumps the Tk event loop. Combined with the queue-based runner below that
-        would have meant calling widget.update() from a background thread, which
-        tkinter does not support. The pumping helper is still right for the
-        single-image path in app.py, where the caller IS the main thread.
-        """
-        run_for_image(folder, info.path, load_image(info.path),
-                      profile.cellpose, force=False,
-                      use_gpu=profile.use_gpu,
-                      model_registry=model_registry)
-
-    def _active_count(info):
-        c = image_counts(folder, info, profile)
-        return (c or {}).get("rbc", 0) or 0
+    def _segment(info):
+        # Runs on the worker thread — batch.segment_one never touches UI.
+        batch.segment_one(folder, info, profile, model_registry)
 
     # ── Threaded batch runner ────────────────────────────────────────────
     # Cellpose runs for many seconds per image. Doing that on the Tk main
@@ -1501,7 +1444,9 @@ def batch_dialog(
         and is the only one that talks to widgets. Returns (done, skipped,
         errors[, extra])."""
         lbl, pb = _progress_ui(total)
-        proc = _start_awake()
+        awake = batch.KeepAwake()
+        if awake_var.get():
+            awake.start()
         q: "queue.Queue" = queue.Queue()
 
         def progress(value, text=None):
@@ -1528,7 +1473,7 @@ def batch_dialog(
                         except tk.TclError:
                             return  # dialog closed mid-run
                     else:  # ("done", result)
-                        _stop_awake(proc)
+                        awake.stop()
                         result = item[1]
                         done, skipped, errors = result[0], result[1], result[2]
                         extra = result[3] if len(result) > 3 else ""
@@ -1542,58 +1487,23 @@ def batch_dialog(
             try:
                 top.after(80, poll)
             except tk.TclError:
-                _stop_awake(proc)
+                awake.stop()
 
         threading.Thread(target=runner, daemon=True).start()
         top.after(80, poll)  # scheduled from the main thread — safe
 
     def _enter_progress_normal(sel_infos):
-        n = len(sel_infos)
-
-        def work(progress, is_cancelled):
-            errors, skipped, done = [], 0, 0
-            for idx, info in enumerate(sel_infos, start=1):
-                if is_cancelled(): break
-                progress(idx - 1, S["batch_progress_running"].format(
-                    i=idx, n=n, name=info.path.name))
-                if has_cache(folder, info.path):
-                    skipped += 1; progress(idx); continue
-                try:
-                    _compute_one(info); done += 1
-                except Exception as e:
-                    errors.append((info.path.name, str(e)))
-                progress(idx)
-            return done, skipped, errors
-
-        _run_worker(n, work)
+        label = lambda i, n, name: S["batch_progress_running"].format(i=i, n=n, name=name)
+        _run_worker(len(sel_infos), lambda progress, is_cancelled: batch.run_normal(
+            folder, sel_infos, _segment, progress, is_cancelled, label))
 
     def _enter_progress_target(sel_groups):
         total = sum(len(infos) for _, _, infos in sel_groups)
-
-        def work(progress, is_cancelled):
-            errors, skipped, done, touched, n_groups = [], 0, 0, 0, 0
-            for tp, sub, infos in sel_groups:
-                if is_cancelled(): break
-                n_groups += 1
-                cumulative = 0
-                for info in infos:                      # image_num order
-                    if is_cancelled(): break
-                    if cumulative >= target:
-                        break                            # group target reached
-                    touched += 1
-                    progress(touched, S["batch_progress_target"].format(
-                        tp=_disp_tp(tp), sub=_disp_sub(sub), cum=cumulative, target=target))
-                    if has_cache(folder, info.path):
-                        skipped += 1
-                    else:
-                        try:
-                            _compute_one(info); done += 1
-                        except Exception as e:
-                            errors.append((info.path.name, str(e))); continue
-                    cumulative += _active_count(info)
-            return done, skipped, errors, S["batch_summary_groups"].format(g=n_groups)
-
-        _run_worker(total, work)
+        label = lambda tp, sub, cum, tgt: S["batch_progress_target"].format(
+            tp=_disp_tp(tp), sub=_disp_sub(sub), cum=cum, target=tgt)
+        summary = lambda g: S["batch_summary_groups"].format(g=g)
+        _run_worker(total, lambda progress, is_cancelled: batch.run_to_target(
+            folder, sel_groups, profile, _segment, progress, is_cancelled, label, summary))
 
     def _on_start():
         if target_mode_var.get():

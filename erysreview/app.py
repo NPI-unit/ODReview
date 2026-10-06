@@ -11,6 +11,7 @@ state: folder, images, idx, profile, settings, current ReviewState.
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import threading
 import time
@@ -18,37 +19,32 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
 
-import numpy as np
 
 # Menu accelerator labels are display-only (the real key bindings wire both
 # Command and Control — see _bind_hotkeys). Show the right one per platform:
 # "Cmd" on macOS, "Ctrl" on Windows/Linux where "Cmd" is meaningless.
 _ACCEL_MOD = "Cmd" if sys.platform == "darwin" else "Ctrl"
 
-from . import __version__
+from . import __version__, tkfixes
 from .canvas import EryCanvas
-from .cellpose_runner import (
-    has_cache, list_images, load_cached_masks, load_image,
-    params_match, run_for_image, discard_cache,
-    ModelUnavailable, resolve_model,
-)
+from .cellpose_runner import ModelUnavailable, has_cache
 from .dialogs import (
     BusyDialog, CellposeSpinner, ask_overview_destination, batch_dialog,
-    confirm_dialog, info_dialog, overview_preview_dialog, profile_editor_dialog,
-    export_scope_dialog, model_registry_dialog, note_dialog,
+    confirm_dialog, info_dialog, profile_editor_dialog,
+    export_scope_dialog, model_registry_dialog,
     profile_manager_dialog,
-    run_in_thread_pumping, settings_dialog,
+    run_task_pumping, settings_dialog,
 )
-from .export import export_folder_structured, export_training_data
 from .extras import (
     areas_window, dashboard_window, eval_select_dialog, package_create_dialog,
     package_import_dialog, stats_window,
 )
-from .grouping import group_images
+from .controller import AppController, status_counts
+from .study import study_progress
 from .notebox import NoteBox
 from .i18n import get_strings
 from .persistence import (
-    AppSettings, FolderState, ReviewState,
+    AppSettings,
     TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE, TOOLS_ORDER,
 )
 from .profile import ProfileData, ensure_default_profile, load_profile, save_profile
@@ -57,7 +53,22 @@ from .theme import font, palette, set_font_scale
 from .toolbar import Toolbar
 
 
+def _state(name: str) -> property:
+    """EryApp attribute that lives on the controller (see controller.py)."""
+    return property(lambda self: getattr(self.ctl, name),
+                    lambda self, value: setattr(self.ctl, name, value))
+
+
 class EryApp:
+    # Canonical state is the controller's; these keep the window code readable.
+    profile = _state("profile")
+    folder = _state("folder")
+    images = _state("images")
+    grouped = _state("grouped")
+    idx = _state("idx")
+    folder_state = _state("folder_state")
+    review = _state("review")
+
     def __init__(self):
         # Print to stdout so the launcher console shows progress while heavy
         # imports (matplotlib, skimage) finish loading. Useful on Windows
@@ -66,6 +77,8 @@ class EryApp:
         import sys
         print("ErysReview: loading settings ...", flush=True)
         self.settings = AppSettings.load()
+        # State and workflows; the profile is replaced once the user picked one.
+        self.ctl = AppController(self.settings, ProfileData())
         # Must run before ANY widget exists — every font spec in the UI goes
         # through theme.font(), which reads this once (WCAG 1.4.4).
         set_font_scale(self.settings.font_scale)
@@ -110,20 +123,6 @@ class EryApp:
         loading.destroy()
         self.root.title(self.S["title_with_profile"].format(profile=self.profile.name))
 
-        # App-level state (canonical)
-        self.folder: Path | None = None
-        self.images: list[Path] = []
-        self.grouped = None
-        self.idx: int = 0
-        self.folder_state: FolderState = FolderState()
-        self.review: ReviewState = ReviewState()
-
-        # Time tracking: accrue active review seconds onto the current image,
-        # paused after TIME_IDLE_S without interaction so an idle window doesn't
-        # inflate the numbers. Flushed to disk on image switch / save / close.
-        self._time_last_activity = time.monotonic()
-        self._time_last_tick = time.monotonic()
-
         # Debounce bookkeeping for profile.save() calls on hot paths.
         self._profile_save_after_id: str | None = None
         self._profile_save_debounce_ms = 200
@@ -146,7 +145,7 @@ class EryApp:
             p = Path(self.profile.import_folder)
             if p.is_dir():
                 # Seed recents with the auto-loaded folder so it shows up in the menu
-                self._push_recent_folder(str(p))
+                self.ctl.push_recent_folder(str(p))
                 self._refresh_recent_menu()
                 self.root.after(100, lambda: self._open_folder(p, restore_index=True))
 
@@ -302,6 +301,7 @@ class EryApp:
         m_help.add_command(label=S["menu_help_about"], command=self._on_help_about)
         menubar.add_cascade(label=S["menu_help"], menu=m_help)
 
+        tkfixes.defer_menu_commands(menubar)
         self.root.config(menu=menubar)
 
     def _build_layout(self) -> None:
@@ -318,6 +318,7 @@ class EryApp:
             on_undo=self._on_undo,
             on_info=self._show_current_image_info,
             on_export=self._on_export,
+            on_study=self._on_study_menu,
         )
         self.toolbar.pack(fill="x", side="top")
         tk.Frame(self.root, bg=P["border"], height=1).pack(fill="x", side="top")
@@ -381,6 +382,8 @@ class EryApp:
             status_callback=self._set_status_text,
             note_callback=self._on_cell_note,
             on_overlay_autoshown=self._on_overlay_autoshown,
+            on_edit_overlay_hidden=lambda: self._set_status_text(
+                self.S["overlay_hidden_edit"]),
         )
         self.canvas.pack(fill="both", expand=True)
         # Placed over the canvas, not packed: it floats, and `center` is the
@@ -431,47 +434,29 @@ class EryApp:
     # ─────────────────────────────────────────
     # Time tracking
     # ─────────────────────────────────────────
-    TIME_IDLE_S = 60.0
-    TIME_TICK_MS = 5000
-
+    # Time per image: the controller counts, the window only feeds it input
+    # events and a clock tick.
     def _start_time_tracking(self) -> None:
         for seq in ("<Motion>", "<Button>", "<Key>", "<MouseWheel>"):
-            self.root.bind(seq, self._mark_activity, add="+")
-        self.root.after(self.TIME_TICK_MS, self._time_tick)
-
-    def _mark_activity(self, _evt=None) -> None:
-        self._time_last_activity = time.monotonic()
+            self.root.bind(seq, lambda _e: self.ctl.mark_activity(), add="+")
+        self.root.after(int(self.ctl.TIME_TICK_S * 1000), self._time_tick)
 
     def _time_tick(self) -> None:
-        now = time.monotonic()
-        delta = now - self._time_last_tick
-        self._time_last_tick = now
-        if (self.folder is not None and self.images
-                and (now - self._time_last_activity) < self.TIME_IDLE_S):
-            # Cap the increment so a missed tick (sleep / debugger) can't dump
-            # a huge delta onto one image.
-            self.review.time_spent_s += min(delta, self.TIME_TICK_MS / 1000.0 + 1.0)
+        self.ctl.tick()
         try:
-            self.root.after(self.TIME_TICK_MS, self._time_tick)
+            self.root.after(int(self.ctl.TIME_TICK_S * 1000), self._time_tick)
         except tk.TclError:
             pass
 
     def _flush_time(self) -> None:
-        """Persist the current image's accumulated time."""
-        if self.folder is not None and self.images and 0 <= self.idx < len(self.images):
-            try:
-                self.review.save(self.folder, self.images[self.idx].stem)
-            except Exception:
-                pass
+        self.ctl.flush_time()
 
     # ─────────────────────────────────────────
     # Tool / type plumbing
     # ─────────────────────────────────────────
     def _set_active_tool(self, key: str) -> None:
-        if key not in TOOLS_ORDER:
+        if not self.ctl.set_active_tool(key):
             return
-        self.settings.active_tool = key
-        self.settings.save()
         self.toolbar.set_active_tool(key)
         self._refresh_tool_indicator()
         cursors = {TOOL_ADD: "crosshair", TOOL_REMOVE: "X_cursor", TOOL_TYPE: "hand2"}
@@ -482,7 +467,7 @@ class EryApp:
 
     def _on_type_changed(self, type_key: str) -> None:
         """Called from Toolbar combobox when user picks a different type."""
-        self.profile.active_type_key = type_key
+        self.ctl.set_active_type(type_key)
         self._schedule_profile_save()
         self._refresh_tool_indicator()
 
@@ -526,23 +511,13 @@ class EryApp:
     def _on_open_folder(self) -> None:
         path = filedialog.askdirectory(title=self.S["menu_open_folder"])
         if path:
-            self.profile.import_folder = str(path)
-            self._push_recent_folder(path)
-            save_profile(self.profile)
+            self.ctl.remember_folder(str(path))
             self._refresh_recent_menu()
             self._open_folder(Path(path), restore_index=False)
 
     # ─────────────────────────────────────────
     # Recent folders
     # ─────────────────────────────────────────
-    MAX_RECENT_FOLDERS = 5
-
-    def _push_recent_folder(self, path: str) -> None:
-        """Move `path` to the front of profile.recent_folders, dedupe, truncate."""
-        recents = [p for p in self.profile.recent_folders if p != path]
-        recents.insert(0, path)
-        self.profile.recent_folders = recents[: self.MAX_RECENT_FOLDERS]
-
     def _refresh_recent_menu(self) -> None:
         try:
             self.m_recent.delete(0, "end")
@@ -558,40 +533,28 @@ class EryApp:
                 label=label,
                 command=lambda p=path_str: self._open_recent(p),
             )
+        tkfixes.defer_menu_commands(self.m_recent)
 
     def _open_recent(self, path_str: str) -> None:
         p = Path(path_str)
         if not p.is_dir():
             # Stale entry — remove and refresh
-            self.profile.recent_folders = [
-                x for x in self.profile.recent_folders if x != path_str
-            ]
-            save_profile(self.profile)
+            self.ctl.forget_recent_folder(path_str)
             self._refresh_recent_menu()
             info_dialog(self.root, self.S["title"],
                         self.S["err_no_images"].format(path=p))
             return
-        self.profile.import_folder = path_str
-        self._push_recent_folder(path_str)
-        save_profile(self.profile)
+        self.ctl.remember_folder(path_str)
         self._refresh_recent_menu()
         self._open_folder(p, restore_index=True)
 
     def _open_folder(self, path: Path, restore_index: bool) -> None:
-        out_dir = path / "outputs"
-        images = list_images(path, exclude={out_dir})
-        if not images:
+        start = self.ctl.open_folder(path, restore_index)
+        if start is None:
             info_dialog(self.root, self.S["title"], self.S["err_no_images"].format(path=path))
             return
-        self.folder = path
-        self.images = images
-        self.grouped = group_images(images, self.profile)
-        self.folder_state = FolderState.load(path)
         self._show_empty_state(False)
-        self.sidebar.populate(path, images, self.grouped)
-        start = self.folder_state.last_index if (
-            restore_index and 0 <= self.folder_state.last_index < len(images)
-        ) else 0
+        self.sidebar.populate(path, self.images, self.grouped)
         self._show_image_at(start)
 
     def _autofit_sash(self) -> None:
@@ -652,59 +615,31 @@ class EryApp:
             self._sidebar_floor = int(cur)
 
     def _show_image_at(self, idx: int) -> None:
-        if not self.images or self.folder is None:
+        if not self.ctl.has_images:
             return
-        # Persist the time accrued on the image we're leaving before switching.
-        self._flush_time()
         # Close the remark editor: it belongs to the image being left, so it
         # must not survive into the next one still showing that text. Nothing is
         # written until Speichern, so an unsaved remark asks before it is lost —
         # and a "no" cancels the navigation rather than discarding it anyway.
         if hasattr(self, "notebox") and not self.notebox.request_close():
             return
-        self._time_last_tick = time.monotonic()
-        idx = max(0, min(idx, len(self.images) - 1))
-        self.idx = idx
-        self.folder_state.last_index = idx
-        self.folder_state.save(self.folder)
-        path = self.images[idx]
-        self.sidebar.set_idx(idx)
-
+        target = max(0, min(idx, len(self.images) - 1))
+        path = self.images[target]
         try:
-            img = load_image(path)
+            loaded = self.ctl.load_image_at(target)
         except Exception as e:
             info_dialog(self.root, self.S["title"],
                         self.S["err_load_image"].format(path=path, err=e))
             return
-
-        cp_params = self.profile.cellpose
-        unsegmented = not has_cache(self.folder, path)
-        if not unsegmented:
-            masks = load_cached_masks(self.folder, path)
-            mismatch = not params_match(self.folder, path, cp_params)
-        else:
-            # Never auto-run Cellpose — show the raw image instantly with an
-            # empty mask. The user segments on demand via the Cellpose button / r.
-            masks = np.zeros(img.shape[:2], dtype=np.int32)
-            mismatch = False
-
-        if masks is None:
+        self.sidebar.set_idx(self.idx)
+        if loaded is None:
             return
-
-        review = ReviewState.load(self.folder, path.stem)
-        self.review = review
-
-        if unsegmented:
+        if loaded.unsegmented:
             self.toolbar.set_param_mismatch(self.S["status_not_segmented"])
         else:
             self.toolbar.set_param_mismatch(
-                self.S["status_param_mismatch"] if mismatch else None
-            )
-        # set_image() now resolves duplicates itself, before it paints — so the
-        # overlay and the numbers are built exactly once per image switch, and a
-        # failure can no longer leave the previous image's duplicate ids feeding
-        # _update_status() from behind a swallowed exception.
-        self.canvas.set_image(img, masks, review)
+                self.S["status_param_mismatch"] if loaded.mismatch else None)
+        self.canvas.set_image(loaded.image, loaded.masks, loaded.review)
         self.canvas.reset_zoom()
         self._update_status()
         self.sidebar.refresh_statuses()
@@ -789,19 +724,11 @@ class EryApp:
 
     def _on_note_saved(self, target: str | None, text: str) -> None:
         """The box flushed its content. Empty text deletes the remark."""
-        if self.folder is None or not self.images:
+        if not self.ctl.has_images:
             return
-        if target is None:
-            if self.review.note == text:
-                return
-            self.review.note = text
-        else:
-            if self.review.notes.get(target, "") == text:
-                return          # debounce fired without a change — do not churn
-            if text:
-                self.review.notes[target] = text
-            else:
-                self.review.notes.pop(target, None)
+        if not self.ctl.set_note(target, text):
+            return              # debounce fired without a change — do not churn
+        if target is not None:
             self.canvas.set_cell_note_marker(int(target), bool(text))
         self._save_review()
 
@@ -809,18 +736,7 @@ class EryApp:
         """Set the finished flag for every segmented image of one subject."""
         if self.folder is None or self.grouped is None:
             return
-        images = self.grouped.tree.get(tp_key, {}).get(sub_key, [])
-        n = 0
-        for info in images:
-            if not has_cache(self.folder, info.path):
-                continue          # nothing reviewed yet — leave it alone
-            rv = ReviewState.load(self.folder, info.path.stem)
-            if rv.is_finished != done:
-                rv.is_finished = done
-                rv.save(self.folder, info.path.stem)
-                n += 1
-        if self.images and 0 <= self.idx < len(self.images):
-            self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
+        n = self.ctl.set_subject_status(tp_key, sub_key, done)
         self.sidebar.invalidate_group_cache()
         self.sidebar.refresh_statuses()
         self._update_status()
@@ -849,9 +765,9 @@ class EryApp:
         self._set_status_text(self.S["overlay_auto_shown"])
 
     def _on_toggle_finished(self) -> None:
-        if self.review is None:
+        if not self.ctl.has_images:
             return
-        self.review.is_finished = not self.review.is_finished
+        self.ctl.toggle_finished()
         self._save_review()
         self.sidebar.refresh_statuses()
         self._update_status()
@@ -868,37 +784,19 @@ class EryApp:
         if not self._model_available():
             return
         path = self.images[self.idx]
-        is_new = not has_cache(self.folder, path)
-        if not is_new:
+        if has_cache(self.folder, path):
             if not confirm_dialog(
                 self.root, self.S["confirm_resegment_title"],
                 self.S["confirm_resegment_msg"].format(name=path.name),
                 yes_text=self.S["confirm_yes"], no_text=self.S["confirm_no"],
             ):
                 return
-            discard_cache(self.folder, path)
-            try:
-                ReviewState.review_path(self.folder, path.stem).unlink()
-            except FileNotFoundError:
-                pass
-            self.review = ReviewState()
+            self.ctl.discard_for_resegment(path)
         try:
-            # Inference runs on a worker thread (load + segment) while the
-            # spinner pumps the event loop, so the window stays responsive
-            # instead of freezing — critical on Windows where it's CPU-only.
-            #
-            # Merge note: origin/main had this very technique written inline
-            # here. Keeping the extracted helper instead, so this path, the
-            # batch run and the overview build share one implementation.
+            # Inference runs on a worker thread while the spinner pumps the
+            # event loop, so the window stays responsive instead of freezing.
             with CellposeSpinner(self.root, path.name, self.S) as spin:
-                run_in_thread_pumping(
-                    spin.top,
-                    lambda: run_for_image(
-                        self.folder, path, load_image(path),
-                        self.profile.cellpose, force=True,
-                        use_gpu=self.profile.use_gpu,
-                        model_registry=self.settings.cellpose_models),
-                )
+                run_task_pumping(spin.top, self.ctl.segment_task(path))
         except ModelUnavailable as e:
             self._report_missing_model(e.name)
             return
@@ -914,7 +812,7 @@ class EryApp:
         """True if this machine can supply the profile's model; otherwise show
         the explanation and return False."""
         try:
-            resolve_model(self.profile.cellpose.model, self.settings.cellpose_models)
+            self.ctl.check_model()
             return True
         except ModelUnavailable as e:
             self._report_missing_model(e.name)
@@ -961,16 +859,8 @@ class EryApp:
         """Cycle the current image's evaluation membership: auto → in → out → auto."""
         if self.folder is None or not self.images:
             return
-        cur = self.review.eval_include
-        if cur is None:
-            self.review.eval_include = True
-            msg = self.S["eval_toggled_in"]
-        elif cur is True:
-            self.review.eval_include = False
-            msg = self.S["eval_toggled_out"]
-        else:
-            self.review.eval_include = None
-            msg = self.S["eval_toggled_auto"]
+        msg = {"in": self.S["eval_toggled_in"], "out": self.S["eval_toggled_out"],
+               "auto": self.S["eval_toggled_auto"]}[self.ctl.cycle_eval()]
         self._save_review()
         self.sidebar.invalidate_group_cache()
         self.sidebar.refresh_statuses()
@@ -1000,9 +890,7 @@ class EryApp:
         # Activate the package's profile so types/parameters match the masks.
         prof = result["profile"]
         save_profile(prof)
-        self.profile = prof
-        self.settings.last_profile_name = prof.name
-        self.settings.save()
+        self.ctl.activate_profile(prof)
         self.root.title(self.S["title_with_profile"].format(profile=prof.name))
         self.canvas.set_profile(prof)
         self.sidebar.set_profile(prof)
@@ -1010,9 +898,7 @@ class EryApp:
         self._apply_stats_menu_state()
         target = Path(result["target"])
         if target.is_dir():
-            self.profile.import_folder = str(target)
-            self._push_recent_folder(str(target))
-            save_profile(self.profile)
+            self.ctl.remember_folder(str(target))
             self._refresh_recent_menu()
             self._open_folder(target, restore_index=False)
 
@@ -1033,13 +919,9 @@ class EryApp:
             info_dialog(self.root, self.S["areas_title"], self.S["stats_no_data"])
             return
         self._flush_time()
-        from .areas import compute_areas
         with BusyDialog(self.root, self.S["areas_title"],
                         self.S["areas_running"], strings=self.S) as busy:
-            groups = run_in_thread_pumping(
-                busy.top,
-                lambda: compute_areas(self.folder, self.profile, self.grouped),
-            )
+            groups = run_task_pumping(busy.top, self.ctl.areas_task())
         areas_window(self.root, groups, self.S)
 
     def _on_dashboard(self) -> None:
@@ -1065,14 +947,9 @@ class EryApp:
         if dest is None:
             return
         try:
-            from .overview import write_overview_xlsx
             with BusyDialog(self.root, self.S["menu_overview_xlsx"],
                             self.S["overview_building"], strings=self.S) as busy:
-                written = run_in_thread_pumping(
-                    busy.top,
-                    lambda: write_overview_xlsx(
-                        self.folder, self.profile, self.grouped, dest),
-                )
+                written = run_task_pumping(busy.top, self.ctl.overview_task(dest))
         except Exception as e:
             info_dialog(self.root, self.S["menu_overview_xlsx"],
                         self.S["overview_save_err"].format(err=e))
@@ -1106,7 +983,7 @@ class EryApp:
             return
         changed = eval_select_dialog(self.root, self.folder, images, self.profile, self.S)
         if changed:
-            self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
+            self.ctl.reload_review()
             self.sidebar.invalidate_group_cache()
             self.sidebar.refresh_statuses()
             self.sidebar.refresh_current_group_counter()
@@ -1118,26 +995,18 @@ class EryApp:
     def _on_refresh(self) -> None:
         if self.folder is None:
             return
-        self._flush_time()
-        out_dir = self.folder / "outputs"
-        images = list_images(self.folder, exclude={out_dir})
-        if not images:
+        if not self.ctl.rescan():
             info_dialog(self.root, self.S["title"],
                         self.S["err_no_images"].format(path=self.folder))
             return
-        self.images = images
-        self.grouped = group_images(images, self.profile)
-        self.sidebar.populate(self.folder, images, self.grouped)
-        self.idx = max(0, min(self.idx, len(images) - 1))
+        self.sidebar.populate(self.folder, self.images, self.grouped)
         self._show_image_at(self.idx)
 
     def _on_profile_manage(self) -> None:
         chosen = profile_manager_dialog(self.root, self.S)
         if chosen is None or chosen.name == self.profile.name:
             return
-        self.profile = chosen
-        self.settings.last_profile_name = chosen.name
-        self.settings.save()
+        self.ctl.activate_profile(chosen)
         self.root.title(self.S["title_with_profile"].format(profile=self.profile.name))
         self.canvas.set_profile(self.profile)
         self.sidebar.set_profile(self.profile)
@@ -1153,18 +1022,14 @@ class EryApp:
                                        registry=self.settings.cellpose_models)
         if result is None:
             return
-        old_margin = self.profile.margin_n
-        old_cp = self.profile.cellpose
-        self.profile = result
-        save_profile(self.profile)
+        change = self.ctl.apply_edited_profile(result)
         self.canvas.set_profile(self.profile)
-        if self.canvas.image is not None and self.profile.margin_n != old_margin:
+        if self.canvas.image is not None and change.margin_changed:
             self.canvas.set_margin_n(self.profile.margin_n)
         self.toolbar.set_profile(self.profile)
         self._apply_stats_menu_state()
         # Re-group with the (possibly changed) regex/parser and rebuild the sidebar.
         if self.folder is not None and self.images:
-            self.grouped = group_images(self.images, self.profile)
             self.sidebar.set_profile(self.profile)
             self.sidebar.populate(self.folder, self.images, self.grouped)
             self._show_image_at(self.idx)
@@ -1172,27 +1037,33 @@ class EryApp:
             self.sidebar.set_profile(self.profile)
         self._update_status()
         # Cellpose parameters changed → existing masks are stale; offer a re-run.
-        cp = self.profile.cellpose
-        cp_changed = (old_cp.diameter != cp.diameter
-                      or old_cp.flow_threshold != cp.flow_threshold
-                      or old_cp.cellprob_threshold != cp.cellprob_threshold
-                      or old_cp.model != cp.model)
-        if (cp_changed and self.folder is not None
-                and any(has_cache(self.folder, p) for p in self.images)):
-            if confirm_dialog(self.root, self.S["profile_cp_changed_title"],
-                              self.S["profile_cp_changed_msg"],
-                              yes_text=self.S["confirm_yes"], no_text=self.S["confirm_no"]):
+        if change.cellpose_changed and self.ctl.any_masks():
+            # What happens next is a per-computer default (Settings).
+            choice = self.settings.resegment_default
+            if choice == "batch":
                 self._on_batch()
+            elif choice == "ask":
+                if confirm_dialog(self.root, self.S["profile_cp_changed_title"],
+                                  self.S["profile_cp_changed_msg"],
+                                  yes_text=self.S["confirm_yes"],
+                                  no_text=self.S["confirm_no"]):
+                    self._on_batch()
+            else:
+                # "later": the masks stay; the toolbar banner already flags
+                # every image whose masks no longer match the parameters.
+                self._set_status_text(self.S["status_cp_changed_later"])
 
     def _on_settings(self) -> None:
-        new_settings, lang_changed, theme_changed = settings_dialog(
-            self.root, self.settings, self.S,
+        new_settings, lang_changed, theme_changed, action = settings_dialog(
+            self.root, self.settings, self.S, study_name=self.profile.name,
         )
         if new_settings is None:
             return
-        self.settings = new_settings
-        self.canvas.settings = new_settings
-        self.toolbar.settings = new_settings  # keep toolbar's settings ref live too
+        layout_changed = new_settings.toolbar_layout != self.settings.toolbar_layout
+        # In place, not a swap: canvas, toolbar and note box all hold this
+        # object, and a swapped-in copy left them writing to a stale one.
+        for f in dataclasses.fields(new_settings):
+            setattr(self.settings, f.name, getattr(new_settings, f.name))
         self.settings.save()
         if lang_changed:
             info_dialog(self.root, self.S["language_changed_title"],
@@ -1200,8 +1071,43 @@ class EryApp:
         if theme_changed:
             info_dialog(self.root, self.S["settings_theme"],
                         self.S["settings_theme_restart"])
+        if layout_changed:
+            self.toolbar.rebuild()
+            if self.images and 0 <= self.idx < len(self.images):
+                self._show_image_at(self.idx)      # restores the param banner
         self._update_status()
         self._refresh_tool_indicator()
+        if action == "edit":
+            self._on_profile_edit()
+        elif action == "switch":
+            self._on_profile_manage()
+
+    def _on_study_menu(self, button: tk.Misc) -> None:
+        """The toolbar's study button: progress per proband ID plus the ways
+        to edit or switch the study. A native menu, posted under the button."""
+        S = self.S
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label=self.profile.name, state="disabled")
+        if self.folder is not None and self.grouped is not None:
+            pr = study_progress(self.folder, self.grouped)
+            menu.add_command(label=S["study_menu_progress"].format(
+                done=pr.done, total=pr.total), state="disabled")
+            menu.add_command(label=S["study_menu_rest"].format(
+                wip=pr.wip, open=pr.open), state="disabled")
+        else:
+            menu.add_command(label=S["study_menu_no_folder"], state="disabled")
+        menu.add_separator()
+        menu.add_command(label=S["study_menu_edit"], command=self._on_profile_edit)
+        menu.add_command(label=S["study_menu_switch"], command=self._on_profile_manage)
+        menu.add_command(label=S["study_menu_settings"], command=self._on_settings)
+        # Same trap as the menu bar: a dialog opened from inside the native
+        # menu's tracking loop hangs on its first dropdown (see tkfixes).
+        tkfixes.defer_menu_commands(menu)
+        try:
+            menu.tk_popup(button.winfo_rootx(),
+                          button.winfo_rooty() + button.winfo_height() + 2)
+        finally:
+            menu.grab_release()
 
     def _on_training_export(self) -> None:
         """Write (image, mask) pairs for fine-tuning Cellpose on this material."""
@@ -1217,11 +1123,7 @@ class EryApp:
         try:
             with BusyDialog(self.root, self.S["menu_training_export"],
                             self.S["training_running"], strings=self.S) as busy:
-                summary = run_in_thread_pumping(
-                    busy.top,
-                    lambda: export_training_data(
-                        self.folder, self.profile, self.grouped, dest),
-                )
+                summary = run_task_pumping(busy.top, self.ctl.training_task(dest))
         except Exception as e:
             info_dialog(self.root, self.S["menu_training_export"],
                         self.S["overview_save_err"].format(err=e))
@@ -1257,45 +1159,22 @@ class EryApp:
             info_dialog(self.root, self.S["export_scope_title"],
                         self.S["export_scope_empty"])
             return
-        # None means "everything" to the exporter and keeps the cross-group
-        # overview workbook in the run; a real subset skips it (see export.py).
-        sel = None if len(groups) == len(
-            [1 for tp in self.grouped.timepoints() for _ in self.grouped.subjects_in(tp)]
-        ) else groups
+        is_subset = len(groups) != len(self.ctl.all_groups())
         try:
             with BusyDialog(self.root, self.S["menu_export"],
                             self.S["export_running"], strings=self.S) as busy:
-                out = run_in_thread_pumping(
-                    busy.top,
-                    lambda: export_folder_structured(
-                        self.folder, self.profile, self.grouped, groups=sel),
-                )
+                out = run_task_pumping(busy.top, self.ctl.export_task(groups))
         except Exception as e:
             info_dialog(self.root, self.S["title"], f"Export error: {e}")
             return
 
-        n_marked = 0
-        if scope["mark_finished"]:
-            # Only the groups that were actually exported — and only images that
-            # have a mask, so an untouched image is not declared reviewed.
-            for info in self.grouped.flat:
-                if (info.timepoint, info.subject) not in groups:
-                    continue
-                if not has_cache(self.folder, info.path):
-                    continue
-                rv = ReviewState.load(self.folder, info.path.stem)
-                if not rv.is_finished:
-                    rv.is_finished = True
-                    rv.save(self.folder, info.path.stem)
-                    n_marked += 1
-            if self.images and 0 <= self.idx < len(self.images):
-                self.review = ReviewState.load(self.folder, self.images[self.idx].stem)
+        n_marked = self.ctl.mark_exported_finished(groups) if scope["mark_finished"] else 0
 
         info_dialog(self.root, self.S["export_done_title"],
                     self.S["export_done_msg"].format(path=out)
                     + self.S["export_done_extra"].format(
                         n=len(groups), marked=n_marked,
-                        overview="" if sel is None else self.S["export_no_overview"]))
+                        overview=self.S["export_no_overview"] if is_subset else ""))
         self.sidebar.invalidate_group_cache()
         self.sidebar.refresh_statuses()
         self._update_status()
@@ -1358,10 +1237,10 @@ class EryApp:
     # Save / status / lifecycle
     # ─────────────────────────────────────────
     def _save_review(self) -> None:
-        if self.folder is None or not self.images:
+        if not self.ctl.has_images:
             return
         try:
-            self.review.save(self.folder, self.images[self.idx].stem)
+            self.ctl.save_review()
             self.saved_label.config(text=self.S["status_saved"])
             self.root.after(1500, lambda: self.saved_label.config(text=""))
         except Exception as e:
@@ -1378,34 +1257,10 @@ class EryApp:
             self._set_status_text(self.S["status_ready"])
             return
         path = self.images[self.idx]
-        infos = self.canvas.cell_infos
-        excluded = set(self.review.force_excluded)
-        included = set(self.review.force_included)
-        border = self.canvas.border_ids
-        dup = self.canvas.duplicate_ids
-        n_total = len(infos)
-        auto_inactive = lambda cid: cid in border or cid in dup
-        n_active = sum(
-            1 for cid in infos
-            if cid not in excluded and (not auto_inactive(cid) or cid in included)
-        )
-        n_excluded = sum(1 for cid in infos if cid in excluded)
-        n_inactive_auto = sum(
-            1 for cid in infos
-            if auto_inactive(cid) and cid not in included and cid not in excluded
-        )
-        default_key = self.profile.default_type_key()
-        types_map = self.review.types
-        n_changed = 0
-        for cid in infos:
-            if cid in excluded:
-                continue
-            if auto_inactive(cid) and cid not in included:
-                continue
-            t = types_map.get(str(cid), default_key)
-            if t != "normal":
-                n_changed += 1
-        pct_changed = (100.0 * n_changed / n_active) if n_active > 0 else 0.0
+        c = status_counts(self.canvas.cell_infos, self.review, self.profile,
+                          self.canvas.border_ids, self.canvas.duplicate_ids)
+        n_active, n_changed, pct_changed = c.active, c.changed, c.pct_changed
+        n_excluded, n_inactive_auto, n_total = c.excluded, c.inactive_auto, c.total
 
         S = self.S
         idx_str = f"[{self.idx+1}/{len(self.images)}]"
@@ -1428,7 +1283,6 @@ class EryApp:
             self.empty_btn.place_forget()
 
     def _on_close(self) -> None:
-        self._flush_time()
         try:
             self.settings.window_w = self.root.winfo_width()
             self.settings.window_h = self.root.winfo_height()
@@ -1441,14 +1295,13 @@ class EryApp:
                 self.settings.sidebar_width = int(self._sidebar_floor)
         except tk.TclError:
             pass
-        self.settings.save()
         if self._profile_save_after_id is not None:
             try:
                 self.root.after_cancel(self._profile_save_after_id)
             except tk.TclError:
                 pass
             self._profile_save_after_id = None
-        save_profile(self.profile)
+        self.ctl.close()        # time, settings, profile
         self.root.destroy()
 
     def run(self) -> None:

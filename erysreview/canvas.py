@@ -22,7 +22,6 @@ Tool semantics (Frage 1A):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable
 
 import sys
@@ -34,229 +33,22 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Ellipse
 from matplotlib.patheffects import Stroke, Normal
 from matplotlib.transforms import Bbox
-from skimage.draw import disk as sk_disk
-from skimage.measure import find_contours, regionprops_table
 
+from .editor import ReviewEditor
 from .persistence import (
-    AppSettings, ManualCell, ReviewState,
+    AppSettings, ReviewState,
     TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE,
 )
 from .profile import ProfileData
 from .theme import OUTLINE_STYLES, palette as _palette
 
 
-@dataclass
-class CellInfo:
-    cell_id: int
-    cy: float
-    cx: float
-    area: int
-    bbox_y0: int
-    bbox_x0: int
-    bbox_y1: int  # exclusive
-    bbox_x1: int  # exclusive
-    is_manual: bool = False
-
-
-def compute_cell_infos(masks: np.ndarray, manual_ids: set[int]) -> dict[int, CellInfo]:
-    """Single pass over the label image via skimage.measure.regionprops_table.
-    ~22 ms for 300 cells on a 1920x1200 image (vs. ~1400 ms for the naive loop)."""
-    if masks.max() == 0:
-        return {}
-    props = regionprops_table(
-        masks,
-        properties=("label", "bbox", "area", "centroid"),
-    )
-    labels = props["label"]
-    cy = props["centroid-0"]
-    cx = props["centroid-1"]
-    y0 = props["bbox-0"]
-    x0 = props["bbox-1"]
-    y1 = props["bbox-2"]
-    x1 = props["bbox-3"]
-    area = props["area"]
-
-    out: dict[int, CellInfo] = {}
-    for i, lab in enumerate(labels):
-        cid = int(lab)
-        out[cid] = CellInfo(
-            cell_id=cid,
-            cy=float(cy[i]),
-            cx=float(cx[i]),
-            area=int(area[i]),
-            bbox_y0=int(y0[i]),
-            bbox_x0=int(x0[i]),
-            bbox_y1=int(y1[i]),
-            bbox_x1=int(x1[i]),
-            is_manual=cid in manual_ids,
-        )
-    return out
-
-
-def is_border_cell(info: CellInfo, h: int, w: int, margin_n: int) -> bool:
-    return (
-        info.bbox_y0 <= margin_n
-        or info.bbox_x0 <= margin_n
-        or info.bbox_y1 >= h - margin_n
-        or info.bbox_x1 >= w - margin_n
-    )
-
-
-# ─────────────────────────────────────────────
-# Colors
-# ─────────────────────────────────────────────
-def _hex_to_rgb_u8(hex_color: str) -> tuple[int, int, int]:
-    h = hex_color.lstrip("#")
-    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
-
-
-# Unified visual scheme: one inactive color for both border + excluded (per design).
-# Light gray fill + higher alpha so it stays visible on dark images.
-# uint8 (0-255), not float — matplotlib reads RGBA uint8 natively and the array is
-# H*W*4 bytes instead of H*W*16: 9.2 MB instead of 36.9 MB for a 1920x1200 image.
-COLOR_INACTIVE_U8    = (204, 204, 204)
-_DEFAULT_COLOR_U8    = (255, 217, 0)
-
-# Fill opacity. The original 0.42 washed the type colours out against a bright
-# field — measured on real images (median grey 245/255) the smallest colour
-# distance between two types rose from ΔE 21.6 to 27.6 by going to 0.55.
-# Per profile via ProfileData.overlay_alpha; these are only the fallbacks.
-DEFAULT_OVERLAY_ALPHA = 0.55
-INACTIVE_ALPHA_BONUS  = 0.13     # excluded cells read as a more solid grey
-ALPHA_ACTIVE_U8       = round(DEFAULT_OVERLAY_ALPHA * 255)
-ALPHA_INACTIVE_U8     = round(min(1.0, DEFAULT_OVERLAY_ALPHA + INACTIVE_ALPHA_BONUS) * 255)
-
-RGBA = tuple[int, int, int, int]
-
-
-def cell_contours(masks: np.ndarray, info: CellInfo) -> list[np.ndarray]:
-    """Boundary polylines of one cell as (x, y) arrays in image coordinates.
-
-    Only the cell's own bounding box is scanned, so this stays cheap even though
-    it runs per marked cell. The box is padded by one pixel before tracing, so a
-    cell that reaches its own bbox edge still yields a closed loop.
-    """
-    h, w = masks.shape
-    y0, y1 = max(0, info.bbox_y0), min(h, info.bbox_y1)
-    x0, x1 = max(0, info.bbox_x0), min(w, info.bbox_x1)
-    if y0 >= y1 or x0 >= x1:
-        return []
-    sub = np.pad((masks[y0:y1, x0:x1] == info.cell_id).astype(np.float32), 1)
-    out = []
-    for c in find_contours(sub, 0.5):
-        out.append(np.column_stack([c[:, 1] - 1.0 + x0, c[:, 0] - 1.0 + y0]))
-    return out
-
-
-class OverlayColors:
-    """The ONLY place a cell's overlay color is decided.
-
-    Both the full rebuild (`build_overlay_rgba`) and the single-cell repaint
-    (`patch_overlay_cell`) resolve colors through this object, so an incremental
-    update cannot drift away from what a full rebuild would have produced.
-    `tests/test_overlay.py` asserts exactly that, pixel for pixel.
-
-    Cheap to construct (a few sets + one small dict), so callers build one per
-    operation rather than caching a stale view of the review state.
-    """
-
-    def __init__(self, review: ReviewState, profile: ProfileData,
-                 border_ids: set[int], duplicate_ids: set[int] | None = None):
-        self._excluded = set(review.force_excluded)
-        self._included = set(review.force_included)
-        self._types = review.types
-        self._border_ids = border_ids
-        self._duplicate_ids = duplicate_ids or set()
-        self._default_key = profile.default_type_key()
-        self._type_colors = {t.key: _hex_to_rgb_u8(t.color) for t in profile.cell_types}
-        self._default_color = self._type_colors.get(self._default_key, _DEFAULT_COLOR_U8)
-        a = float(getattr(profile, "overlay_alpha", DEFAULT_OVERLAY_ALPHA))
-        a = max(0.05, min(1.0, a))
-        self.alpha_active = round(a * 255)
-        self.alpha_inactive = round(min(1.0, a + INACTIVE_ALPHA_BONUS) * 255)
-
-    def is_active(self, cid: int) -> bool:
-        """Effective active state — the same rule the status bar counts by."""
-        if cid in self._excluded:
-            return False
-        auto_inactive = (cid in self._border_ids) or (cid in self._duplicate_ids)
-        return (not auto_inactive) or (cid in self._included)
-
-    def type_key(self, cid: int) -> str:
-        return self._types.get(str(cid), self._default_key)
-
-    def of(self, cid: int) -> RGBA:
-        if not self.is_active(cid):
-            return (*COLOR_INACTIVE_U8, self.alpha_inactive)
-        return (*self._type_colors.get(self.type_key(cid), self._default_color),
-                self.alpha_active)
-
-
-def build_overlay_rgba(
-    masks: np.ndarray,
-    cell_infos: dict[int, CellInfo],
-    review: ReviewState,
-    profile: ProfileData,
-    border_ids: set[int],
-    duplicate_ids: set[int] | None = None,
-) -> np.ndarray:
-    """Full RGBA overlay: active cells = type color, inactive (border/excluded/
-    duplicate) = unified gray. Force_included cells render as active.
-
-    Vectorized via color_table[masks]. Needed whenever *many* cells can change at
-    once (new image, margin change, profile swap); a single-cell edit should go
-    through patch_overlay_cell() instead.
-    """
-    colors = OverlayColors(review, profile, border_ids, duplicate_ids)
-    max_id = int(masks.max())
-    color_table = np.zeros((max_id + 1, 4), dtype=np.uint8)
-    for cid in cell_infos:
-        if cid <= 0 or cid > max_id:
-            continue
-        color_table[cid] = colors.of(cid)
-    return color_table[masks]
-
-
-def patch_overlay_cell(rgba: np.ndarray, masks: np.ndarray,
-                       info: CellInfo, value: RGBA) -> None:
-    """Repaint exactly one cell into an existing overlay, in place.
-
-    Touches only the cell's bounding box instead of re-deriving the whole
-    H*W*4 array — the difference between a few hundred bytes and ~9 MB per click.
-    The bbox is clamped: manual cells are stored as centre +/- radius
-    (see _act_add) and may stick out of the image, and a negative slice bound
-    would silently index from the far edge.
-    """
-    h, w = masks.shape
-    y0, y1 = max(0, info.bbox_y0), min(h, info.bbox_y1)
-    x0, x1 = max(0, info.bbox_x0), min(w, info.bbox_x1)
-    if y0 >= y1 or x0 >= x1:
-        return
-    window = rgba[y0:y1, x0:x1]                      # view, writes through
-    window[masks[y0:y1, x0:x1] == info.cell_id] = value
-
-
-def build_margin_rgba(h: int, w: int, margin_n: int) -> np.ndarray:
-    """A semi-transparent black RGBA strip covering the outer margin_n pixels.
-    Used to visualize the border zone (Frage 2c, II)."""
-    rgba = np.zeros((h, w, 4), dtype=np.float32)
-    if margin_n <= 0:
-        return rgba
-    rgba[..., 3] = 0.35
-    # punch a hole through the inner region
-    rgba[margin_n:h - margin_n, margin_n:w - margin_n, 3] = 0.0
-    return rgba
-
-
-def normalize_image_for_display(img: np.ndarray) -> np.ndarray:
-    if img.ndim == 2:
-        a = img.astype(np.float32)
-        lo, hi = float(a.min()), float(a.max())
-        return (a - lo) / (hi - lo + 1e-8)
-    a = img.astype(np.float32)
-    if a.max() > 1.5:
-        a = a / 255.0
-    return np.clip(a, 0.0, 1.0)
+from .overlay import (  # noqa: F401 — re-exported; these used to live here
+    ALPHA_ACTIVE_U8, ALPHA_INACTIVE_U8, COLOR_INACTIVE_U8, DEFAULT_OVERLAY_ALPHA,
+    INACTIVE_ALPHA_BONUS, RGBA, CellInfo, OverlayColors, build_margin_rgba,
+    build_overlay_rgba, cell_contours, compute_cell_infos, is_border_cell,
+    normalize_image_for_display, patch_overlay_cell,
+)
 
 
 # ─────────────────────────────────────────────
@@ -272,35 +64,31 @@ class EryCanvas(tk.Frame):
         status_callback: Callable[[str], None] | None = None,
         note_callback: Callable[[int], None] | None = None,
         on_overlay_autoshown: Callable[[], None] | None = None,
+        on_edit_overlay_hidden: Callable[[], None] | None = None,
         new_circle_radius: int = 17,
     ):
         P = _palette(settings.theme)
         super().__init__(parent, bg=P["canvas_bg"])
         self.settings = settings
         self.profile = profile
-        # Auto-excluded by the size filter. The name stays `duplicate_ids`
-        # because it maps 1:1 to the `is_duplicate` column of the exported
-        # stats CSV and erys.db, which downstream analysis relies on.
-        self.duplicate_ids: set[int] = set()
+        # The data side — masks, review, per-cell state, edits, undo. This
+        # widget only draws what the editor says changed.
+        self.editor = ReviewEditor(profile, new_circle_radius)
         self.save_callback = save_callback
         # Right-click on a cell -> the app opens the remark editor for it.
         self.note_callback = note_callback or (lambda _cid: None)
         # Fired after an edit had to reveal a hidden overlay, so the app can
         # persist the setting and say why the view changed.
         self.on_overlay_autoshown = on_overlay_autoshown or (lambda: None)
+        # Fired after an edit with the overlay hidden and auto-show turned off,
+        # so the app can say why nothing visibly changed.
+        self.on_edit_overlay_hidden = on_edit_overlay_hidden or (lambda: None)
         self._theme_palette = P
         self.status_callback = status_callback or (lambda s: None)
-        self.new_circle_radius = new_circle_radius
 
-        # Data state
+        # Display state
         self.image: np.ndarray | None = None
         self.image_norm: np.ndarray | None = None
-        self.masks: np.ndarray | None = None
-        self.review: ReviewState | None = None
-        self.cell_infos: dict[int, CellInfo] = {}
-        self.border_ids: set[int] = set()
-        self.next_id: int = 1
-        self.history: list[tuple] = []
         self.cursor_xy: tuple[float, float] | None = None
         self.selected_id: int | None = None
 
@@ -358,12 +146,18 @@ class EryCanvas(tk.Frame):
     # ─────────────────────────────────────────
     # Public API
     # ─────────────────────────────────────────
+    # Read-through views of the editor's state, for the drawing code below
+    # and for the app, which reads border/duplicate ids for the status line.
+    masks = property(lambda self: self.editor.masks)
+    review = property(lambda self: self.editor.review)
+    cell_infos = property(lambda self: self.editor.cell_infos)
+    border_ids = property(lambda self: self.editor.border_ids)
+    duplicate_ids = property(lambda self: self.editor.duplicate_ids)
+    history = property(lambda self: self.editor.history)
+
     def clear(self) -> None:
-        self.image = self.image_norm = self.masks = self.review = None
-        self.cell_infos = {}
-        self.border_ids = set()
-        self.duplicate_ids = set()
-        self.history.clear()
+        self.image = self.image_norm = None
+        self.editor.clear()
         self.selected_id = None
         self.ax.cla()
         self.ax.set_facecolor(self._theme_palette["canvas_bg"])
@@ -378,44 +172,15 @@ class EryCanvas(tk.Frame):
         self._full_redraw()
 
     def _colors(self) -> OverlayColors:
-        """Current color/activity resolver. Cheap — rebuilt per operation so it
-        can never hold a stale view of the review state."""
-        return OverlayColors(self.review, self.profile, self.border_ids,
-                             self.duplicate_ids)
+        return self.editor.colors()
 
     def set_image(self, image: np.ndarray, masks: np.ndarray, review: ReviewState) -> None:
         self.image = image
         self.image_norm = normalize_image_for_display(image)
-        self.masks = masks.astype(np.int32)
-        self.review = review
-        self.history.clear()
         self.selected_id = None
-
-        # Materialize manual cells into the live mask
-        manual_ids: set[int] = set()
-        max_id = int(self.masks.max())
-        for mc in review.manual_cells:
-            mid = mc.cell_id
-            max_id = max(max_id, mid)
-            rr, cc = sk_disk((int(mc.y), int(mc.x)), int(mc.radius), shape=self.masks.shape)
-            self.masks[rr, cc] = mid
-            manual_ids.add(mid)
-        self.next_id = max_id + 1
-        if review.next_manual_id < self.next_id:
-            review.next_manual_id = self.next_id
-
-        self.cell_infos = compute_cell_infos(self.masks, manual_ids)
-        self._recompute_borders()
-        # Duplicates belong to the derived state of THIS image, exactly like
-        # border_ids — so they are resolved here, before anything renders.
-        # (They used to be computed by the app *after* set_image returned, which
-        # meant the first overlay was painted with the previous image's
-        # duplicates and a failure left those stale IDs feeding the status bar.)
-        # Local import: sizefilter.py imports CellInfo from this module.
-        from .sizefilter import detect_size_outliers
-        self.duplicate_ids = detect_size_outliers(
-            self.cell_infos, self.profile.size_filter,
-        )
+        # Manual cells, geometry, border and size-filter ids — all resolved
+        # before anything renders, so the first paint is already consistent.
+        self.editor.load(masks, review)
 
         h, w = self.image.shape[:2]
         same_shape = (self._image_shape == (h, w)) and self._im_handle is not None
@@ -469,8 +234,7 @@ class EryCanvas(tk.Frame):
         self._full_redraw()
 
     def set_margin_n(self, n: int) -> None:
-        self.profile.margin_n = int(n)
-        self._recompute_borders()
+        self.editor.set_margin_n(n)
         self._refresh_overlay()
         self._refresh_margin()
         self._refresh_numbers()   # borders moved -> which cells count moved with them
@@ -480,8 +244,7 @@ class EryCanvas(tk.Frame):
     def set_profile(self, profile: ProfileData) -> None:
         """Swap to a different study profile. Re-renders with new colors/margin/types."""
         self.profile = profile
-        self._recompute_borders()
-        self._recompute_duplicates()   # the profile carries the duplicate config
+        self.editor.set_profile(profile)
         self._refresh_overlay()
         self._refresh_margin()
         self._refresh_numbers()
@@ -505,61 +268,22 @@ class EryCanvas(tk.Frame):
     # Tool-aware actions
     # ─────────────────────────────────────────
     def _act_add(self, x: float, y: float) -> bool:
-        if self.masks is None or self.review is None:
+        cid = self.editor.add(x, y)
+        if cid is None:
             return False
-        new_id = self.next_id
-        self.next_id += 1
-        self.review.next_manual_id = self.next_id
-        rr, cc = sk_disk((int(y), int(x)), self.new_circle_radius, shape=self.masks.shape)
-        self.masks[rr, cc] = new_id
-        mc = ManualCell(cell_id=new_id, x=float(x), y=float(y),
-                        radius=float(self.new_circle_radius))
-        self.review.manual_cells.append(mc)
-        self.cell_infos[new_id] = CellInfo(
-            cell_id=new_id, cy=float(y), cx=float(x),
-            area=int(np.pi * self.new_circle_radius ** 2),
-            bbox_y0=int(y) - self.new_circle_radius,
-            bbox_x0=int(x) - self.new_circle_radius,
-            bbox_y1=int(y) + self.new_circle_radius + 1,
-            bbox_x1=int(x) + self.new_circle_radius + 1,
-            is_manual=True,
-        )
-        # check border
-        h, w = self.image.shape[:2]
-        if is_border_cell(self.cell_infos[new_id], h, w, self.profile.margin_n):
-            self.border_ids.add(new_id)
-        self.history.append(("add", new_id))
         self.save_callback()
         # One new cell -> one new artist and one patched bbox, not a full rebuild.
-        self._number_artists[new_id] = self._make_number(new_id, self.cell_infos[new_id])
-        self._patch_cell(new_id)
+        self._number_artists[cid] = self._make_number(cid, self.cell_infos[cid])
+        self._patch_cell(cid)
         # Same shape as a toggle: one cell's rectangle changed, and its number
         # artist already exists, so the blit rebuild picks it up.
-        self._draw_after_cell_edit(new_id)
+        self._draw_after_cell_edit(cid)
         return True
 
     def _act_remove_toggle(self, x: float, y: float) -> bool:
-        """Toggle the cell's effective active state.
-
-        Cases:
-          - currently active normal       -> add to force_excluded (now excluded)
-          - currently force_excluded      -> remove from force_excluded (back to default)
-          - currently border (inactive)   -> add to force_included (now active)
-          - currently force_included      -> remove from force_included (back to border)
-        """
-        cid = self._find_cell_at(x, y)
-        if cid is None or self.review is None:
+        cid = self.editor.toggle_active(x, y)
+        if cid is None:
             return False
-        prev = (cid in self.review.force_excluded, cid in self.review.force_included)
-        if cid in self.review.force_excluded:
-            self.review.force_excluded.remove(cid)
-        elif cid in self.review.force_included:
-            self.review.force_included.remove(cid)
-        elif cid in self.border_ids:
-            self.review.force_included.append(cid)
-        else:
-            self.review.force_excluded.append(cid)
-        self.history.append(("remove_toggle", cid, prev))
         self.save_callback()
         # Patching also flips this cell's number — previously the number stayed
         # on screen after the cell was switched inactive.
@@ -568,57 +292,27 @@ class EryCanvas(tk.Frame):
         return True
 
     def _act_type(self, x: float, y: float) -> bool:
-        cid = self._find_cell_at(x, y)
-        if cid is None or self.review is None:
+        cid = self.editor.set_type(x, y, self.profile.active_type_key)
+        if cid is None:
             return False
-        prev = self.review.types.get(str(cid))
-        self.review.types[str(cid)] = self.profile.active_type_key
-        self.history.append(("type", cid, prev))
         self.save_callback()
         self._patch_cell(cid)
         self._draw_after_cell_edit(cid)
         return True
 
     def undo(self) -> bool:
-        if not self.history or self.review is None or self.masks is None:
+        done = self.editor.undo()
+        if done is None:
             return False
-        action = self.history.pop()
-        kind = action[0]
-        if kind == "remove_toggle":
-            _, cid, prev = action
-            was_excluded, was_included = prev
-            if cid in self.review.force_excluded:
-                self.review.force_excluded.remove(cid)
-            if cid in self.review.force_included:
-                self.review.force_included.remove(cid)
-            if was_excluded:
-                self.review.force_excluded.append(cid)
-            if was_included:
-                self.review.force_included.append(cid)
-            self.save_callback()
-            self._patch_cell(cid)
-        elif kind == "add":
-            _, cid = action
-            self.masks[self.masks == cid] = 0
-            self.review.manual_cells = [m for m in self.review.manual_cells if m.cell_id != cid]
-            self.cell_infos.pop(cid, None)
-            self.border_ids.discard(cid)
-            self.next_id = max(1, self.next_id - 1)
-            self.review.next_manual_id = self.next_id
-            self.save_callback()
+        self.save_callback()
+        if done.kind == "add":
             # The label vanished from `masks`, so there is nothing left to patch
             # against — and undoing an add is rare. Rebuild both layers.
             self._refresh_overlay()
             self._refresh_numbers()
             self._refresh_outlines()
-        elif kind == "type":
-            _, cid, prev = action
-            if prev is None:
-                self.review.types.pop(str(cid), None)
-            else:
-                self.review.types[str(cid)] = prev
-            self.save_callback()
-            self._patch_cell(cid)
+        else:
+            self._patch_cell(done.cell_id)
         self._full_redraw()
         return True
 
@@ -626,31 +320,7 @@ class EryCanvas(tk.Frame):
     # Internals
     # ─────────────────────────────────────────
     def _find_cell_at(self, x: float, y: float) -> int | None:
-        if self.masks is None:
-            return None
-        yi, xi = int(round(y)), int(round(x))
-        if 0 <= yi < self.masks.shape[0] and 0 <= xi < self.masks.shape[1]:
-            cid = int(self.masks[yi, xi])
-            return cid if cid > 0 else None
-        return None
-
-    def _recompute_borders(self) -> None:
-        if self.image is None:
-            self.border_ids = set()
-            return
-        h, w = self.image.shape[:2]
-        n = self.profile.margin_n
-        self.border_ids = {
-            cid for cid, info in self.cell_infos.items()
-            if is_border_cell(info, h, w, n)
-        }
-
-    def _recompute_duplicates(self) -> None:
-        # Local import: sizefilter.py imports CellInfo from this module.
-        from .sizefilter import detect_size_outliers
-        self.duplicate_ids = detect_size_outliers(
-            self.cell_infos, self.profile.size_filter,
-        )
+        return self.editor.find_cell_at(x, y)
 
     def _refresh_overlay(self) -> None:
         """Full rebuild. Use when many cells can change at once (new image,
@@ -1082,7 +752,7 @@ class EryCanvas(tk.Frame):
         the view follows the intent; `o` stays available for looking at the
         raw image.
         """
-        if self.settings.overlay_visible:
+        if self.settings.overlay_visible or not self.settings.overlay_autoshow:
             return False
         self.settings.overlay_visible = True
         self.set_overlay_visible(True)
@@ -1121,6 +791,9 @@ class EryCanvas(tk.Frame):
             # which rewrites the status line and would swallow an earlier note.
             if revealed:
                 self.on_overlay_autoshown()
+            elif not self.settings.overlay_visible and tool in (TOOL_ADD, TOOL_REMOVE, TOOL_TYPE):
+                # Auto-show is off: the edit saved but nothing on screen moved.
+                self.on_edit_overlay_hidden()
         elif event.button == 3:
             # Remarks are occasional, so they get their own gesture instead of a
             # fourth tool: no mode switch, available whatever tool is active.
