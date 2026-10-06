@@ -73,6 +73,19 @@ def main() -> int:
               "an empty folder is refused and leaves the state alone")
         check(ctl.folder is None, "…state untouched")
 
+        # Regression (data loss): opening a folder and showing an image must
+        # not write the review held in memory onto image 0 of that folder.
+        st0 = sorted(p.stem for p in folder.glob("*.tif"))[0]
+        rv0 = ReviewState(is_finished=True); rv0.types = {"1": "x"}; rv0.save(folder, st0)
+        before0 = ReviewState.review_path(folder, st0).read_bytes()
+        ctl.open_folder(folder, restore_index=False)
+        ctl.idx = 0
+        ctl.load_image_at(2)
+        check(ReviewState.review_path(folder, st0).read_bytes() == before0,
+              "opening a folder never overwrites image 0's review (regression)")
+        ReviewState.review_path(folder, st0).unlink()
+        ctl.folder_state.last_index = 0; ctl.folder_state.save(folder)
+
         start = ctl.open_folder(folder, restore_index=True)
         check(start == 0 and len(ctl.images) == 3, "a folder opens with its three images")
         check(set(ctl.grouped.timepoints()) == {"Prä"} and ctl.grouped.subjects_in("Prä") == ["01", "02"],

@@ -24,7 +24,7 @@ from .cellpose_runner import (
 from .export import export_folder_structured, export_training_data
 from .grouping import GroupedFolder, group_images
 from .persistence import (
-    AppSettings, FolderState, ReviewState, TOOLS_ORDER, set_review_namespace,
+    AppSettings, FolderState, ReviewState, TOOLS_ORDER, review_namespace, set_review_namespace,
 )
 from .profile import ProfileData, save_profile
 from .tasks import Task, simple
@@ -117,6 +117,11 @@ class AppController:
         self.idx: int = 0
         self.folder_state = FolderState()
         self.review = ReviewState()
+        # Which file the review in memory belongs to: (folder, stem, rating).
+        # Nothing is written unless it is still the current image of the same
+        # folder and rating — opening a folder or a second rating used to save
+        # the review in memory onto image 0 of the new place (data loss).
+        self._review_key: tuple | None = None
         now = time.monotonic()
         self._last_activity = now
         self._last_tick = now
@@ -146,10 +151,17 @@ class AppController:
         if self.has_images and (now - self._last_activity) < self.TIME_IDLE_S:
             self.review.time_spent_s += min(delta, self.TIME_TICK_S + 1.0)
 
+    def _key_for(self, path: Path) -> tuple:
+        return (str(self.folder), path.stem, review_namespace(self.folder))
+
+    def _owns(self, path: Path | None) -> bool:
+        return path is not None and self._review_key == self._key_for(path)
+
     def flush_time(self) -> None:
-        """Persist the current image's accumulated time."""
+        """Persist the current image's accumulated time — only onto the image
+        the review in memory was loaded for."""
         path = self.current_path
-        if path is not None:
+        if self._owns(path):
             try:
                 self.review.save(self.folder, path.stem)
             except Exception:  # noqa: BLE001 — time is best-effort
@@ -195,6 +207,7 @@ class AppController:
         self.folder = path
         # a second rating reads and writes its own reviews (same masks)
         set_review_namespace(path, self.profile.rater or None)
+        self.review, self._review_key = ReviewState(), None   # belongs to nothing here yet
         self.images = images
         self.grouped = group_images(images, self.profile)
         self.folder_state = FolderState.load(path)
@@ -244,6 +257,7 @@ class AppController:
         if masks is None:
             return None
         self.review = ReviewState.load(self.folder, path.stem)
+        self._review_key = self._key_for(path)
         return LoadedImage(path, img, masks, self.review, unsegmented, mismatch)
 
     def reload_review(self) -> None:
@@ -251,11 +265,13 @@ class AppController:
         path = self.current_path
         if path is not None:
             self.review = ReviewState.load(self.folder, path.stem)
+            self._review_key = self._key_for(path)
 
     def save_review(self) -> None:
-        """Raises on a write error, so the front end can say so."""
+        """Raises on a write error, so the front end can say so. Writes only
+        onto the image the review was loaded for (see _review_key)."""
         path = self.current_path
-        if path is not None:
+        if self._owns(path):
             self.review.save(self.folder, path.stem)
 
     # ── review edits outside the canvas ──
