@@ -188,6 +188,9 @@ class AppSettings:
     # What happens to existing masks after the study's Cellpose parameters
     # changed: "later" (only the toolbar banner says so), "ask", "batch".
     resegment_default: str = "later"
+    # Own key/mouse bindings, only where they differ from the defaults
+    # ({action_id: [bindings]}, see shortcuts.py). Per computer.
+    shortcuts: dict = field(default_factory=dict)
     active_tool: str = TOOL_ADD
     last_profile_name: str | None = None
     reviewer_name: str = ""           # stamped into shared packages + import logs
@@ -240,6 +243,7 @@ class AppSettings:
                 reviewer_name=str(raw.get("reviewer_name", "")),
                 font_scale=float(raw.get("font_scale", 1.0)),
                 cellpose_models=dict(raw.get("cellpose_models") or {}),
+                shortcuts=dict(raw.get("shortcuts") or {}),
             )
         except (TypeError, ValueError):
             return cls()
@@ -267,6 +271,7 @@ class AppSettings:
             "reviewer_name": self.reviewer_name,
             "font_scale": self.font_scale,
             "cellpose_models": self.cellpose_models,
+            "shortcuts": self.shortcuts,
         })
 
 

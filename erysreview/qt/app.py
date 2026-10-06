@@ -45,13 +45,24 @@ from .toolbar import QtToolbar
 class _ActivityFilter(QObject):
     """Counts any mouse or key input as 'the user is working' (time tracking)."""
 
-    def __init__(self, ctl: AppController):
+    def __init__(self, ctl: AppController, window=None):
         super().__init__()
         self.ctl = ctl
+        self.window = window
 
     def eventFilter(self, _obj, ev):
         if ev.type() in (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.Wheel):
             self.ctl.mark_activity()
+        if ev.type() == QEvent.MouseButtonPress and self.window is not None \
+                and ev.button() in (Qt.BackButton, Qt.ForwardButton) \
+                and QApplication.activeWindow() is self.window:
+            # Mouse side buttons, if the user bound them (Rechner › Tastenkürzel).
+            from .. import shortcuts as sc
+            b = sc.MOUSE_BACK if ev.button() == Qt.BackButton else sc.MOUSE_FORWARD
+            aid = self.window._mouse_map.get(b)
+            if aid:
+                self.window.run_action(aid)
+                return True
         return False
 
 
@@ -148,30 +159,30 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         S = self.S
+        self._qactions: dict[str, QAction] = {}
         mb = self.menuBar()
         m_file = mb.addMenu(S["menu_file"])
-        self._act(m_file, S["qt_studies_title"] + " …", self.switch_study, "Ctrl+Shift+O")
-        self._act(m_file, S["menu_open_folder"], self.ask_open_folder, QKeySequence.Open)
-        # "Ctrl" is ⌘ on macOS; QKeySequence.Preferences is empty on some platforms.
-        prefs = self._act(m_file, S["settings_title"] + " …", lambda: self.open_settings(),
-                          ["Ctrl+,"])
+        self._act(m_file, S["qt_studies_title"] + " …", self.switch_study, "open_study")
+        self._act(m_file, S["menu_open_folder"], self.ask_open_folder, "open_folder")
+        prefs = self._act(m_file, S["settings_title"] + " …", lambda: self.open_settings(), "settings")
         prefs.setMenuRole(QAction.PreferencesRole)      # macOS: app menu › Einstellungen
         self.m_recent = m_file.addMenu(S["menu_recent_folders"])
         self._fill_recent()
-        self._act(m_file, S["menu_refresh"], self.refresh, ["F5", "Ctrl+R"])
+        self._act(m_file, S["menu_refresh"], self.refresh, "refresh")
         m_file.addSeparator()
-        self._act(m_file, S["batch_title"] + " …", self.open_batch, ["Ctrl+B"])
-        self._act(m_file, S["menu_export"], self.export, ["Ctrl+S"])
+        self._act(m_file, S["batch_title"] + " …", self.open_batch, "batch")
+        self._act(m_file, S["menu_export"], self.export, "export")
         m_file.addSeparator()
         self._act(m_file, S["menu_package_create"], self.package_create)
         self._act(m_file, S["menu_package_import"], self.package_import)
         m_file.addSeparator()
-        self._act(m_file, S["menu_quit"], self.close, QKeySequence.Quit)
+        quit_ = self._act(m_file, S["menu_quit"], self.close, "quit")
+        quit_.setMenuRole(QAction.QuitRole)
         m_edit = mb.addMenu(S["qt_menu_edit"])
-        self._act(m_edit, S["tool_undo"], self.undo, QKeySequence.Undo)
+        self._act(m_edit, S["tool_undo"], self.undo, "undo")
         m_view = mb.addMenu(S["qt_menu_view"])
-        self._act(m_view, S["tool_overlay"], self.toggle_overlay)
-        self._act(m_view, S["tool_reset_zoom"], lambda: self.canvas.reset_zoom())
+        self._act(m_view, S["tool_overlay"], self.toggle_overlay, "overlay")
+        self._act(m_view, S["tool_reset_zoom"], lambda: self.canvas.reset_zoom(), "reset_zoom")
         m_an = mb.addMenu(S["menu_analysis"])
         self.act_stats = self._act(m_an, S["menu_stats"], self.open_stats)
         self._act(m_an, S["menu_dashboard"], self.open_dashboard)
@@ -180,39 +191,70 @@ class MainWindow(QMainWindow):
         m_an.addSeparator()
         self._act(m_an, S["menu_training_export"], self.training_export)
         m_help = mb.addMenu(S["menu_help"])
-        self._act(m_help, S["menu_help_hotkeys"],
-                  lambda: QMessageBox.information(self, S["help_hotkeys_title"], S["help_hotkeys"]))
+        self._act(m_help, S["menu_help_hotkeys"], lambda: self.open_settings("keys"))
         self._act(m_help, S["menu_help_about"],
                   lambda: QMessageBox.about(self, S["menu_help_about"], f"Erys v{__version__} (Qt)"))
 
-    def _act(self, menu, text, fn, keys=None) -> QAction:
+    def _act(self, menu, text, fn, action_id: str | None = None) -> QAction:
+        """A menu entry. With `action_id` its shortcuts come from the shortcut
+        registry (shortcuts.py) and follow the user's own bindings."""
         a = QAction(text, self)
-        if keys is not None:
-            if isinstance(keys, str):
-                keys = [keys]           # a bare string would be read as a key list
-            a.setShortcuts([QKeySequence(k) for k in keys] if isinstance(keys, list) else keys)
         a.triggered.connect(lambda _c=False: fn())
         menu.addAction(a)
+        if action_id:
+            self._qactions[action_id] = a
         return a
 
+    def _handlers(self) -> dict:
+        return {
+            "tool_add": lambda: self._set_tool(TOOL_ADD), "tool_remove": lambda: self._set_tool(TOOL_REMOVE),
+            "tool_type": lambda: self._set_tool(TOOL_TYPE), "tool_note": lambda: self._set_tool(TOOL_NOTE),
+            "tool_cursor": lambda: self._set_tool(TOOL_CURSOR),
+            "prev_image": lambda: self.step(-1), "next_image": lambda: self.step(+1),
+            "toggle_finished": self.toggle_finished, "cycle_eval": self.cycle_eval,
+            "resegment": self.resegment, "info": self.show_info,
+        }
+
     def _bind_keys(self) -> None:
-        """Bare-key shortcuts. Window-wide, but a focused text field (the remark
-        box) gets the key first, so typing never switches tools (K9)."""
-        def key(seq, fn):
-            QShortcut(QKeySequence(seq), self, activated=fn, context=Qt.WindowShortcut)
-        for i, tool in enumerate(TOOLS_ORDER, start=1):
-            key(str(i), lambda t=tool: self._set_tool(t))
-        key("Left", lambda: self.step(-1))
-        key("Right", lambda: self.step(+1))
-        key("F", self.toggle_finished)
-        key("O", self.toggle_overlay)
-        key("Escape", lambda: self._set_tool(TOOL_CURSOR))
-        key("R", self.resegment)
-        key("Z", self.undo)
-        key("E", self.cycle_eval)
-        key("0", lambda: self.canvas.reset_zoom())
-        key("Home", lambda: self.canvas.reset_zoom())
-        key("S", self.export)
+        self._shortcut_objs: list[QShortcut] = []
+        self._mouse_map: dict[str, str] = {}
+        self._apply_shortcuts()
+
+    def _apply_shortcuts(self) -> None:
+        """(Re)bind every action from the registry plus this computer's own
+        bindings. Window shortcuts yield to a focused text field (the remark
+        box), so typing never switches tools (K9). Bindings that collide (a
+        hand-edited settings file) fall back to the defaults, and the user is told."""
+        from .. import shortcuts as sc
+        mapping, reset = sc.resolve(self.settings.shortcuts)
+        if reset:
+            self.settings.shortcuts = sc.overrides_from(mapping)
+            self.settings.save()
+            QTimer.singleShot(0, lambda: self._set_status(self.S["qt_keys_reset_start"].format(
+                list=", ".join(self.S[sc.BY_ID[a].label_key] for a in reset))))
+        for obj in self._shortcut_objs:
+            obj.setEnabled(False); obj.deleteLater()
+        self._shortcut_objs = []
+        self._mouse_map = {}
+        handlers = self._handlers()
+        for action in sc.ACTIONS:
+            keys = [b for b in mapping[action.id] if b not in sc.MOUSE_BINDINGS]
+            for b in mapping[action.id]:
+                if b in sc.MOUSE_BINDINGS:
+                    self._mouse_map[b] = action.id
+            if action.id in self._qactions:
+                self._qactions[action.id].setShortcuts([QKeySequence(k) for k in keys])
+            elif action.id in handlers:
+                for k in keys:
+                    self._shortcut_objs.append(QShortcut(QKeySequence(k), self, activated=handlers[action.id],
+                                                         context=Qt.WindowShortcut))
+        self._mapping = mapping
+
+    def run_action(self, action_id: str) -> None:
+        if action_id in self._qactions:
+            self._qactions[action_id].trigger()
+        elif action_id in self._handlers():
+            self._handlers()[action_id]()
 
     # ── folders ──
     def ask_open_folder(self) -> None:
@@ -663,6 +705,8 @@ class MainWindow(QMainWindow):
             self.toolbar.set_active_tool(self.settings.active_tool)
             if self.ctl.has_images:
                 self.show_image(self.ctl.idx)       # restores the parameter banner
+        elif field == "shortcuts":
+            self._apply_shortcuts()
         elif field == "cellpose_models" and self.ctl.has_images:
             self.show_image(self.ctl.idx)
 
@@ -784,7 +828,7 @@ def make_app(argv=None) -> QApplication:
 def main() -> int:
     app = make_app()
     win = MainWindow()
-    app._activity = _ActivityFilter(win.ctl)            # keep a reference
+    app._activity = _ActivityFilter(win.ctl, win)       # keep a reference
     app.installEventFilter(app._activity)
     win.show()
     return app.exec()

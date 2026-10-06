@@ -32,7 +32,8 @@ from ..theme import COLOR_SCHEMES, FONT_SCALE_CHOICES, OUTLINE_ORDER, apply_sche
 
 STUDY_PAGES = [("images", "qt_page_images"), ("seg", "qt_page_seg"), ("types", "qt_page_types"),
                ("size", "qt_page_size"), ("display", "qt_page_display"), ("export", "qt_page_export")]
-LOCAL_PAGES = [("general", "qt_page_general"), ("edit", "qt_page_edit"), ("models", "qt_page_models")]
+LOCAL_PAGES = [("general", "qt_page_general"), ("edit", "qt_page_edit"), ("keys", "qt_page_keys"),
+               ("models", "qt_page_models")]
 
 FIELD_LABELS = {
     "cellpose.model": "settings_cp_model", "cellpose.diameter": "settings_cp_diameter",
@@ -245,10 +246,12 @@ class SettingsDialog(QDialog):
         self._pages.clear()
         builders = {"images": self._page_images, "seg": self._page_seg, "types": self._page_types,
                     "size": self._page_size, "display": self._page_display, "export": self._page_export,
-                    "general": self._page_general, "edit": self._page_edit, "models": self._page_models}
+                    "general": self._page_general, "edit": self._page_edit, "keys": self._page_keys,
+                    "models": self._page_models}
         subs = {"images": "qt_page_images_sub", "seg": "qt_page_seg_sub", "types": "qt_page_types_sub",
                 "size": "qt_page_size_sub", "display": "qt_page_display_sub", "export": "qt_page_export_sub",
-                "general": "qt_page_local_sub", "edit": "qt_page_local_sub", "models": "qt_page_models_sub"}
+                "general": "qt_page_local_sub", "edit": "qt_page_local_sub", "keys": "qt_page_keys_sub",
+                "models": "qt_page_models_sub"}
         titles = dict(STUDY_PAGES + LOCAL_PAGES)
         for key, build in builders.items():
             page = QWidget(); v = QVBoxLayout(page); v.setContentsMargins(32, 24, 32, 24); v.setSpacing(14)
@@ -692,6 +695,68 @@ class SettingsDialog(QDialog):
                 grp.addButton(rb); cv.addWidget(rb)
             v.addWidget(card)
 
+    # Rechner · Tastenkürzel
+    def _page_keys(self, v: QVBoxLayout) -> None:
+        from .. import shortcuts as sc
+        S = self.S
+        top = QHBoxLayout(); top.addStretch(1)
+        reset = QPushButton(S["qt_keys_reset"]); reset.clicked.connect(self._keys_reset)
+        top.addWidget(reset)
+        v.addLayout(top)
+        self.keys_msg = QLabel(""); self.keys_msg.setWordWrap(True)
+        self.keys_msg.setStyleSheet(f"color: {self.P['accent_error']}; font-weight: 600;")
+        v.addWidget(self.keys_msg)
+        card, cv = _card()
+        self.keys_grid = QGridLayout(); self.keys_grid.setHorizontalSpacing(10); self.keys_grid.setVerticalSpacing(6)
+        cv.addLayout(self.keys_grid)
+        v.addWidget(card)
+        self._keys = sc.effective(self.settings.shortcuts)
+        self._fill_keys()
+
+    def _fill_keys(self) -> None:
+        from .. import shortcuts as sc
+        S, g = self.S, self.keys_grid
+        self._clear(g)
+        for c, key in enumerate(("qt_keys_action", "qt_keys_first", "qt_keys_second")):
+            h = QLabel(label(S, key).upper()); h.setObjectName("caption"); g.addWidget(h, 0, c)
+        self.key_buttons: dict[tuple[str, int], "KeyCaptureButton"] = {}
+        for r, a in enumerate(sc.ACTIONS, start=1):
+            g.addWidget(QLabel(label(S, a.label_key)), r, 0)
+            for slot in (0, 1):
+                cur = self._keys[a.id][slot] if slot < len(self._keys[a.id]) else ""
+                b = KeyCaptureButton(S, cur, lambda bind, aid=a.id, sl=slot: self._assign(aid, sl, bind))
+                g.addWidget(b, r, 1 + slot)
+                self.key_buttons[(a.id, slot)] = b
+        g.setColumnStretch(0, 1)
+
+    def _assign(self, aid: str, slot: int, binding: str) -> bool:
+        """Bind (or clear, binding "") one slot. Refuses a key another action owns."""
+        from .. import shortcuts as sc
+        S = self.S
+        if binding:
+            binding = sc.normalize(binding)
+            owner = sc.owner_of(self._keys, binding, except_id=aid)
+            if owner is not None:
+                self.keys_msg.setText(S["qt_keys_taken"].format(
+                    key=KeyCaptureButton.display(S, binding), action=label(S, sc.BY_ID[owner].label_key)))
+                return False
+        cur = list(self._keys[aid])
+        while len(cur) <= slot:
+            cur.append("")
+        cur[slot] = binding
+        self._keys[aid] = [b for b in dict.fromkeys(cur) if b]
+        self.keys_msg.setText("")
+        self._local("shortcuts", sc.overrides_from(self._keys))
+        self._fill_keys()
+        return True
+
+    def _keys_reset(self) -> None:
+        from .. import shortcuts as sc
+        self._keys = sc.effective({})
+        self.keys_msg.setText("")
+        self._local("shortcuts", {})
+        self._fill_keys()
+
     # Rechner · Modelldateien
     def _page_models(self, v: QVBoxLayout) -> None:
         top = QHBoxLayout(); top.addStretch(1)
@@ -770,6 +835,84 @@ class SettingsDialog(QDialog):
         reg = {k: v for k, v in self.settings.cellpose_models.items() if k != name}
         self._local("cellpose_models", reg)
         self._fill_models(); self._update_model_status()
+
+
+# ─────────────────────────────────────────────
+# Key capture
+# ─────────────────────────────────────────────
+class KeyCaptureButton(QPushButton):
+    """Shows a binding; click it, then press a key combination or a mouse side
+    button to rebind. Backspace/Delete clears; clicking again cancels."""
+
+    def __init__(self, S: dict, binding: str, on_bind: Callable[[str], bool]):
+        super().__init__(self.display(S, binding))
+        self.S, self.binding, self._on_bind = S, binding, on_bind
+        self.capturing = False
+        self.setObjectName("keyCapture")
+        self.setMinimumWidth(170)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setToolTip(S["qt_page_keys_sub"])
+        self.clicked.connect(self._toggle)
+
+    @staticmethod
+    def display(S: dict, binding: str) -> str:
+        from PySide6.QtGui import QKeySequence
+        from .. import shortcuts as sc
+        if not binding:
+            return S["qt_keys_none"]
+        if binding == sc.MOUSE_BACK:
+            return S["qt_mouse_back"]
+        if binding == sc.MOUSE_FORWARD:
+            return S["qt_mouse_forward"]
+        return QKeySequence(binding).toString(QKeySequence.NativeText) or binding
+
+    def _toggle(self) -> None:
+        self.capturing = not self.capturing
+        self.setProperty("capturing", self.capturing)
+        self.style().unpolish(self); self.style().polish(self)
+        self.setText(self.S["qt_keys_press"] if self.capturing else self.display(self.S, self.binding))
+        if self.capturing:
+            self.setFocus()
+
+    def _finish(self, binding: str) -> None:
+        self.capturing = False
+        self.setProperty("capturing", False)
+        self.style().unpolish(self); self.style().polish(self)
+        if self._on_bind(binding):
+            self.binding = binding
+        self.setText(self.display(self.S, self.binding))
+
+    def event(self, e):
+        # Tab/Backtab would move focus before keyPressEvent sees them.
+        from PySide6.QtCore import QEvent
+        if self.capturing and e.type() == QEvent.KeyPress:
+            self.keyPressEvent(e)
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):
+        if not self.capturing:
+            return super().keyPressEvent(e)
+        from PySide6.QtGui import QKeySequence
+        k = e.key()
+        if k in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta, Qt.Key_unknown):
+            return                                   # wait for the real key
+        if k in (Qt.Key_Backspace, Qt.Key_Delete) and e.modifiers() == Qt.NoModifier:
+            self._finish("")
+            return
+        self._finish(QKeySequence(e.keyCombination()).toString(QKeySequence.PortableText))
+
+    def mousePressEvent(self, e):
+        from .. import shortcuts as sc
+        if self.capturing and e.button() in (Qt.BackButton, Qt.ForwardButton):
+            self._finish(sc.MOUSE_BACK if e.button() == Qt.BackButton else sc.MOUSE_FORWARD)
+            return
+        super().mousePressEvent(e)
+
+    def focusOutEvent(self, e):
+        if self.capturing:
+            self._toggle()                           # clicking elsewhere cancels
+        super().focusOutEvent(e)
 
 
 # ─────────────────────────────────────────────
