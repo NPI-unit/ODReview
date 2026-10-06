@@ -157,6 +157,8 @@ STRINGS = {
         "overlay_hidden_edit": "Gespeichert — Overlay ist ausgeblendet (O zum Einblenden).",
         "menu_check_updates":  "Nach Updates suchen …",
         "update_none":         "ErysReview {version} ist aktuell.",
+        "update_unknown":      "Keine Update-Information erhältlich — offline, oder es gibt (noch) kein öffentliches Release.\n\nInstalliert: ErysReview {version}.",
+        "settings_update_check": "Beim Start einmal täglich nach Updates suchen",
         "update_found":        ("Version {new} ist verfügbar — installiert ist {cur}.\n\n"
                                 "Herunterladen:\n{url}"),
         "filter_with_notes":   "mit Anmerkung",
@@ -978,6 +980,8 @@ STRINGS = {
         "overlay_hidden_edit": "Saved — overlay is hidden (press O to show).",
         "menu_check_updates":  "Check for updates …",
         "update_none":         "ErysReview {version} is up to date.",
+        "update_unknown":      "No update information available — offline, or there is no public release (yet).\n\nInstalled: ErysReview {version}.",
+        "settings_update_check": "Check for updates once a day at start-up",
         "update_found":        ("Version {new} is available — you have {cur}.\n\n"
                                 "Download:\n{url}"),
         "filter_with_notes":   "with remark",

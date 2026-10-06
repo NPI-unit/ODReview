@@ -4,9 +4,9 @@ No network: the version comparison is pure, and every failure path is forced by
 substituting urlopen. A gate that needs the internet fails on the lab machines
 this software runs on, which is exactly where it would matter least.
 
-The feature ships INACTIVE (release repo not created yet) — the Qt app does not
-call it yet. This gate keeps the code compiling and correct so that turning it
-on later is a small step and not an archaeology project.
+Wired in the Qt app (Hilfe › Nach Updates suchen; daily start-up check opt-in). While
+the repository is private, GitHub answers 404 and the app says "nicht prüfbar" —
+never a false "up to date".
 
 Runs as a plain script:  ./.venv/bin/python tests/test_updater.py
 """
@@ -50,6 +50,45 @@ def _raising(exc):
     def boom(req, timeout=None):
         raise exc
     return boom
+
+
+def qt_checks() -> None:
+    """The menu action end to end, off-screen, with a stubbed GitHub."""
+    import os
+    import tempfile
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from erysreview import persistence, profile as profile_mod
+    tmp = Path(tempfile.mkdtemp())
+    persistence.app_support_dir = lambda: tmp
+    profile_mod.app_support_dir = lambda: tmp
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QMessageBox
+    from erysreview.persistence import AppSettings
+    from erysreview.profile import ProfileData, save_profile
+    save_profile(ProfileData(name="U"))
+    AppSettings(last_profile_name="U", language="de").save()
+    from erysreview.qt.app import MainWindow, make_app
+    from erysreview.qt.tasks import shutdown
+    make_app(["t"])
+    shown: list[str] = []
+    QMessageBox.information = staticmethod(lambda _p, _t, text, *a, **k: (shown.append(text), QMessageBox.Ok)[1])
+    win = MainWindow()
+    real = updater.fetch_latest
+    for answer, expect in ((None, "Keine Update-Information"),
+                           (updater.Release(tag="v99.0.0", version="99.0.0", url="https://x", notes=""), "99.0.0")):
+        updater.fetch_latest = lambda repo=None, timeout=None, a=answer: a
+        shown.clear()
+        win.check_updates(silent=False)
+        for _ in range(40):
+            QTest.qWait(25)
+            if shown:
+                break
+        check(shown and expect in shown[0], f"menu check shows: {expect!r}")
+    updater.fetch_latest = lambda repo=None, timeout=None: None
+    shown.clear(); win.check_updates(silent=True); QTest.qWait(400)
+    check(not shown, "the silent start-up check says nothing when there is no news")
+    updater.fetch_latest = real
+    win.close(); shutdown()
 
 
 def main() -> int:
@@ -105,16 +144,29 @@ def main() -> int:
     finally:
         updater.urllib.request.urlopen = real
 
-    # ── shipped inactive ───────────────────────────────────────────────
+    # ── three outcomes, never a false "up to date" ──────────────────────
+    real_fetch = updater.fetch_latest
+    try:
+        updater.fetch_latest = lambda repo=None, timeout=None: None
+        check(updater.check_status("17.5.0") == ("unknown", None),
+              "no answer (offline / private repo) is 'unknown', not 'current'")
+        rel = updater.Release(tag="v17.6.0", version="17.6.0", url="u", notes="")
+        updater.fetch_latest = lambda repo=None, timeout=None: rel
+        check(updater.check_status("17.5.0") == ("newer", rel), "a newer tag is 'newer'")
+        check(updater.check_status("17.6.0")[0] == "current", "the same version is 'current'")
+    finally:
+        updater.fetch_latest = real_fetch
+
+    # ── wired in the Qt app; the start-up check is opt-in ───────────────
     from erysreview.persistence import AppSettings
-    check(AppSettings().update_check_enabled is False,
-          "the startup check is off by default while the repo is private")
+    check(AppSettings().update_check_enabled is False, "the daily start-up check is off by default")
     app_src = (Path(__file__).resolve().parent.parent / "erysreview" / "qt" / "app.py").read_text()
-    check("updater" not in app_src and "menu_check_updates" not in app_src,
-          "the Qt app has no update menu entry and no startup check yet (wiring follows with the release repo)")
+    check('S["menu_check_updates"]' in app_src and "_maybe_check_updates" in app_src,
+          "Hilfe › Nach Updates suchen and the start-up check are wired in the Qt app")
+    qt_checks()
 
     print(f"OK — {CHECKS} checks: version comparison is correct and every network "
-          f"failure degrades to None; feature ships inactive.")
+          f"failure degrades to None; wired in Qt, start-up check opt-in.")
     return 0
 
 

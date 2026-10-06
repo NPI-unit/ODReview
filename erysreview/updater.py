@@ -33,10 +33,12 @@ from dataclasses import dataclass
 # 200), also meldet jede Prüfung "keine Information". Die Anschlussstellen
 # in app.py sind deshalb auskommentiert.
 #
-# Aktivieren: Repo öffentlich schalten, ein Release taggen (z.B. v17.6.0),
-# dann die zwei Zeilen in app._build_menu() bzw. dort darunter einkommentieren.
-# Alternativ ein separates öffentliches Repo nur für Releases anlegen und
-# hier eintragen — dann bleibt der Quellcode privat.
+# Verdrahtet in der Qt-App (Hilfe › Nach Updates suchen, optional täglich beim
+# Start). Solange dieses Repo privat ist, antwortet GitHub unangemeldet mit 404:
+# die Prüfung meldet dann "nicht prüfbar" (nie fälschlich "aktuell").
+# Damit sie antwortet: Repo öffentlich schalten und ein Release taggen
+# (z. B. v17.6.0) — oder ein separates öffentliches Repo nur für Releases
+# anlegen und hier eintragen; dann bleibt der Quellcode privat.
 RELEASE_REPO = "finn-dreisigacker/ErysReview"
 
 API = "https://api.github.com/repos/{repo}/releases/latest"
@@ -105,6 +107,18 @@ def fetch_latest(repo: str = RELEASE_REPO, timeout: float = TIMEOUT_S) -> Releas
         url=str(data.get("html_url") or f"https://github.com/{repo}/releases"),
         notes=str(data.get("body") or "").strip(),
     )
+
+
+def check_status(current_version: str, repo: str = RELEASE_REPO) -> tuple[str, Release | None]:
+    """("newer", release) | ("current", release) | ("unknown", None).
+
+    "unknown" = no answer (offline, repository private / no release yet) —
+    kept apart from "current" so the app never claims to be up to date when
+    it simply could not ask."""
+    rel = fetch_latest(repo)
+    if rel is None:
+        return "unknown", None
+    return ("newer" if is_newer(rel.tag, current_version) else "current"), rel
 
 
 def check(current_version: str, repo: str = RELEASE_REPO) -> Release | None:

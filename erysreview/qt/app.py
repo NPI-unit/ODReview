@@ -110,6 +110,8 @@ class MainWindow(QMainWindow):
         self._profile_save.timeout.connect(lambda: save_profile(self.ctl.profile))
 
         self._set_tool(self.settings.active_tool)
+        if controller is None:
+            QTimer.singleShot(3000, self._maybe_check_updates)
         hints = QApplication.instance().styleHints()
         hints.colorSchemeChanged.connect(self._on_system_scheme)
         if controller is not None:
@@ -226,6 +228,7 @@ class MainWindow(QMainWindow):
         self._act(m_an, S["menu_training_export"], self.training_export)
         m_help = mb.addMenu(S["menu_help"])
         self._act(m_help, S["menu_help_hotkeys"], lambda: self.open_settings("keys"))
+        self._act(m_help, S["menu_check_updates"], lambda: self.check_updates(silent=False))
         self._act(m_help, S["menu_help_about"],
                   lambda: QMessageBox.about(self, S["menu_help_about"], f"Erys v{__version__} (Qt)"))
 
@@ -965,6 +968,39 @@ class MainWindow(QMainWindow):
         if self.close():
             QProcess.startDetached(sys.executable, ["-m", "erysreview.qt"])
             QApplication.quit()
+
+    # ── update check (updater.py) ──
+    def check_updates(self, silent: bool) -> None:
+        """Ask GitHub on a worker thread whether a newer release exists.
+        silent=True (daily start-up check): only a find is reported."""
+        import time as _time
+        from .. import updater
+        from ..tasks import simple
+        from .tasks import start_task
+        self.settings.last_update_check = _time.time()
+        self.settings.save()
+
+        def done(result, error):
+            state, rel = result if error is None and result else ("unknown", None)
+            title = self.S["menu_check_updates"]
+            if state == "newer":
+                notes = f"\n\n{rel.notes}" if rel.notes else ""
+                QMessageBox.information(self, title, self.S["update_found"].format(
+                    new=rel.version, cur=__version__, url=rel.url) + notes)
+            elif silent:
+                return
+            elif state == "current":
+                QMessageBox.information(self, title, self.S["update_none"].format(version=__version__))
+            else:
+                QMessageBox.information(self, title, self.S["update_unknown"].format(version=__version__))
+        self._update_task = start_task(self, simple(lambda: updater.check_status(__version__)),
+                                       lambda *_: None, done)
+
+    def _maybe_check_updates(self) -> None:
+        """At most once a day at start-up, only if switched on (Allgemein)."""
+        import time as _time
+        if self.settings.update_check_enabled and _time.time() - self.settings.last_update_check > 86400:
+            self.check_updates(silent=True)
 
     def _later(self) -> None:
         QMessageBox.information(self, self.S["title"], self.S["qt_later"])
