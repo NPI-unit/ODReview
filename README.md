@@ -12,12 +12,14 @@ If you don't want to touch a terminal:
 
 1. One-time prerequisites:
    - **Windows**: nothing to install first — `install.bat` will offer to download and install **Miniforge** for you, then build the environment from conda-forge.
-   - **macOS**: install Homebrew Python + Tk once — `brew install python@3.12 python-tk@3.12` (see <https://brew.sh>). `install.command` builds a local venv from it (deliberately *not* conda — that avoids a Tk crash on macOS 26).
+   - **macOS**: Python 3.12 — either the macOS installer from <https://www.python.org/downloads/> or `brew install python@3.12` (<https://brew.sh>). Nothing else.
 2. **Download or clone** this repo to a folder of your choice (e.g. your Desktop).
 3. Double-click the installer for your OS:
    - **macOS**: `install.command`
    - **Windows**: `install.bat`
-4. Wait until you see `Done. ErysReview is installed.` (~5–10 min on first run).
+4. Wait until you see `Fertig. ErysReview … ist installiert.` / `Done. ErysReview is installed.` (~5–10 min on first run).
+
+**macOS, offline / several lab Macs:** `install.command` keeps every package in `vendor/wheels/` and the Cellpose model in `vendor/models/` inside the folder (~2 GB, not in git). Copy the whole folder — `vendor/` included — to the next Mac (e.g. on a stick) and run `install.command` there: it installs without internet. It always installs the exact tested versions from `requirements-lock-macos.txt` and ends with a self-test (`tools/check_install.py`).
 5. Launch from the new **ErysReview** on your Desktop — a real `.app` bundle on macOS and a shortcut on Windows, both showing the proper icon and name in the Dock / taskbar. Or double-click `run.command` / `run.bat` inside the repo folder.
 
 If anything in those steps fails, scroll down to **Manual install** for the explicit conda commands.
@@ -85,15 +87,15 @@ ErysReview gives you exactly that, in a single window (Qt / PySide6).
 
 ErysReview is a Python application. If you have never used Python before, follow the section that matches your operating system.
 
-The two platforms install **differently on purpose**: macOS uses a Homebrew-Python virtual environment (conda's Tk 8.6.13 crashes on macOS 26 "Tahoe" in modal dialogs, Homebrew's Tk 9 is safe), while Windows uses a **conda-forge** environment (a single OpenMP runtime — mixing conda's MKL numpy with a pip-installed torch deadlocks Cellpose). Either way Cellpose's PyTorch stays isolated from your system Python.
+The two platforms install **differently on purpose**: macOS uses a plain Python 3.12 virtual environment, while Windows uses a **conda-forge** environment (a single OpenMP runtime — mixing conda's MKL numpy with a pip-installed torch deadlocks Cellpose). Either way Cellpose's PyTorch stays isolated from your system Python.
 
 ### macOS
 
-macOS uses a Homebrew-Python **venv**, *not* conda — see the note above.
+macOS uses a Python 3.12 **venv**, *not* conda — see the note above.
 
-1. **Install Homebrew** (<https://brew.sh>) if you don't have it, then install Python 3.12 + its Tk:
+1. **Install Python 3.12**: the macOS installer from <https://www.python.org/downloads/>, or with Homebrew (<https://brew.sh>):
    ```bash
-   brew install python@3.12 python-tk@3.12
+   brew install python@3.12
    ```
 
 2. **Clone this repo**:
@@ -102,11 +104,12 @@ macOS uses a Homebrew-Python **venv**, *not* conda — see the note above.
    cd ErysReview
    ```
 
-3. **Create the venv** and install dependencies via `requirements.txt`:
+3. **Create the venv** and install the tested versions (`requirements-lock-macos.txt`; `requirements.txt` lists the minimums):
    ```bash
    python3.12 -m venv .venv
    source .venv/bin/activate
-   pip install -r requirements.txt
+   pip install -r requirements-lock-macos.txt
+   python tools/check_install.py
    ```
    On Apple Silicon, `pip install` pulls a PyTorch build with MPS (GPU) support automatically. Segmentation will run on the Mac GPU.
 
@@ -115,13 +118,7 @@ macOS uses a Homebrew-Python **venv**, *not* conda — see the note above.
    python -m erysreview
    ```
 
-5. (Optional) **Double-click launcher**: `install.command` builds an `ErysReview.app` on your Desktop (proper Dock icon + name). To make one by hand, create `run_erys.command` in the repo root with:
-   ```bash
-   #!/bin/bash
-   cd "$(dirname "$0")"
-   exec "$(pwd)/.venv/bin/python" -m erysreview
-   ```
-   `chmod +x run_erys.command` once in Terminal, then you can double-click it from Finder.
+5. (Optional) **Double-click launcher**: `run.command` in the repo folder starts the app; `install.command` also builds an `ErysReview.app` on your Desktop (proper Dock icon + name).
 
 ### Windows
 

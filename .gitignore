@@ -65,3 +65,7 @@ run_erys.command
 !assets/*.png
 !assets/*.ico
 tests/_out/
+
+# packages + Cellpose model kept for offline installs (install.command)
+vendor/
+install.log

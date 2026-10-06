@@ -119,7 +119,7 @@ Jede Phase endet mit einer lauffähigen App. Die Tk-Version bleibt bis Phase 5 d
 - [x] **Export: Spalten „Fertig“ und „Exportiert“** (Datum), Vorauswahl „fertig, nicht exportiert“.
 - [x] **Paket erstellen: Größe vorab** (Bilder/Masken/Prüfstand, „ohne Bilder“ live) und Warnung bei zu wenig Platz am Ziel.
 - [ ] Offen: Standard-Studie heißt noch „TRIBAL (Default)“ (Dateiname = Schlüssel; Umbenennen braucht Migration) — klären.
-- [x] **Phase 5 (2026-10-07):** `run.command` und `python -m erysreview` starten Qt; Tk-Oberfläche (app, canvas, dialogs, extras, sidebar, toolbar, notebox, detail_panel, tkfixes) und ihre Tests entfernt; Blit- und Chip-Test auf Qt umgestellt; `test_no_tk_in_logic` prüft jetzt das ganze Paket. Offen: Update-Prüfung in Qt verdrahten (Updater noch inaktiv), ungenutzte Tk-Texte in i18n aufräumen, Windows (`run.bat`/`install.bat`) testen.
+- [x] **Phase 5 (2026-10-07):** `run.command` und `python -m erysreview` starten Qt; Tk-Oberfläche (app, canvas, dialogs, extras, sidebar, toolbar, notebox, detail_panel, tkfixes) und ihre Tests entfernt; Blit- und Chip-Test auf Qt umgestellt; `test_no_tk_in_logic` prüft jetzt das ganze Paket. Installation macOS (2026-10-07): PySide6-Essentials statt PySide6 (−885 MB), `requirements-lock-macos.txt` (41 Pakete, `tools/make_lock.py`), `install.command` mit vendor/wheels + vendor/models (offline-fähig, Neuinstallation aus dem Ordner 33 s), Selbsttest `tools/check_install.py`, keine Tk-/Homebrew-Tk-Pflicht mehr. Offen: Update-Prüfung in Qt verdrahten (Updater noch inaktiv), ungenutzte Tk-Texte in i18n aufräumen, Windows (`run.bat`/`install.bat`) testen.
 
 
 ## Stand 2026-10-06 (spät)

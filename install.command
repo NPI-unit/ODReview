@@ -1,110 +1,148 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────
-#  ErysReview — macOS installer  (venv / Homebrew-Python)
+#  ErysReview — macOS installer
 #
-#  Double-click this file from inside the ErysReview folder.
+#  Double-click this file inside the ErysReview folder. It
+#    1. finds Python 3.12,
+#    2. creates the local .venv,
+#    3. keeps every package in vendor/wheels/ (downloads what is missing),
+#    4. installs the exact tested versions (requirements-lock-macos.txt),
+#    5. keeps the Cellpose model in vendor/models/ and installs it,
+#    6. runs the self-test and puts ErysReview.app on the Desktop.
 #
-#  Uses a local .venv built from Homebrew's Python 3.12, which ships a
-#  macOS-26-compatible Tk (9.0.3). This avoids the Tk 8.6.13 segfault that
-#  conda's Tk triggers on macOS 26 (Tahoe) when opening modal dialogs
-#  (e.g. the ⚙ "counted images" picker).
+#  Offline: copy the whole folder including vendor/ (e.g. on a stick) to the
+#  next Mac — it then installs without internet (Python 3.12 must be there).
+#
+#  Output: "[n/6] …" per step, "##DONE" or "##FAIL <reason>" at the end
+#  (read by the installer window). --yes: no questions, no "press Enter".
+#  ERYS_INSTALL_NO_APP=1 skips the Desktop app (tests).
+#  Everything is also written to install.log.
 # ─────────────────────────────────────────────────────────────────────────
 set -u
 cd "$(dirname "$0")" || exit 1
+ROOT="$(pwd)"
+LOCK="$ROOT/requirements-lock-macos.txt"
+VENDOR="$ROOT/vendor"
+WHEELS="$VENDOR/wheels"
+MODELS="$VENDOR/models"
+LOG="$ROOT/install.log"
+ASK=1
+[ "${1:-}" = "--yes" ] && ASK=0
+N=6
+export PIP_DISABLE_PIP_VERSION_CHECK=1     # no "new pip available" noise
 
+exec > >(tee -a "$LOG") 2>&1
 echo ""
 echo "============================================"
-echo " ErysReview installer (macOS)"
+echo " ErysReview installer (macOS) — $(date '+%Y-%m-%d %H:%M')"
 echo "============================================"
-echo ""
 
-# ─── 1. Locate a suitable Homebrew Python 3.12 ─────────────────────────────
+pause() { if [ "$ASK" = 1 ]; then read -r -p "Enter zum Schließen ..."; fi; }
+step()  { echo ""; echo "[$1/$N] $2"; }
+fail()  { echo ""; echo "[!] $1"; echo "##FAIL $1"; pause; exit 1; }
+online() { curl -s -m 6 -o /dev/null -I https://pypi.org/simple/ ; }
+
+# ─── 1. Python 3.12 ──────────────────────────────────────────────────────
+step 1 "Python 3.12 suchen"
 PY=""
 for p in \
+    "$VENDOR/python/bin/python3.12" \
     "/opt/homebrew/bin/python3.12" \
     "/usr/local/bin/python3.12" \
+    "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12" \
     "$(command -v python3.12 2>/dev/null)"
 do
-    if [ -n "$p" ] && [ -x "$p" ]; then PY="$p"; break; fi
+    if [ -n "$p" ] && [ -x "$p" ] && "$p" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))' 2>/dev/null; then
+        PY="$p"; break
+    fi
 done
+[ -n "$PY" ] || fail "Python 3.12 nicht gefunden. Bitte installieren: python.org (macOS-Installer 3.12) oder 'brew install python@3.12' — dann erneut starten."
+echo "      $PY ($("$PY" --version 2>&1))"
 
-if [ -z "$PY" ]; then
-    echo "[!] Homebrew Python 3.12 was not found."
-    echo ""
-    echo "Install Homebrew first (https://brew.sh), then:"
-    echo "    brew install python@3.12 python-tk@3.12"
-    echo ""
-    echo "Re-run install.command afterwards."
-    echo ""
-    read -r -p "Press Enter to close ..."
-    exit 1
-fi
-echo "[1/4] Found Python: $PY"
-
-# ─── 2. Verify this Python has a macOS-26-safe Tk ──────────────────────────
-TKVER="$("$PY" -c 'import tkinter; r=tkinter.Tk(); print(r.tk.call("info","patchlevel")); r.destroy()' 2>/dev/null)"
-if [ -z "$TKVER" ]; then
-    echo "[!] This Python has no working Tkinter. Install it with:"
-    echo "    brew install python-tk@3.12"
-    echo ""
-    read -r -p "Press Enter to close ..."
-    exit 1
-fi
-echo "      Tk version: $TKVER"
-if [ "$TKVER" = "8.6.13" ]; then
-    echo ""
-    echo "[!] WARNING: Tk 8.6.13 crashes on macOS 26 (Tahoe) in modal dialogs."
-    echo "    Update Homebrew's Tk, then re-run this installer:"
-    echo "        brew update && brew upgrade python-tk@3.12 tcl-tk"
-    echo ""
-    read -r -p "Continue anyway? [y/N] " ans
-    case "$ans" in y|Y) ;; *) exit 1 ;; esac
-fi
-
-# ─── 3. Create the venv + install dependencies ─────────────────────────────
-echo "[2/4] Creating local .venv ..."
-if [ ! -x "./.venv/bin/python" ]; then
-    "$PY" -m venv .venv || {
-        echo "[!] venv creation failed."
-        read -r -p "Press Enter to close ..."
-        exit 1
-    }
+# ─── 2. .venv ────────────────────────────────────────────────────────────
+step 2 "Eigene Python-Umgebung (.venv)"
+if [ -x "./.venv/bin/python" ] && ./.venv/bin/python -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))' 2>/dev/null; then
+    echo "      vorhanden, wird weiterverwendet."
 else
-    echo "      .venv already exists, reusing."
+    rm -rf ./.venv
+    "$PY" -m venv .venv || fail ".venv konnte nicht angelegt werden."
+    echo "      angelegt."
+fi
+VPY="$ROOT/.venv/bin/python"
+
+# ─── 3. Packages kept in vendor/wheels ───────────────────────────────────
+step 3 "Pakete im Ordner bereitstellen (vendor/wheels)"
+mkdir -p "$WHEELS"
+complete() { "$VPY" -m pip install --dry-run --quiet --no-index --find-links "$WHEELS" -r "$LOCK" >/dev/null 2>&1; }
+if complete; then
+    echo "      alle $(grep -c '==' "$LOCK") Pakete liegen schon im Ordner — keine Downloads nötig."
+elif online; then
+    echo "      lade fehlende Pakete (einmalig, ~0,6 GB) ..."
+    "$VPY" -m pip download --quiet --only-binary=:all: -d "$WHEELS" -r "$LOCK" \
+        || fail "Download der Pakete fehlgeschlagen (Internet?)."
+    complete || fail "Pakete unvollständig — bitte erneut starten."
+    echo "      gespeichert in vendor/wheels ($(du -sh "$WHEELS" | cut -f1))."
+else
+    fail "Kein Internet und vendor/wheels unvollständig. Den Ordner von einem Mac kopieren, auf dem install.command schon lief."
 fi
 
-echo "[3/4] Installing dependencies from requirements.txt ..."
-./.venv/bin/python -m pip install --upgrade pip
-./.venv/bin/python -m pip install -r requirements.txt || {
-    echo "[!] pip install failed. Check your internet connection."
-    read -r -p "Press Enter to close ..."
-    exit 1
-}
+# ─── 4. Install the exact tested versions ────────────────────────────────
+step 4 "Pakete installieren (getestete Versionen)"
+"$VPY" -m pip install --quiet --no-index --find-links "$WHEELS" -r "$LOCK" \
+    || fail "Installation der Pakete fehlgeschlagen — Details in install.log."
+# The full PySide6 package (≈ 900 MB of Qt add-ons) is not needed any more.
+for extra in PySide6 PySide6-Addons; do
+    if "$VPY" -m pip show "$extra" >/dev/null 2>&1; then
+        "$VPY" -m pip uninstall --quiet -y "$extra" && echo "      $extra entfernt (nicht mehr nötig)."
+    fi
+done
+echo "      fertig."
 
-# ─── 4. Build a Desktop .app bundle (proper Dock icon + name) ──────────────
-echo "[4/4] Building ErysReview.app on your Desktop ..."
-chmod +x "$(pwd)/run.command"
-ROOT="$(pwd)"
-APP="$HOME/Desktop/ErysReview.app"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# ─── 5. Cellpose model (cpsam, ~1.2 GB) ──────────────────────────────────
+step 5 "Cellpose-Modell (cpsam)"
+HOME_MODEL="$HOME/.cellpose/models/cpsam"
+mkdir -p "$MODELS" "$HOME/.cellpose/models"
+big() { [ -f "$1" ] && [ "$(stat -f %z "$1")" -gt 100000000 ]; }
+if ! big "$HOME_MODEL"; then
+    if big "$MODELS/cpsam"; then
+        cp -c "$MODELS/cpsam" "$HOME_MODEL" 2>/dev/null || cp "$MODELS/cpsam" "$HOME_MODEL"
+        echo "      aus vendor/models installiert."
+    elif online; then
+        echo "      lade Modell (einmalig, ~1,2 GB) ..."
+        "$VPY" -c "from cellpose import models; models.CellposeModel(gpu=False, pretrained_model='cpsam')" >/dev/null 2>&1 \
+            || echo "      [!] Download fehlgeschlagen — wird beim ersten Rechnen erneut versucht."
+    else
+        echo "      [!] Kein Modell und kein Internet — es wird beim ersten Rechnen geladen."
+    fi
+else
+    echo "      vorhanden."
+fi
+# keep a copy in the folder for the next Mac (APFS clone: no extra space)
+if big "$HOME_MODEL" && ! big "$MODELS/cpsam"; then
+    cp -c "$HOME_MODEL" "$MODELS/cpsam" 2>/dev/null || cp "$HOME_MODEL" "$MODELS/cpsam"
+    echo "      Kopie in vendor/models gespeichert."
+fi
 
-# Launcher: run THIS repo's venv python (it has the macOS-26-safe Tk — never
-# the system python). Wrapped in a bundle so the Dock shows our icon + name
-# instead of the generic "Python" rocket. $ROOT is baked in at install time.
-cat > "$APP/Contents/MacOS/ErysReview" <<LAUNCHER
+# ─── 6. Self-test + Desktop app ──────────────────────────────────────────
+step 6 "Selbsttest und ErysReview.app"
+"$VPY" tools/check_install.py || fail "Selbsttest fehlgeschlagen — siehe die Zeilen 'CHECK fail' oben."
+
+VERSION="$("$VPY" -c 'import erysreview; print(erysreview.__version__)' 2>/dev/null || echo 1.0)"
+if [ "${ERYS_INSTALL_NO_APP:-0}" != "1" ]; then
+    chmod +x "$ROOT/run.command" 2>/dev/null
+    APP="$HOME/Desktop/ErysReview.app"
+    rm -rf "$APP"
+    mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+    # The bundle runs THIS folder's .venv — the Dock shows our icon and name
+    # instead of Python's. $ROOT is fixed at install time.
+    cat > "$APP/Contents/MacOS/ErysReview" <<LAUNCHER
 #!/bin/bash
 cd "$ROOT" || exit 1
 exec "$ROOT/.venv/bin/python" -m erysreview
 LAUNCHER
-chmod +x "$APP/Contents/MacOS/ErysReview"
-
-# Dock icon (optional — the bundle still launches without it).
-if [ -f "$ROOT/assets/icon.icns" ]; then
-    cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
-fi
-
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+    chmod +x "$APP/Contents/MacOS/ErysReview"
+    if [ -f "$ROOT/assets/icon.icns" ]; then cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"; fi
+    cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -115,21 +153,20 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIdentifier</key>         <string>de.erys.review</string>
     <key>CFBundleIconFile</key>           <string>icon</string>
     <key>CFBundlePackageType</key>        <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>1.0</string>
+    <key>CFBundleShortVersionString</key> <string>$VERSION</string>
     <key>NSHighResolutionCapable</key>    <true/>
 </dict>
 </plist>
 PLIST
-
-# Nudge LaunchServices so the new icon/name register immediately.
-touch "$APP" 2>/dev/null || true
+    touch "$APP" 2>/dev/null || true
+    echo "      ErysReview.app auf dem Schreibtisch angelegt."
+fi
 
 echo ""
 echo "============================================"
-echo " Done. ErysReview is installed.   (Tk $TKVER)"
+echo " Fertig. ErysReview $VERSION ist installiert."
 echo "============================================"
-echo ""
-echo "Start the app by double-clicking ErysReview on your Desktop"
-echo "(or run.command inside this folder)."
-echo ""
-read -r -p "Press Enter to close ..."
+echo "Start: ErysReview auf dem Schreibtisch (oder run.command in diesem Ordner)."
+echo "##DONE"
+pause
+exit 0
