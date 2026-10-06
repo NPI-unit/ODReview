@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
                                       S["overlay_hidden_edit"]))
         cl.addWidget(self.canvas)
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
+        self.canvas.grid_n = self.settings.grid_n
         self.notebox = QtNoteBox(self.canvas, S, self._on_note_saved, self._on_note_closed,
                                  settings=self.settings)
         self.empty_btn = QPushButton(S["btn_open_folder"], center)
@@ -203,6 +204,18 @@ class MainWindow(QMainWindow):
         m_view = mb.addMenu(S["qt_menu_view"])
         self._act(m_view, S["tool_overlay"], self.toggle_overlay, "overlay")
         self._act(m_view, S["tool_reset_zoom"], lambda: self.canvas.reset_zoom(), "reset_zoom")
+        m_view.addSeparator()
+        self.m_grid = m_view.addMenu(S["qt_grid"])
+        self._grid_actions = {}
+        for n in self.canvas.GRID_CHOICES:
+            a = QAction(S["qt_grid_off"] if n == 0 else f"{n} × {n}", self)
+            a.setCheckable(True)
+            a.triggered.connect(lambda _c=False, n=n: self.set_grid(n))
+            self.m_grid.addAction(a)
+            self._grid_actions[n] = a
+        self.m_grid.addSeparator()
+        self._act(self.m_grid, S["qt_grid_next"], self.cycle_grid, "grid")
+        self._sync_grid_menu()
         m_an = mb.addMenu(S["menu_analysis"])
         self.act_stats = self._act(m_an, S["menu_stats"], self.open_stats)
         self._act(m_an, S["menu_dashboard"], self.open_dashboard)
@@ -432,6 +445,24 @@ class MainWindow(QMainWindow):
         self.settings.overlay_visible = not self.settings.overlay_visible
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
         self.settings.save()
+
+    # ── helper grid (exploratory) ──
+    def set_grid(self, n: int) -> None:
+        self.settings.grid_n = n
+        self.settings.save()
+        self.canvas.set_grid(n)
+        self._sync_grid_menu()
+
+    def cycle_grid(self) -> None:
+        ch = list(self.canvas.GRID_CHOICES)
+        cur = self.settings.grid_n if self.settings.grid_n in ch else 0
+        self.set_grid(ch[(ch.index(cur) + 1) % len(ch)])
+        self._set_status(self.S["qt_grid"] + ": " + (self.S["qt_grid_off"] if not self.settings.grid_n
+                                                     else f"{self.settings.grid_n} × {self.settings.grid_n}"))
+
+    def _sync_grid_menu(self) -> None:
+        for n, a in self._grid_actions.items():
+            a.setChecked(n == (self.settings.grid_n or 0))
 
     def _on_overlay_autoshown(self) -> None:
         self.settings.save()

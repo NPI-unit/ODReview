@@ -40,6 +40,7 @@ ACTIONS: list[Action] = [
     Action("undo", "tool_undo", ("Z", "Ctrl+Z"), menu=True),
     Action("overlay", "tool_overlay", ("O",), menu=True),
     Action("reset_zoom", "tool_reset_zoom", ("0", "Home"), menu=True),
+    Action("grid", "qt_grid", ("G",), menu=True),
     Action("export", "menu_export", ("S", "Ctrl+S"), menu=True),
     Action("batch", "batch_title", ("Ctrl+B",), menu=True),
     Action("open_study", "qt_studies_title", ("Ctrl+Shift+O",), menu=True),

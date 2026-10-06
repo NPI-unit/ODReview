@@ -147,6 +147,17 @@ def main() -> int:
     except ZeroDivisionError:
         check(True, "a worker exception is re-raised on the GUI thread")
 
+    # helper grid (exploratory): G cycles, choice is kept per computer
+    win.cycle_grid()
+    from erysreview.persistence import AppSettings as _AS
+    check(win.canvas.grid_n == 2 and _AS.load().grid_n == 2 and len(win.canvas._grid_artists) == 2 + 4
+          and win._grid_actions[2].isChecked(), "the helper grid shows 2 × 2 fields labelled A1…B2")
+    win.grab().save(str(OUT / "qt_grid.png"))
+    win.show_image(win.ctl.idx)
+    check(len(win.canvas._grid_artists) == 6, "it stays when the image changes")
+    win.set_grid(0)
+    check(not win.canvas._grid_artists and not _AS.load().grid_n, "…and switches off")
+
     win.close()
     check(AppSettings.load().active_tool == "remove", "closing saves the settings")
     tmp.cleanup()

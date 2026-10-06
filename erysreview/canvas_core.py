@@ -99,6 +99,10 @@ class CanvasCore:
         self.cursor_xy: tuple[float, float] | None = None
         self.selected_id: int | None = None
 
+        # Helper grid (n × n fields, 0 = off) — drawn above everything else
+        self.grid_n = 0
+        self._grid_artists: list = []
+
         # Pan state
         self._pan_start: tuple[float, float, float, float, float, float] | None = None
 
@@ -221,7 +225,50 @@ class CanvasCore:
         self._refresh_numbers()
         self._refresh_outlines()
         self._refresh_notes()
+        self._refresh_grid()
         self._full_redraw()
+
+    # ── helper grid ──
+    GRID_CHOICES = (0, 2, 3, 4, 5)
+
+    def set_grid(self, n: int) -> None:
+        """Show an n × n grid of fields over the image (0 hides it). Fields
+        are labelled A1, A2 … (row letter, column number) in their corner."""
+        self.grid_n = int(n) if n else 0
+        self._refresh_grid()
+        self._full_redraw()
+
+    def _refresh_grid(self) -> None:
+        for a in self._grid_artists:
+            try:
+                a.remove()
+            except (ValueError, NotImplementedError):
+                pass
+        self._grid_artists = []
+        if not self.grid_n or self.image is None:
+            return
+        from matplotlib.collections import LineCollection
+        h, w = self.image.shape[:2]
+        n = self.grid_n
+        xs = [-0.5 + w * k / n for k in range(1, n)]
+        ys = [-0.5 + h * k / n for k in range(1, n)]
+        segs = [[(x, -0.5), (x, h - 0.5)] for x in xs] + [[(-0.5, y), (w - 0.5, y)] for y in ys]
+        col = self._theme_palette.get("accent_primary", "#2161D9")
+        # light halo under a solid accent line: readable on dark and busy images
+        halo = LineCollection(segs, colors=["#FFFFFF"], linewidths=3.2, alpha=0.55, zorder=6)
+        lines = LineCollection(segs, colors=[col], linewidths=1.4, alpha=0.95, zorder=6)
+        for lc in (halo, lines):
+            self.ax.add_collection(lc)
+            self._grid_artists.append(lc)
+        fs = 11
+        for r in range(n):
+            for c in range(n):
+                t = self.ax.text(-0.5 + w * c / n + w * 0.008, -0.5 + h * r / n + h * 0.008,
+                                 f"{chr(65 + r)}{c + 1}", color=col, fontsize=fs, fontweight="bold",
+                                 ha="left", va="top", zorder=7,
+                                 bbox=dict(boxstyle="round,pad=0.2", fc=self._theme_palette.get("canvas_bg", "#FFFFFF"),
+                                           ec="none", alpha=0.7))
+                self._grid_artists.append(t)
 
     def reset_zoom(self) -> None:
         if self.image is None:
@@ -493,6 +540,9 @@ class CanvasCore:
                 for artist in self._note_artists.get(other, ()) or ():
                     if artist.get_visible():
                         self.ax.draw_artist(artist)
+
+            for artist in self._grid_artists:      # the helper grid stays on top
+                self.ax.draw_artist(artist)
 
             corners = self.ax.transData.transform(
                 [[x0 - 0.5, y1 + 0.5], [x1 + 0.5, y0 - 0.5]])

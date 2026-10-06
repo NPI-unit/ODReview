@@ -183,6 +183,8 @@ class AppSettings:
     # Reveal a hidden overlay when the user edits a cell (see
     # EryCanvas._autoshow_overlay). Off: the overlay stays as the user left it.
     overlay_autoshow: bool = True
+    # Helper grid over the image: n × n fields (0 = off). Per computer, exploratory.
+    grid_n: int = 0
     # Toolbar layout: "grouped" (one row) or "two_row" (cell types as chips).
     toolbar_layout: str = "grouped"
     # What happens to existing masks after the study's Cellpose parameters
@@ -233,6 +235,8 @@ class AppSettings:
                 sidebar_width=int(raw.get("sidebar_width", 270)),
                 overlay_visible=bool(raw.get("overlay_visible", True)),
                 overlay_autoshow=bool(raw.get("overlay_autoshow", True)),
+                grid_n=(int(raw.get("grid_n", 0)) if str(raw.get("grid_n", 0)).isdigit()
+                        and 0 <= int(raw.get("grid_n", 0)) <= 10 else 0),
                 toolbar_layout=(raw.get("toolbar_layout") if raw.get("toolbar_layout")
                                 in ("grouped", "two_row") else "grouped"),
                 resegment_default=(raw.get("resegment_default")
@@ -264,6 +268,7 @@ class AppSettings:
             "sidebar_width": self.sidebar_width,
             "overlay_visible": self.overlay_visible,
             "overlay_autoshow": self.overlay_autoshow,
+            "grid_n": self.grid_n,
             "toolbar_layout": self.toolbar_layout,
             "resegment_default": self.resegment_default,
             "active_tool": self.active_tool,
