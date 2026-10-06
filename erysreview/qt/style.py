@@ -20,8 +20,63 @@ def tokens(P: dict) -> dict:
             "line": P["sash"]}
 
 
+def build_palette(P: dict):
+    """A full QPalette from the app palette. Without it, everything the
+    stylesheet does not colour itself (combobox popups, menus, message boxes,
+    input dialogs, tooltips) follows the *system* appearance — a black filter
+    list in the light theme when macOS is set to dark."""
+    from PySide6.QtGui import QColor, QPalette
+    T = tokens(P)
+    pal = QPalette()
+    roles = {
+        QPalette.Window: T["bg"], QPalette.WindowText: T["fg"],
+        QPalette.Base: T["panel_bg"], QPalette.AlternateBase: T["tree_alt_bg"],
+        QPalette.Text: T["fg"], QPalette.PlaceholderText: T["fg_muted"],
+        QPalette.Button: T["panel_bg"], QPalette.ButtonText: T["fg"],
+        QPalette.Highlight: T["accent_primary"], QPalette.HighlightedText: T["fg_on_accent"],
+        QPalette.ToolTipBase: T["tooltip_bg"], QPalette.ToolTipText: T["tooltip_fg"],
+        QPalette.Link: T["accent_primary"], QPalette.BrightText: T["fg_inverse"],
+        QPalette.Light: T["panel_bg"], QPalette.Midlight: T["border"],
+        QPalette.Mid: T["sash"], QPalette.Dark: T["sash"], QPalette.Shadow: "#000000",
+    }
+    for role, col in roles.items():
+        pal.setColor(role, QColor(col))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        pal.setColor(QPalette.Disabled, role, QColor(T["fg_muted"]))
+    return pal
+
+
+def arrow_images(P: dict) -> dict[str, str]:
+    """Small up/down triangles in the theme's text colour, as PNG files for the
+    stylesheet (Qt draws spin-box arrows from images; the CSS border-triangle
+    trick renders as bars). Needs a QGuiApplication; returns {} without one."""
+    from pathlib import Path
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPolygonF
+    if QGuiApplication.instance() is None:
+        return {}
+    from ..persistence import app_support_dir
+    out_dir = app_support_dir() / "qt-style"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    col = tokens(P)["fg_secondary"]
+    paths = {}
+    for name, pts in (("up", [(1, 7), (5, 2), (9, 7)]), ("down", [(1, 3), (5, 8), (9, 3)])):
+        img = QImage(20, 20, QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        p = QPainter(img); p.setRenderHint(QPainter.Antialiasing)
+        p.scale(2, 2); p.setPen(Qt.NoPen); p.setBrush(QColor(col))
+        p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts])); p.end()
+        path = out_dir / f"arrow-{name}-{col.lstrip('#')}@2x.png"
+        img.save(str(path))
+        paths[name] = Path(path).as_posix()
+    return paths
+
+
 def build_qss(P: dict) -> str:
     T = tokens(P)
+    A = arrow_images(P)
+    up = f'image: url("{A["up"]}"); width: 10px; height: 10px;' if A else "image: none;"
+    down = f'image: url("{A["down"]}"); width: 10px; height: 10px;' if A else "image: none;"
     return f"""
 QMainWindow, QDialog {{ background: {T['bg']}; }}
 QScrollArea, QScrollArea > QWidget > QWidget {{ background: {T['bg']}; }}
@@ -72,12 +127,31 @@ QComboBox {{
     border: 1px solid {T['line']}; border-radius: 6px; padding: 0 8px;
     min-height: 32px; background: {T['panel_bg']}; color: {T['fg']};
 }}
+QComboBox QAbstractItemView {{
+    background: {T['panel_bg']}; color: {T['fg']}; border: 1px solid {T['border']};
+    selection-background-color: {T['accent_primary']}; selection-color: {T['fg_on_accent']};
+    outline: 0;
+}}
+QMenu {{ background: {T['panel_bg']}; color: {T['fg']}; border: 1px solid {T['border']}; padding: 4px; }}
+QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {T['accent_primary']}; color: {T['fg_on_accent']}; }}
+QMenu::item:disabled {{ color: {T['fg_muted']}; }}
+QMessageBox, QInputDialog, QProgressDialog {{ background: {T['bg']}; }}
+QCheckBox, QRadioButton {{ color: {T['fg']}; spacing: 8px; }}
 QSpinBox, QDoubleSpinBox {{
-    border: 1px solid {T['line']}; border-radius: 6px; padding: 3px 8px; min-height: 26px;
+    border: 1px solid {T['line']}; border-radius: 6px; padding: 3px 22px 3px 8px; min-height: 26px;
     background: {T['panel_bg']}; color: {T['fg']};
 }}
-QSpinBox::up-button, QDoubleSpinBox::up-button,
-QSpinBox::down-button, QDoubleSpinBox::down-button {{ width: 18px; border: none; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border; subcontrol-position: top right;
+    width: 20px; height: 15px; border: none; background: transparent; margin: 2px 2px 0 0; }}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border; subcontrol-position: bottom right;
+    width: 20px; height: 15px; border: none; background: transparent; margin: 0 2px 2px 0; }}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {T['hover']}; border-radius: 4px; }}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ {up} }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ {down} }}
 QLineEdit, QPlainTextEdit {{
     border: 1px solid {T['line']}; border-radius: 6px; padding: 4px 8px;
     background: {T['panel_bg']}; color: {T['fg']};

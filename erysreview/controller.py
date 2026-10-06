@@ -48,6 +48,9 @@ class ImageCounts:
     changed: int            # active cells whose type is not "normal"
     excluded: int           # switched off by hand
     inactive_auto: int      # border / size filter, not switched back on
+    by_type: dict = None    # active cells per type key
+    n_border: int = 0
+    n_size: int = 0         # size-filter rejects (the "duplicate" column)
 
     @property
     def pct_changed(self) -> float:
@@ -67,9 +70,12 @@ def status_counts(cell_ids, review: ReviewState, profile: ProfileData,
     excluded = set(review.force_excluded)
     included = set(review.force_included)
     default_key = profile.default_type_key()
-    total = active = changed = n_excl = auto = 0
+    total = active = changed = n_excl = auto = n_b = n_s = 0
+    by_type: dict[str, int] = {}
     for cid in cell_ids:
         total += 1
+        n_b += cid in border_ids
+        n_s += cid in duplicate_ids
         is_auto = cid in border_ids or cid in duplicate_ids
         if cid in excluded:
             n_excl += 1
@@ -78,9 +84,11 @@ def status_counts(cell_ids, review: ReviewState, profile: ProfileData,
             auto += 1
             continue
         active += 1
-        if review.types.get(str(cid), default_key) != "normal":
+        t = review.types.get(str(cid), default_key)
+        by_type[t] = by_type.get(t, 0) + 1
+        if t != "normal":
             changed += 1
-    return ImageCounts(total, active, changed, n_excl, auto)
+    return ImageCounts(total, active, changed, n_excl, auto, by_type, n_b, n_s)
 
 
 def format_status(S: dict, idx: int, n_images: int, name: str,

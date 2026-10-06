@@ -7,7 +7,7 @@ dialog shows arrives via queued signals, which Qt delivers on the GUI thread.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEventLoop, QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import QProgressDialog, QWidget
 
 from ..tasks import CancelFlag, Task
@@ -95,3 +95,53 @@ def run_task_modal(parent: QWidget, task: Task, title: str, label: str,
     if out.get("error") is not None:
         raise out["error"]
     return out.get("result")
+
+
+class RunningTask:
+    """Handle for start_task: cancel() asks the work to stop (it checks
+    `is_cancelled` between steps); the thread cleans up after itself."""
+
+    def __init__(self, thread: QThread, worker: _Worker, relay: _Relay, cancel: CancelFlag):
+        self.thread, self.worker, self.relay, self._cancel = thread, worker, relay, cancel
+
+    def cancel(self) -> None:
+        self._cancel.cancel()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel()
+
+
+def start_task(parent: QWidget, task: Task, on_progress, on_done) -> RunningTask:
+    """Run `task` on a QThread without blocking; `on_progress(value, text)` and
+    `on_done(result, error)` are called on the GUI thread.
+
+    Teardown happens in one place, on the GUI thread, in a fixed order: the
+    thread is asked to quit and waited for, the objects are released, and only
+    then is `on_done` called. (Releasing them from signals while the slot that
+    delivers the result was still running crashed or deadlocked.)"""
+    cancel = CancelFlag()
+    thread = QThread()
+    worker = _Worker(task, cancel)
+    worker.moveToThread(thread)
+    holder: dict = {}
+
+    def deliver(result, error):
+        thread.quit()
+        thread.wait()
+        worker.deleteLater()
+        relay.deleteLater()
+        holder.clear()                      # drops the last Python reference to the thread
+        on_done(result, error)
+
+    def finished(result, error):
+        QTimer.singleShot(0, lambda: deliver(result, error))
+
+    relay = _Relay(on_progress, finished)
+    relay.setParent(parent)
+    worker.progress.connect(relay.progress, Qt.QueuedConnection)
+    worker.finished.connect(relay.finished, Qt.QueuedConnection)
+    thread.started.connect(worker.run)
+    holder["thread"] = thread               # alive until deliver() ran
+    thread.start()
+    return RunningTask(thread, worker, relay, cancel)

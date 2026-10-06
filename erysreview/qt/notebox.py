@@ -14,22 +14,30 @@ from typing import Callable
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import (
     QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QMessageBox,
-    QPlainTextEdit, QPushButton, QVBoxLayout,
+    QPlainTextEdit, QPushButton, QSizeGrip, QVBoxLayout,
 )
 from PySide6.QtGui import QColor
 
 
 class QtNoteBox(QFrame):
+    MIN_W, MIN_H = 360, 260
+
     def __init__(self, parent, S: dict, on_save: Callable[[str | None, str], None],
-                 on_closed: Callable[[], None] | None = None):
+                 on_closed: Callable[[], None] | None = None, settings=None):
         super().__init__(parent)
         self.S = S
+        self.settings = settings
         self._on_save = on_save
         self._on_closed = on_closed or (lambda: None)
         self._target: str | None = None
         self._saved_text = ""
         self.setObjectName("notebox")
-        self.setFixedWidth(340)
+        # Remembered size (AppSettings.notebox_w/h, shared with the Tk box), but
+        # never smaller than a comfortable writing area.
+        w = max(self.MIN_W, int(getattr(settings, "notebox_w", 0) or 0), 420)
+        h = max(self.MIN_H, int(getattr(settings, "notebox_h", 0) or 0), 320)
+        self.setMinimumSize(self.MIN_W, self.MIN_H)
+        self.resize(w, h)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(28); shadow.setOffset(0, 10); shadow.setColor(QColor(26, 34, 51, 70))
         self.setGraphicsEffect(shadow)
@@ -41,16 +49,18 @@ class QtNoteBox(QFrame):
         close.clicked.connect(self.request_close)
         head.addWidget(self.title, 1); head.addWidget(close)
         v.addLayout(head)
-        self.text = QPlainTextEdit(); self.text.setFixedHeight(110)
+        self.text = QPlainTextEdit(); self.text.setMinimumHeight(140)
         self.text.setPlaceholderText(S["note_hint"])
-        v.addWidget(self.text)
+        v.addWidget(self.text, 1)
         row = QHBoxLayout()
         self.btn_delete = QPushButton(S["note_delete"])
         self.btn_delete.setStyleSheet("border: none; color: #B83A3A;")
         self.btn_delete.clicked.connect(self._delete)
         self.btn_primary = QPushButton(S["note_save"]); self.btn_primary.setProperty("class", "primary")
         self.btn_primary.clicked.connect(self._on_primary)
+        grip = QSizeGrip(self)                 # drag the corner to resize
         row.addWidget(self.btn_delete); row.addStretch(1); row.addWidget(self.btn_primary)
+        row.addWidget(grip, 0, Qt.AlignBottom | Qt.AlignRight)
         v.addLayout(row)
         self.hide()
         self._drag: QPoint | None = None
@@ -137,3 +147,8 @@ class QtNoteBox(QFrame):
 
     def mouseReleaseEvent(self, _e):
         self._drag = None
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.settings is not None and self.isVisible():
+            self.settings.notebox_w, self.settings.notebox_h = self.width(), self.height()

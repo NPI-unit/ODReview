@@ -158,3 +158,46 @@ def inclusion_with_overrides(images, counts, overrides, target):
                 if cum >= target:
                     reached = True
     return included, cum
+
+
+def load_group_selection(folder: Path, images_in_group, profile: ProfileData):
+    """State for the 'zählende Bilder' picker of one group, from one pass:
+    counts[stem] (counted cells, None = not segmented), the stored eval
+    overrides, and the stored finished flags."""
+    from .cellpose_runner import has_cache
+    from .counts import image_counts
+    counts: dict[str, int | None] = {}
+    overrides: dict[str, bool | None] = {}
+    finished: dict[str, bool] = {}
+    for info in images_in_group:
+        stem = info.path.stem
+        if has_cache(folder, info.path):
+            c = image_counts(folder, info, profile)
+            counts[stem] = c["rbc"] if c else None
+        else:
+            counts[stem] = None
+        rv = ReviewState.load(folder, stem)
+        overrides[stem] = rv.eval_include
+        finished[stem] = bool(rv.is_finished)
+    return counts, overrides, finished
+
+
+def save_group_selection(folder: Path, images_in_group, overrides: dict, overrides_orig: dict,
+                         finished: dict, finished_orig: dict) -> bool:
+    """Write back what changed — one load and one save per image even when
+    both the eval override and the finished flag changed. True if anything did."""
+    changed = False
+    for info in images_in_group:
+        stem = info.path.stem
+        want_eval = overrides.get(stem) != overrides_orig.get(stem)
+        want_done = bool(finished.get(stem)) != bool(finished_orig.get(stem))
+        if not (want_eval or want_done):
+            continue
+        rv = ReviewState.load(folder, stem)
+        if want_eval:
+            rv.eval_include = overrides.get(stem)
+        if want_done:
+            rv.is_finished = bool(finished.get(stem))
+        rv.save(folder, stem)
+        changed = True
+    return changed

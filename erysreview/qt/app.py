@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QPoint, QTimer, Qt
 from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QApplication, QDialog, QFileDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
     QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -25,6 +25,7 @@ from ..persistence import (
     AppSettings, TOOL_ADD, TOOL_CURSOR, TOOL_NOTE, TOOL_REMOVE, TOOL_TYPE, TOOLS_ORDER,
 )
 from ..profile import ensure_default_profile, load_profile, save_profile
+from .processing import BatchDialog, EvalSelectDialog, ExportDialog, ImageInfoDialog
 from .settings import SettingsDialog
 from .study_picker import pick_study
 from ..study import study_progress
@@ -33,7 +34,7 @@ from .canvas import QtEryCanvas
 from .notebox import QtNoteBox
 from .sidebar import QtSidebar
 from .study_card import StudyCard
-from .style import build_qss
+from .style import build_palette, build_qss
 from .tasks import run_task_modal
 from .toolbar import QtToolbar
 
@@ -95,13 +96,15 @@ class MainWindow(QMainWindow):
         self.toolbar = QtToolbar(P, S, self.settings, self.ctl.profile, {
             "tool": self._set_tool, "type": self._on_type, "resegment": self.resegment,
             "overlay": self.toggle_overlay, "reset_zoom": lambda: self.canvas.reset_zoom(),
-            "undo": self.undo, "info": self._later, "export": self._later,
+            "undo": self.undo, "info": self.show_info, "export": self.export,
             "study": self._show_study_card,
         })
         v.addWidget(self.toolbar)
 
         split = QSplitter(Qt.Horizontal)
-        self.sidebar = QtSidebar(P, S, self.ctl.profile, on_select=self.show_image)
+        self.sidebar = QtSidebar(P, S, self.ctl.profile, on_select=self.show_image,
+                                 on_subject_eval=self.choose_counted,
+                                 on_subject_status=self.set_subject_status)
         self.sidebar.setMinimumWidth(220)
         center = QWidget()
         cl = QVBoxLayout(center); cl.setContentsMargins(0, 0, 0, 0)
@@ -113,7 +116,8 @@ class MainWindow(QMainWindow):
                                       S["overlay_hidden_edit"]))
         cl.addWidget(self.canvas)
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
-        self.notebox = QtNoteBox(self.canvas, S, self._on_note_saved, self._on_note_closed)
+        self.notebox = QtNoteBox(self.canvas, S, self._on_note_saved, self._on_note_closed,
+                                 settings=self.settings)
         self.empty_btn = QPushButton(S["btn_open_folder"], center)
         self.empty_btn.setProperty("class", "primary")
         self.empty_btn.setMinimumSize(240, 52)
@@ -151,6 +155,9 @@ class MainWindow(QMainWindow):
         self.m_recent = m_file.addMenu(S["menu_recent_folders"])
         self._fill_recent()
         self._act(m_file, S["menu_refresh"], self.refresh, ["F5", "Ctrl+R"])
+        m_file.addSeparator()
+        self._act(m_file, S["batch_title"] + " …", self.open_batch, ["Ctrl+B"])
+        self._act(m_file, S["menu_export"], self.export, ["Ctrl+S"])
         m_file.addSeparator()
         self._act(m_file, S["menu_quit"], self.close, QKeySequence.Quit)
         m_edit = mb.addMenu(S["qt_menu_edit"])
@@ -191,6 +198,7 @@ class MainWindow(QMainWindow):
         key("E", self.cycle_eval)
         key("0", lambda: self.canvas.reset_zoom())
         key("Home", lambda: self.canvas.reset_zoom())
+        key("S", self.export)
 
     # ── folders ──
     def ask_open_folder(self) -> None:
@@ -401,6 +409,77 @@ class MainWindow(QMainWindow):
         card.move(pos)
         card.show()
 
+    # ── processing (Phase 3) ──
+    def open_batch(self) -> None:
+        if not self.ctl.has_images:
+            return
+        try:
+            self.ctl.check_model()
+        except ModelUnavailable as e:
+            QMessageBox.warning(self, self.S["model_missing_title"],
+                                self.S["model_missing_msg"].format(name=e.name))
+            return
+        dlg = BatchDialog(self, self.P, self.S, self.ctl.folder, self.ctl.images, self.ctl.grouped,
+                          self.ctl.profile, self.settings.cellpose_models)
+        dlg.exec()
+        if dlg.ran:
+            self.sidebar.refresh_all()
+            self.show_image(self.ctl.idx)
+
+    def export(self) -> None:
+        if self.ctl.folder is None or self.ctl.grouped is None:
+            return
+        self.ctl.flush_time()
+        dlg = ExportDialog(self, self.P, self.S, self.ctl.folder, self.ctl.grouped)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        groups = dlg.groups
+        if not groups:
+            QMessageBox.information(self, self.S["export_scope_title"], self.S["export_scope_empty"])
+            return
+        is_subset = len(groups) != len(self.ctl.all_groups())
+        try:
+            out = run_task_modal(self, self.ctl.export_task(groups), self.S["menu_export"],
+                                 self.S["export_running"])
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, self.S["title"], f"Export error: {e}")
+            return
+        marked = self.ctl.mark_exported_finished(groups) if dlg.mark.isChecked() else 0
+        QMessageBox.information(
+            self, self.S["export_done_title"],
+            self.S["export_done_msg"].format(path=out) + self.S["export_done_extra"].format(
+                n=len(groups), marked=marked, overview=self.S["export_no_overview"] if is_subset else ""))
+        self.sidebar.refresh_all()
+        self.show_image(self.ctl.idx)
+
+    def show_info(self) -> None:
+        if not self.ctl.has_images:
+            return
+        c = status_counts(self.canvas.cell_infos, self.ctl.review, self.ctl.profile,
+                          self.canvas.border_ids, self.canvas.duplicate_ids)
+        ImageInfoDialog(self, self.P, self.S, self.ctl.current_path.name, c,
+                        self.ctl.profile, self.ctl.review).exec()
+
+    def choose_counted(self, tp: str, sub: str) -> None:
+        images = self.ctl.grouped.tree.get(tp, {}).get(sub, []) if self.ctl.grouped else []
+        if not images:
+            return
+        dlg = EvalSelectDialog(self, self.P, self.S, self.ctl.folder, images, self.ctl.profile,
+                               f"{tp} / {sub}")
+        dlg.exec()
+        if dlg.changed:
+            self.ctl.reload_review()
+            self.sidebar.refresh_all()
+            self.sidebar.set_idx(self.ctl.idx)
+            self._update_status()
+
+    def set_subject_status(self, tp: str, sub: str, done: bool) -> None:
+        n = self.ctl.set_subject_status(tp, sub, done)
+        self.sidebar.refresh_all()
+        self.sidebar.set_idx(self.ctl.idx)
+        self._update_status()
+        self._set_status(self.S["status_bulk_done"].format(n=n))
+
     # ── studies & settings (Phase 2) ──
     def open_settings(self, page: str = "images") -> None:
         dlg = SettingsDialog(self, self.P, self.S, self.settings, self.ctl.profile,
@@ -425,10 +504,12 @@ class MainWindow(QMainWindow):
                 and Path(new.import_folder).is_dir():
             self.open_folder(Path(new.import_folder), restore_index=False)
         if choice == "batch":
-            self._later()
+            self.open_batch()
 
     def _on_local_setting(self, field: str) -> None:
-        if field == "toolbar_layout":
+        if field == "restart":
+            self.restart()
+        elif field == "toolbar_layout":
             self.toolbar.rebuild()
             self.toolbar.set_active_tool(self.settings.active_tool)
             if self.ctl.has_images:
@@ -481,6 +562,18 @@ class MainWindow(QMainWindow):
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
 
+    def restart(self) -> None:
+        """Start a fresh instance and close this one (saves like a normal quit).
+        Language, theme and text size are read once at startup — a restart is
+        what makes every window and every text colour follow them."""
+        from PySide6.QtCore import QProcess
+        for w in QApplication.topLevelWidgets():
+            if isinstance(w, QDialog) and w.isVisible():
+                w.done(0)
+        if self.close():
+            QProcess.startDetached(sys.executable, ["-m", "erysreview.qt"])
+            QApplication.quit()
+
     def _later(self) -> None:
         QMessageBox.information(self, self.S["title"], self.S["qt_later"])
 
@@ -531,6 +624,7 @@ def make_app(argv=None) -> QApplication:
     f = QFont(app.font())
     f.setPointSizeF(f.pointSizeF() * float(settings.font_scale or 1.0))
     app.setFont(f)
+    app.setPalette(build_palette(palette(settings.theme)))   # not the system's dark/light
     app.setStyleSheet(build_qss(palette(settings.theme)))
     return app
 

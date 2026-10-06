@@ -662,8 +662,13 @@ class SettingsDialog(QDialog):
         grid.addWidget(rev, len(rows), 1)
         cv.addLayout(grid)
         v.addWidget(card)
+        row = QHBoxLayout()
         note = QLabel(S["qt_restart_note"]); note.setStyleSheet(f"color: {self.P['fg_secondary']};")
-        v.addWidget(note)
+        note.setWordWrap(True)
+        restart = QPushButton(S["qt_restart_now"]); restart.setProperty("class", "primary")
+        restart.clicked.connect(lambda: self._on_local_changed("restart"))
+        row.addWidget(note, 1); row.addWidget(restart)
+        v.addLayout(row)
 
     # Rechner · Bearbeiten
     def _page_edit(self, v: QVBoxLayout) -> None:
@@ -812,9 +817,10 @@ class SaveSheet(QDialog):
             cv.addWidget(QLabel(f"<b>{S['qt_masks_legend']}</b>"))
             later = QRadioButton(f"{S['qt_masks_later']}  {S['qt_default_hint']}")
             batch = QRadioButton(S["qt_masks_batch"])
-            # The batch window arrives with Phase 3 of the Qt port.
-            batch.setEnabled(False); batch.setToolTip(S["qt_later"])
-            later.setChecked(True)
+            if settings.resegment_default == "batch":
+                batch.setChecked(True); self.choice = "batch"
+            else:
+                later.setChecked(True)
             later.toggled.connect(lambda on: on and setattr(self, "choice", "later"))
             batch.toggled.connect(lambda on: on and setattr(self, "choice", "batch"))
             cv.addWidget(later); cv.addWidget(batch)

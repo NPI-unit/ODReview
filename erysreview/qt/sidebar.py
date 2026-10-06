@@ -32,8 +32,12 @@ def _num(n: int) -> str:
 
 
 class QtSidebar(QWidget):
-    def __init__(self, P: dict, S: dict, profile, on_select: Callable[[int], None], parent=None):
+    def __init__(self, P: dict, S: dict, profile, on_select: Callable[[int], None], parent=None,
+                 on_subject_eval: Callable[[str, str], None] | None = None,
+                 on_subject_status: Callable[[str, str, bool], None] | None = None):
         super().__init__(parent)
+        self._on_subject_eval = on_subject_eval or (lambda tp, sub: None)
+        self._on_subject_status = on_subject_status or (lambda tp, sub, done: None)
         self.P, self.S, self.profile = P, S, profile
         self._on_select = on_select
         self.folder: Path | None = None
@@ -71,6 +75,8 @@ class QtSidebar(QWidget):
         self.tree.setIndentation(16)
         self.tree.setFocusPolicy(Qt.NoFocus)    # ←/→ belong to the image, not the tree
         self.tree.itemClicked.connect(self._on_item_clicked)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._subject_menu)
         lay.addWidget(self.tree, 1)
 
         # ── detail panel ──
@@ -223,6 +229,20 @@ class QtSidebar(QWidget):
         self.det_chips.setText("&nbsp; ".join(chips))
         self.det_chips.setVisible(bool(chips))
         self.details.show()
+
+    def _subject_menu(self, pos) -> None:
+        """Right-click on a subject row: pick counted images, or mark all done/open."""
+        item = self.tree.itemAt(pos)
+        if item is None or item.data(0, ROLE_KIND) != "sub":
+            return
+        _, tp, sub = item.data(0, ROLE_KEY).split("::", 2)
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction(self.S["qt_sub_eval"], lambda: self._on_subject_eval(tp, sub))
+        m.addSeparator()
+        m.addAction(self.S["status_mark_all_done"], lambda: self._on_subject_status(tp, sub, True))
+        m.addAction(self.S["status_mark_all_open"], lambda: self._on_subject_status(tp, sub, False))
+        m.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _iter_items(self):
         stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
