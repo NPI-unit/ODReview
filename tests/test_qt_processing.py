@@ -130,6 +130,11 @@ def main() -> int:
     rv = ReviewState.load(folder, "A_01_Prä_1")
     check(ev.changed and rv.eval_include is False and rv.is_finished, "eval override and finished flag are saved")
     check(not ReviewState.load(folder, "A_01_Prä_2").is_finished, "an unsegmented image is never marked done")
+    win.sidebar.refresh_all()
+    sub_item = win.sidebar._group_items[("Prä", "01")]
+    rows = [sub_item.child(i).text(0) for i in range(sub_item.childCount())]
+    check(rows[-1].endswith("⊘") and "A_01_Prä_1" in rows[-1] and "⊘" not in rows[0],
+          f"a not counted image is marked ⊘ and moves to the end of its proband ({rows})")
 
     # ── image info ──
     win.show_image(0)

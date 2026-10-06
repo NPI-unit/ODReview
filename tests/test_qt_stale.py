@@ -111,8 +111,8 @@ def main() -> int:
 
     sb._set_filter("stale")
     shown = [sb._item_by_idx[i].text(0) for i in sb._item_by_idx]
-    check(len(shown) == 1 and "A_01_Prä_1.tif" in shown[0] and "⟳" in shown[0],
-          "filter 'Alte Werte' shows only the stale image, marked ⟳")
+    check(len(shown) == 1 and "A_01_Prä_1.tif" in shown[0] and "⟳" not in shown[0],
+          "filter 'Alte Werte' shows only the stale image (⟳ only on the proband row)")
     sb._set_filter("all")
 
     def run_and_wait(dlg):

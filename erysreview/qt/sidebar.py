@@ -178,6 +178,11 @@ class QtSidebar(QWidget):
             sub_item.removeChild(sub_item.child(k))
         n_finished = 0
         stale_paths: list[Path] = []
+        # Which images count toward the target (one disk pass, shared with the
+        # detail line). Not counted ones get ⊘ and move to the end of the
+        # proband; old values show only as the ⟳ count on the proband row.
+        counted = self._counted_stems(tp, sub)
+        rows = []
         for info in infos:
             status, has_note = image_status(self.folder, info.path)
             stale = is_stale(self.folder, info.path, self.profile.cellpose)
@@ -189,12 +194,20 @@ class QtSidebar(QWidget):
             idx = self._idx_by_name.get(info.path.name)
             if idx is None:
                 continue
+            rows.append((info, status, has_note, counted is None or info.path.stem in counted, idx))
+        # stable: counted, then not yet segmented, then ⊘ (segmented, not counted) last
+        rows.sort(key=lambda r: 0 if r[3] else (1 if r[1] == "unsegmented" else 2))
+        for info, status, has_note, is_counted, idx in rows:
+            off = not is_counted and status != "unsegmented"
             text = (f"{STATUS_ICONS_3[status]}  {info.path.name}" + ("  ❝" if has_note else "")
-                    + ("   ⟳" if stale else ""))
+                    + ("   ⊘" if off else ""))
             it = QTreeWidgetItem([text])
             it.setData(0, ROLE_KIND, "img"); it.setData(0, ROLE_KEY, idx)
-            it.setForeground(0, QBrush(QColor(self.P[STATUS_TO_COLOR[status]])))
-            it.setToolTip(0, info.path.name)
+            col = QColor(self.P[STATUS_TO_COLOR[status]])
+            if off:
+                col = QColor(self.P["fg_muted"])
+            it.setForeground(0, QBrush(col))
+            it.setToolTip(0, info.path.name + ("\n" + self.S["qt_tip_not_counted"] if off else ""))
             sub_item.addChild(it)
             self._item_by_idx[idx] = it
         self._stale[(tp, sub)] = stale_paths
@@ -220,6 +233,17 @@ class QtSidebar(QWidget):
         self._update_filter_count()
         if self._current is not None and self._group_of_idx.get(self._current) == (tp, sub):
             self._show_details((tp, sub))
+
+    def _counted_stems(self, tp: str, sub: str) -> set[str] | None:
+        """Stems of the group's images that count toward the target; None if
+        that cannot be read (then nothing is marked)."""
+        if tp == UNGROUPED_TIMEPOINT:
+            return None
+        from ..evaluation import group_eval
+        try:
+            return group_eval(self.folder, self.grouped.tree[tp][sub], self.profile)[1]
+        except Exception:  # noqa: BLE001
+            return None
 
     def _show_details(self, key: tuple[str, str] | None) -> None:
         if key is None or self.grouped is None:
