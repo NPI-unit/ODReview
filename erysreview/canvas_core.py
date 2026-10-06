@@ -232,8 +232,8 @@ class CanvasCore:
     GRID_CHOICES = (0, 2, 3, 4, 5)
 
     def set_grid(self, n: int) -> None:
-        """Show an n × n grid of fields over the image (0 hides it). Fields
-        are labelled A1, A2 … (row letter, column number) in their corner."""
+        """Show an n × n grid of fields over the image (0 hides it). Lines
+        only — labels in the corners covered cells."""
         self.grid_n = int(n) if n else 0
         self._refresh_grid()
         self._full_redraw()
@@ -260,15 +260,6 @@ class CanvasCore:
         for lc in (halo, lines):
             self.ax.add_collection(lc)
             self._grid_artists.append(lc)
-        fs = 11
-        for r in range(n):
-            for c in range(n):
-                t = self.ax.text(-0.5 + w * c / n + w * 0.008, -0.5 + h * r / n + h * 0.008,
-                                 f"{chr(65 + r)}{c + 1}", color=col, fontsize=fs, fontweight="bold",
-                                 ha="left", va="top", zorder=7,
-                                 bbox=dict(boxstyle="round,pad=0.2", fc=self._theme_palette.get("canvas_bg", "#FFFFFF"),
-                                           ec="none", alpha=0.7))
-                self._grid_artists.append(t)
 
     def reset_zoom(self) -> None:
         if self.image is None:

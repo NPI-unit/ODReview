@@ -178,12 +178,13 @@ class QtToolbar(QWidget):
         labels = {TOOL_ADD: "tool_add", TOOL_REMOVE: "tool_remove", TOOL_TYPE: "tool_type",
                   TOOL_NOTE: "tool_note", TOOL_CURSOR: "tool_cursor"}
         for i, key in enumerate(keys):
-            hot = TOOLS_ORDER.index(key) + 1
+            # No key numbers on buttons or tooltips: keys can be rebound, and
+            # Hilfe › Tastenkürzel lists the current ones.
             prefix = GLYPHS["note"] if key == TOOL_NOTE else (
-                GLYPHS["cursor"] if key == TOOL_CURSOR else str(hot))
-            b = QPushButton(f"{prefix}  {self.S[labels[key]]}")
+                GLYPHS["cursor"] if key == TOOL_CURSOR else "")
+            b = QPushButton(f"{prefix}  {self.S[labels[key]]}" if prefix else self.S[labels[key]])
             b.setCheckable(True); b.setCursor(Qt.PointingHandCursor)
-            b.setToolTip(f"{self.S[labels[key]]}  ({hot})")
+            b.setToolTip(self.S[labels[key]])
             b.setProperty("first", i == 0); b.setProperty("last", i == len(keys) - 1)
             b.clicked.connect(lambda _c=False, k=key: self.cb["tool"](k))
             self._tools.addButton(b)

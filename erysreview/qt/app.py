@@ -409,8 +409,17 @@ class MainWindow(QMainWindow):
             self.show_image(self.ctl.idx)
 
     def step(self, delta: int) -> None:
-        if self.ctl.has_images:
-            self.show_image(self.ctl.idx + delta)
+        """Next / previous image in the list's order (⊘ at the end of each
+        proband, filter applied); folder order if the image is not listed."""
+        if not self.ctl.has_images:
+            return
+        order = self.sidebar.order()
+        if self.ctl.idx in order:
+            pos = order.index(self.ctl.idx) + delta
+            if 0 <= pos < len(order):
+                self.show_image(order[pos])
+            return
+        self.show_image(self.ctl.idx + delta)
 
     # ── edits ──
     def _save_review(self) -> None:

@@ -283,6 +283,20 @@ class QtSidebar(QWidget):
         if i >= 0:
             self.filter_combo.setItemText(i, f"⟳ {self.S['qt_filter_stale']} ({n})")
 
+    def order(self) -> list[int]:
+        """Image indices in the order the list shows them (proband by
+        proband, ⊘ last, current filter applied) — what ←/→ step through."""
+        out: list[int] = []
+        for i in range(self.tree.topLevelItemCount()):
+            tp = self.tree.topLevelItem(i)
+            for j in range(tp.childCount()):
+                sub = tp.child(j)
+                for k in range(sub.childCount()):
+                    idx = sub.child(k).data(0, ROLE_KEY)
+                    if isinstance(idx, int):
+                        out.append(idx)
+        return out
+
     def stale_paths(self) -> list[Path]:
         return [p for v in self._stale.values() for p in v]
 

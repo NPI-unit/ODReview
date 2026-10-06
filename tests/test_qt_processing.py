@@ -135,6 +135,12 @@ def main() -> int:
     rows = [sub_item.child(i).text(0) for i in range(sub_item.childCount())]
     check(rows[-1].endswith("⊘") and "A_01_Prä_1" in rows[-1] and "⊘" not in rows[0],
           f"a not counted image is marked ⊘ and moves to the end of its proband ({rows})")
+    i_unseg = next(i for i, p in enumerate(ctl.images) if p.name == "A_01_Prä_2.tif")
+    i_off = next(i for i, p in enumerate(ctl.images) if p.name == "A_01_Prä_1.tif")
+    win.show_image(i_unseg); win.step(+1)
+    check(ctl.idx == i_off, "→ follows the list: from the unsegmented image to the ⊘ image below it")
+    win.step(-1)
+    check(ctl.idx == i_unseg, "← goes back up the list")
 
     # ── image info ──
     win.show_image(0)
