@@ -162,6 +162,36 @@ def main() -> int:
     written = run_sync(win.ctl.overview_task(xlsx))
     check(written and Path(written).is_file(), "the overview workbook is written")
 
+    # The buttons themselves, clicked (a direct _create(path) call hid that
+    # clicked(bool) landed in `dest` and the click silently did nothing).
+    from PySide6.QtWidgets import QFileDialog
+    real_save = QFileDialog.getSaveFileName
+    zip2 = root / "per_klick.zip"; csv2 = root / "per_klick.csv"
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(zip2), "ZIP (*.zip)"))
+    d2 = analysis.PackageCreateDialog(win, win.P, win.S, win.ctl.folder, win.ctl.grouped, win.ctl.profile, "Finn")
+    d2.go.click()
+    check(zip2.is_file(), "clicking 'Paket erstellen' creates the package")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(csv2), "CSV (*.csv)"))
+    aw2 = analysis.AreasWindow(win, win.P, win.S, groups)
+    next(b for b in aw2.findChildren(type(d2.go)) if b.text() == win.S["areas_save_csv"]).click() \
+        if any(b.text() == win.S["areas_save_csv"] for b in aw2.findChildren(type(d2.go))) else aw2._save()
+    check(csv2.is_file(), "clicking 'CSV speichern' writes the file")
+    QFileDialog.getSaveFileName = real_save
+
+    # Guard: a button's clicked(bool) must never land in an optional parameter.
+    import ast
+    bad = []
+    for f in (Path(__file__).resolve().parent.parent / "erysreview" / "qt").rglob("*.py"):
+        tree = ast.parse(f.read_text())
+        opt = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and len(n.args.args) >= 2
+               and len(n.args.defaults) >= len(n.args.args) - 1}
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "connect" and n.args
+                    and isinstance(n.args[0], ast.Attribute) and n.args[0].attr in opt
+                    and getattr(getattr(n.func, "value", None), "attr", "") in ("clicked", "triggered", "toggled")):
+                bad.append(f"{f.name}:{n.lineno} {n.args[0].attr}")
+    check(not bad, f"no button passes its checked-flag into an optional parameter ({bad})")
+
     # Guard: no attribute of ours may hide a Qt method of the same name
     # (`self.metric` replaced QPaintDevice.metric() and crashed painting;
     # `self.done` replaced QDialog.done()).

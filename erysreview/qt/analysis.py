@@ -68,7 +68,7 @@ class PackageCreateDialog(QDialog):
         self.count = QLabel("")
         cancel = QPushButton(S["settings_cancel"]); cancel.clicked.connect(self.reject)
         self.go = QPushButton(S["pkg_create_btn"]); self.go.setProperty("class", "primary")
-        self.go.clicked.connect(self._create)
+        self.go.clicked.connect(lambda: self._create())   # not clicked(bool) → dest
         f.addWidget(self.count, 1); f.addWidget(cancel); f.addWidget(self.go)
         self._fill()
 
@@ -478,7 +478,7 @@ class AreasWindow(QDialog):
         v.addWidget(body, 1)
         f = _footer(v)
         f.addStretch(1)
-        save = QPushButton(S["areas_save_csv"]); save.clicked.connect(self._save)
+        save = QPushButton(S["areas_save_csv"]); save.clicked.connect(lambda: self._save())       # not clicked(bool) → dest
         close = QPushButton(S["btn_close"]); close.setProperty("class", "primary"); close.clicked.connect(self.accept)
         f.addWidget(save); f.addWidget(close)
 
