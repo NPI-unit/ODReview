@@ -676,6 +676,7 @@ STRINGS = {
         "qt_rerun_all": "Alle {n} neu rechnen …",
         "qt_stale_count": "{n} Bilder mit alten Werten",
         "qt_status_stale": "⟳ Masken mit alten Werten",
+        "qt_status_not_counted": "zählt nicht (E)",
         "qt_rerun_title": "Neu rechnen?",
         "qt_rerun_msg": "{n} Bilder werden mit den aktuellen Werten der Studie neu gerechnet.\n\nDabei entstehen neue Zellen. Die bisherige Bewertung dieser Bilder (Typen, an/aus, manuelle Zellen, Anmerkungen zu Zellen) wird zurückgesetzt.",
         "qt_rerun_running": "Rechne {i} von {n} neu: {name}",
@@ -771,7 +772,6 @@ STRINGS = {
         # Eval cap
         "eval_toggled_in":     "Bild zählt zur Auswertung",
         "eval_toggled_out":    "Bild zählt NICHT zur Auswertung",
-        "eval_toggled_auto":   "Bild: automatische Wertung",
         # Parser (friendly)
         "pe_use_simple":       "Einfacher Parser (Trennzeichen statt Regex)",
         "pe_delimiters":       "Trennzeichen:",
@@ -1435,6 +1435,7 @@ STRINGS = {
         "qt_rerun_all": "Re-run all {n} …",
         "qt_stale_count": "{n} images with old values",
         "qt_status_stale": "⟳ Masks made with old values",
+        "qt_status_not_counted": "does not count (E)",
         "qt_rerun_title": "Re-run?",
         "qt_rerun_msg": "{n} images will be re-run with the study's current values.\n\nThis creates new cells. The existing review of these images (types, on/off, manual cells, cell remarks) is reset.",
         "qt_rerun_running": "Re-running {i} of {n}: {name}",
@@ -1530,7 +1531,6 @@ STRINGS = {
         # Eval cap
         "eval_toggled_in":     "Image counts toward evaluation",
         "eval_toggled_out":    "Image does NOT count toward evaluation",
-        "eval_toggled_auto":   "Image: automatic evaluation",
         # Parser (friendly)
         "pe_use_simple":       "Simple parser (delimiters instead of regex)",
         "pe_delimiters":       "Delimiters:",

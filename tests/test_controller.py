@@ -116,7 +116,10 @@ def main() -> int:
         check(ReviewState.load(folder, "A_01_Prä_1").time_spent_s == 5.0, "and it is saved with the review")
 
         check(ctl.toggle_finished() is True, "toggle_finished flips the flag")
-        check([ctl.cycle_eval() for _ in range(3)] == ["in", "out", "auto"], "eval cycles in → out → auto")
+        check([ctl.toggle_eval() for _ in range(3)] == ["out", "in", "out"], "E: counts ↔ does not count")
+        check(ctl.review.eval_include is False and not ctl.is_counted(), "out is stored and leaves the group")
+        ctl.toggle_eval()
+        check(ctl.review.eval_include is None and ctl.is_counted(), "back in = automatic, not 'always'")
         check(ctl.set_note("2", "Membran?") and not ctl.set_note("2", "Membran?"),
               "a note change is reported once, a repeat is not")
         check(ctl.set_note("2", "") and "2" not in ctl.review.notes, "empty text deletes the note")

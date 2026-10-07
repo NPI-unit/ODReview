@@ -51,6 +51,7 @@ class QtSidebar(QWidget):
         self.images: list[Path] = []
         self.grouped = None
         self._item_by_idx: dict[int, QTreeWidgetItem] = {}
+        self._off_idx: set[int] = set()      # images that do not count (⊘)
         self._idx_by_name: dict[str, int] = {}
         self._group_items: dict[tuple[str, str], QTreeWidgetItem] = {}
         self._group_of_idx: dict[int, tuple[str, str]] = {}
@@ -107,6 +108,7 @@ class QtSidebar(QWidget):
     def populate(self, folder: Path, images: list[Path], grouped) -> None:
         self.folder, self.images, self.grouped = folder, images, grouped
         self._idx_by_name = {p.name: i for i, p in enumerate(images)}
+        self._off_idx = set()
         self._rebuild()
 
     def refresh_all(self) -> None:
@@ -198,6 +200,10 @@ class QtSidebar(QWidget):
             if stale:
                 stale_paths.append(info.path)
             n_finished += status == "finished"
+            k = self._idx_by_name.get(info.path.name)
+            if k is not None:      # for the status line, also when the filter hides the row
+                off_k = counted is not None and info.path.stem not in counted and status != "unsegmented"
+                (self._off_idx.add if off_k else self._off_idx.discard)(k)
             if not passes_filter(self._filter, status, has_note, stale):
                 continue
             idx = self._idx_by_name.get(info.path.name)
@@ -246,9 +252,8 @@ class QtSidebar(QWidget):
 
     def _counted_stems(self, tp: str, sub: str) -> set[str] | None:
         """Stems of the group's images that count toward the target; None if
-        that cannot be read (then nothing is marked)."""
-        if tp == UNGROUPED_TIMEPOINT:
-            return None
+        that cannot be read (then nothing is marked). Also for "not assigned":
+        the cap applies there too, so the list must show it."""
         from ..evaluation import group_eval
         try:
             return group_eval(self.folder, self.grouped.tree[tp][sub], self.profile)[1]
@@ -272,6 +277,9 @@ class QtSidebar(QWidget):
         self.det_cells.setProperty("reached", reached)
         self.det_cells.style().unpolish(self.det_cells); self.det_cells.style().polish(self.det_cells)
         self.details.show()
+
+    def is_counted(self, idx: int) -> bool:
+        return idx not in self._off_idx
 
     def selected_indices(self) -> list[int]:
         """Image indices selected in the list (⌘/⇧-click), in list order."""

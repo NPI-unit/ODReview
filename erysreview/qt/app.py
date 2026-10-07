@@ -478,10 +478,9 @@ class MainWindow(QMainWindow):
     def cycle_eval(self) -> None:
         if not self.ctl.has_images:
             return
-        msg = {"in": self.S["eval_toggled_in"], "out": self.S["eval_toggled_out"],
-               "auto": self.S["eval_toggled_auto"]}[self.ctl.cycle_eval()]
+        state = self.ctl.toggle_eval()
         self._save_review()
-        self._set_status(msg)
+        self._set_status(self.S["eval_toggled_in" if state == "in" else "eval_toggled_out"])
 
     def toggle_overlay(self) -> None:
         self.settings.overlay_visible = not self.settings.overlay_visible
@@ -810,10 +809,11 @@ class MainWindow(QMainWindow):
             from ..grouping import UNGROUPED_TIMEPOINT
             tp, sub = key
             images = self.ctl.grouped.tree[tp][sub]
-            if tp != UNGROUPED_TIMEPOINT:
-                summary, stems = group_eval(self.ctl.folder, images, self.ctl.profile)
-                group = {"title": f"{tp} · {self.S['pe_role_subject']} {sub}", "summary": summary,
-                         "n_total": len(images), "counted": self.ctl.current_path.stem in stems}
+            summary, stems = group_eval(self.ctl.folder, images, self.ctl.profile)
+            title = (self.S["sb_ungrouped"] if tp == UNGROUPED_TIMEPOINT
+                     else f"{tp} · {self.S['pe_role_subject']} {sub}")
+            group = {"title": title, "summary": summary,
+                     "n_total": len(images), "counted": self.ctl.current_path.stem in stems}
         ImageInfoDialog(self, self.P, self.S, self.ctl.current_path.name, c,
                         self.ctl.profile, self.ctl.review, group=group).exec()
 
@@ -1043,6 +1043,8 @@ class MainWindow(QMainWindow):
                           self.canvas.border_ids, self.canvas.duplicate_ids)
         text = format_status(self.S, self.ctl.idx, len(self.ctl.images),
                              self.ctl.current_path.name, c, self.ctl.review.is_finished)
+        if not self.sidebar.is_counted(self.ctl.idx):
+            text += "   ⊘ " + self.S["qt_status_not_counted"]
         if getattr(self, "_stale_now", False):
             text += "   " + self.S["qt_status_stale"]
         self._set_status(text)

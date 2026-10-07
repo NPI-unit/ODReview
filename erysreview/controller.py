@@ -279,11 +279,40 @@ class AppController:
         self.review.is_finished = not self.review.is_finished
         return self.review.is_finished
 
-    def cycle_eval(self) -> str:
-        """auto -> in -> out -> auto. Returns the new state: "in" | "out" | "auto"."""
-        cur = self.review.eval_include
-        self.review.eval_include = True if cur is None else (False if cur is True else None)
-        return {True: "in", False: "out", None: "auto"}[self.review.eval_include]
+    def current_group(self) -> list | None:
+        """The images of the current image's subject/timepoint group (also the
+        "not assigned" one), or None."""
+        path = self.current_path
+        if self.grouped is None or path is None:
+            return None
+        for subs in self.grouped.tree.values():
+            for infos in subs.values():
+                if any(i.path == path for i in infos):
+                    return infos
+        return None
+
+    def is_counted(self) -> bool:
+        """Does the current image count toward the evaluation right now?"""
+        from .evaluation import effective_eval_stems
+        infos = self.current_group()
+        if self.folder is None or infos is None:
+            return self.review.eval_include is not False
+        self.save_review()          # the cap reads the reviews from disk
+        return self.current_path.stem in effective_eval_stems(self.folder, infos, self.profile)
+
+    def toggle_eval(self) -> str:
+        """E: counts <-> does not count. Returns "in" | "out".
+
+        Taking an image out stores False. Putting it back returns it to the
+        automatic fill; only if it would then still not count (the target is
+        already reached without it) is it marked to count explicitly."""
+        if self.is_counted():
+            self.review.eval_include = False
+            return "out"
+        self.review.eval_include = None
+        if not self.is_counted():
+            self.review.eval_include = True
+        return "in"
 
     def set_note(self, target: str | None, text: str) -> bool:
         """Image remark (target None) or a cell's. Empty text deletes it.
