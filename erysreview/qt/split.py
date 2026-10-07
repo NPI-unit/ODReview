@@ -51,6 +51,11 @@ class SplitController:
         self.b_combo = QComboBox(); self.b_combo.setMinimumWidth(140)
         self.b_combo.activated.connect(lambda _i: self.set_rater(self.b_combo.currentText()))
         h.addWidget(QLabel(S["sp_b"])); h.addWidget(self.b_combo)
+        # which number ICC / Bland-Altman compare per proband (stored per B)
+        h.addWidget(QLabel(S["sp_metric"]))
+        self.metric_combo = QComboBox(); self.metric_combo.setMinimumWidth(190)
+        self.metric_combo.activated.connect(lambda _i: self.set_metric(self.metric_combo.currentData()))
+        h.addWidget(self.metric_combo)
         h.addStretch(1)
         seg = QFrame(); seg.setObjectName("segment")
         sh = QHBoxLayout(seg); sh.setContentsMargins(0, 0, 0, 0); sh.setSpacing(0)
@@ -90,6 +95,9 @@ class SplitController:
         self.prog = QProgressBar(); self.prog.setTextVisible(False); v.addWidget(self.prog)
         self.prog_text = QLabel(""); self.prog_text.setStyleSheet(f"color: {P['fg_secondary']}; font-size: 12px;")
         v.addWidget(self.prog_text)
+        self.group_vals = QLabel(""); self.group_vals.setStyleSheet("font-size: 12px; font-weight: 600;")
+        self.group_vals.setWordWrap(True)
+        v.addWidget(self.group_vals)
         allb = QPushButton(S["sp_take_all"]); allb.clicked.connect(lambda: self.take_all())
         v.addWidget(allb)
         legend = QLabel(S["sp_legend"]); legend.setWordWrap(True)
@@ -143,6 +151,7 @@ class SplitController:
     def deactivate(self) -> None:
         w = self.win
         self.active = False
+        w.sidebar.clear_compare()
         if getattr(self, "_tag_a", None) is not None:
             self._tag_a.hide()
         self.bar.hide(); self.panel.hide()
@@ -162,7 +171,57 @@ class SplitController:
             self._tags()
         self._update_backup_label()
         self.undo_stack.clear()
+        self._fill_metrics()
+        self._to_sidebar()
         self.load_image()
+
+    # ── list filter, ticks and metric for the agreement statistics ──
+    def _to_sidebar(self) -> None:
+        w = self.win
+        folder, rater, prof = w.ctl.folder, self.rater, w.ctl.profile
+        sel = ir.selection(folder, rater)
+        w.sidebar.set_compare(ir.common_stems(folder, rater), sel["excluded"],
+                              lambda info: ir.image_differs(folder, info, prof, rater),
+                              self._on_tick)
+
+    def _on_tick(self, stems: list[str], ticked: bool) -> None:
+        ir.set_excluded(self.win.ctl.folder, self.rater, stems, not ticked)
+        self._update_group_vals()
+
+    def _fill_metrics(self) -> None:
+        from ..stats import available_metrics
+        cur = ir.selection(self.win.ctl.folder, self.rater)["metric"]
+        self.metric_combo.blockSignals(True)
+        self.metric_combo.clear()
+        for key, label in available_metrics(self.win.ctl.profile):
+            self.metric_combo.addItem(label, key)
+        self.metric_combo.setCurrentIndex(max(0, self.metric_combo.findData(cur)))
+        self.metric_combo.blockSignals(False)
+
+    def set_metric(self, key: str) -> None:
+        if not self.active or not key:
+            return
+        ir.set_metric(self.win.ctl.folder, self.rater, key)
+        self.metric_combo.setCurrentIndex(max(0, self.metric_combo.findData(key)))
+        self._update_group_vals()
+
+    def _update_group_vals(self) -> None:
+        """'Proband: A 12,4 % · B 13,1 %' — the chosen metric over the
+        proband's ticked common images, A as it is now."""
+        w = self.win
+        infos = w.ctl.current_group() if self.active else None
+        if not infos:
+            self.group_vals.setText("")
+            return
+        sel = ir.selection(w.ctl.folder, self.rater)
+        res = ir.group_values(w.ctl.folder, infos, w.ctl.profile, self.rater, sel["excluded"], sel["metric"])
+        if res is None:
+            self.group_vals.setText("")
+            return
+        pct = sel["metric"].startswith("pct")
+        fmt = lambda v: (f"{v:.1f}".replace(".", self.S["qt_decimal_sep"]) + " %") if pct else f"{v:.0f}"
+        self.group_vals.setText(self.S["sp_group_vals"].format(a=fmt(res[0]), b=fmt(res[1]))
+                                + f"\n{self.metric_combo.currentText()} · n = {res[2]}")
 
     def _update_backup_label(self) -> None:
         from .. import backups
@@ -201,6 +260,7 @@ class SplitController:
         if not keep_pos:
             self.pos = 0
         self.refresh()
+        self._update_group_vals()
 
     def refresh(self) -> None:
         """Recompute the differences after A changed (an edit, B → A)."""
@@ -366,6 +426,7 @@ class SplitController:
         w.canvas._full_redraw()
         old = self.pos
         self.refresh()
+        self._update_group_vals()
         if advance and self.diffs:
             nxt = next((k for k in range(old + 1, len(self.diffs)) if str(self.diffs[k][0]) not in self._dec), None)
             if nxt is None:

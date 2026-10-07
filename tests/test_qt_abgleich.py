@@ -211,6 +211,47 @@ def main() -> int:
     check(ws.ag.n_cells - ws.ag.n_same == 7, "…and can compare the current A instead (one difference fewer)")
     ws.close()
 
+    # the list in the comparison: common images, ticks for the statistics, metric
+    sb = win.sidebar
+    from PySide6.QtCore import Qt as _Qt
+    common = ir.common_stems(folder, "Finn 2")
+    check(sb._filter == "cmp_common" and sb.filter_combo.findData("cmp_diffs") >= 0,
+          "the comparison starts the list on 'Gemeinsam (A & B)' and offers 'Nur Unterschiede'")
+    check({win.ctl.images[i].stem for i in sb.order()} == common,
+          f"the list shows exactly the images A and B both rated ({len(common)})")
+    items = [sb._item_by_idx[i] for i in sb.order()]
+    check(all(it.checkState(0) == _Qt.Checked for it in items) and f"{len(common)} von {len(common)}" in sb.calc_line.text(),
+          f"every common image is ticked ({sb.calc_line.text()})")
+    i0 = next(i for i in sb.order() if win.ctl.images[i].stem == st0)
+    sb._item_by_idx[i0].setCheckState(0, _Qt.Unchecked); QTest.qWait(20)
+    check(ir.selection(folder, "Finn 2")["excluded"] == {st0} and
+          f"{len(common) - 1} von {len(common)}" in sb.calc_line.text(),
+          "unticking an image leaves it out of the statistics (saved per B)")
+    grp = sb._group_items[sb._group_of_idx[i0]]
+    n_grp_common = sum(1 for k in range(grp.childCount()) if grp.child(k).checkState(0) is not None)
+    check(grp.checkState(0) == (_Qt.PartiallyChecked if n_grp_common > 1 else _Qt.Unchecked),
+          "the proband's tick shows 'some'")
+    sp.set_metric("rbc")
+    check(ir.selection(folder, "Finn 2")["metric"] == "rbc" and sp.metric_combo.currentData() == "rbc",
+          "the metric in the bar is stored per B")
+    ws = InterraterWindow(win, win.P, win.S, folder, win.ctl.grouped, win.ctl.profile, me="Finn", rater="Finn 2")
+    check(ws.ag.metric == "rbc" and ws.ag.n_left_out == 1 and ws.ag.n_images == len(common) - 1,
+          "the statistics use the ticks and the metric")
+    ws.close()
+    win.show_image(i0); QTest.qWait(20)
+    check(sp.group_vals.text().startswith("Proband: A") or sp.group_vals.text() == "",
+          f"the panel shows the proband's metric for A and B ({sp.group_vals.text()!r})")
+    sb._set_filter("cmp_diffs")
+    diff_stems = {win.ctl.images[i].stem for i in sb.order()}
+    check(diff_stems and diff_stems <= common and all(
+              ir.image_differs(folder, next(x for d in win.ctl.grouped.tree.values() for l in d.values()
+                                            for x in l if x.path.stem == st), win.ctl.profile, "Finn 2")
+              for st in diff_stems),
+          f"'Nur Unterschiede' lists only images A and B rate differently ({len(diff_stems)})")
+    sb._set_filter("cmp_common")
+    sb._item_by_idx[i0].setCheckState(0, _Qt.Checked); QTest.qWait(20)
+    sp.set_metric(ir.DEFAULT_METRIC)
+
     # backups: load 'A vor Abgleich' back
     bd = BackupsDialog(win, win.P, win.S, folder)
     target = next(i for i in range(bd.tree.topLevelItemCount())
@@ -223,6 +264,8 @@ def main() -> int:
     bd.close()
     sp.deactivate()
     check(not win.canvas_b.isVisible() and win.canvas.only_ids is None, "'⇆ Abgleich' off: back to the single view")
+    check(win.sidebar._filter == "all" and win.sidebar.filter_combo.findData("cmp_common") < 0
+          and win.sidebar.calc_line.isHidden(), "…and the list is back on its filter, without ticks")
 
     # backups travel in a package only when asked
     from erysreview import package as pkg

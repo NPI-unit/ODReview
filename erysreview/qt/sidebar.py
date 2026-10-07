@@ -56,6 +56,9 @@ class QtSidebar(QWidget):
         self._group_items: dict[tuple[str, str], QTreeWidgetItem] = {}
         self._group_of_idx: dict[int, tuple[str, str]] = {}
         self._filter = "all"
+        # Abgleich: {"common", "excluded", "differs", "on_tick"} — see set_compare
+        self._cmp: dict | None = None
+        self._filter_before = "all"
         self._building = False
         self._current: int | None = None
         self.setObjectName("sidebar")
@@ -88,7 +91,14 @@ class QtSidebar(QWidget):
         # several images at once (⌘/⇧-click) — for "Helligkeit & Kontrast"
         from PySide6.QtWidgets import QAbstractItemView
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.itemChanged.connect(self._on_item_changed)
         lay.addWidget(self.tree, 1)
+        # Abgleich: how many common images go into the agreement statistics
+        self.calc_line = QLabel(""); self.calc_line.setObjectName("sidebarCalc")
+        self.calc_line.setStyleSheet(f"color: {P['fg_secondary']}; font-size: 12px; padding: 6px 12px;")
+        self.calc_line.setToolTip(S["sb_calc_tip"])
+        self.calc_line.hide()
+        lay.addWidget(self.calc_line)
 
         # ── detail panel: one line, counted cells against the target ──
         # (per-type numbers, counted images, % changed: Info, key I)
@@ -109,10 +119,79 @@ class QtSidebar(QWidget):
         self.folder, self.images, self.grouped = folder, images, grouped
         self._idx_by_name = {p.name: i for i, p in enumerate(images)}
         self._off_idx = set()
+        if self._cmp is not None:       # another folder: the comparison belonged to the old one
+            self._building = True
+            self.clear_compare()
+            self._building = False
         self._rebuild()
 
     def refresh_all(self) -> None:
         self._rebuild()
+
+    # ── Abgleich: filter "common / differences", ticks for the statistics ──
+    CMP_FILTERS = ("cmp_common", "cmp_diffs")
+
+    def set_compare(self, common: set[str], excluded: set[str], differs: Callable,
+                    on_tick: Callable[[list[str], bool], None]) -> None:
+        """Comparison on (or B changed): the list offers "Gemeinsam (A & B)" and
+        "Nur Unterschiede" (and starts on the first), common images get a tick
+        for "goes into the agreement statistics"."""
+        first = self._cmp is None
+        self._cmp = {"common": set(common), "excluded": set(excluded) & set(common),
+                     "differs": differs, "on_tick": on_tick}
+        if first:
+            self._filter_before = self._filter
+            for value, key in (("cmp_common", "sb_filter_common"), ("cmp_diffs", "sb_filter_diffs")):
+                self.filter_combo.addItem(self.S[key], value)
+            self._filter = "cmp_common"
+            self.filter_combo.setCurrentIndex(self.filter_combo.findData("cmp_common"))
+        self.calc_line.show()
+        self._rebuild()
+        if self._current is not None:
+            self.set_idx(self._current)
+
+    def clear_compare(self) -> None:
+        if self._cmp is None:
+            return
+        self._cmp = None
+        for value in self.CMP_FILTERS:
+            i = self.filter_combo.findData(value)
+            if i >= 0:
+                self.filter_combo.removeItem(i)
+        if self._filter in self.CMP_FILTERS:
+            self._filter = self._filter_before
+        self.filter_combo.setCurrentIndex(max(0, self.filter_combo.findData(self._filter)))
+        self.calc_line.hide()
+        self._rebuild()
+        if self._current is not None:
+            self.set_idx(self._current)
+
+    def _update_calc_line(self) -> None:
+        c = self._cmp
+        if c is None:
+            return
+        present = {p.stem for p in self.images} & c["common"]
+        self.calc_line.setText(self.S["sb_in_calc"].format(n=len(present - c["excluded"]), total=len(present)))
+
+    def _on_item_changed(self, item: QTreeWidgetItem, _col: int) -> None:
+        if self._building or self._cmp is None:
+            return
+        kind = item.data(0, ROLE_KIND)
+        ticked = item.checkState(0) == Qt.Checked
+        if kind == "img":
+            stems = [self.images[int(item.data(0, ROLE_KEY))].stem]
+        elif kind == "sub":
+            _, tp, sub = item.data(0, ROLE_KEY).split("::", 2)
+            stems = [i.path.stem for i in self.grouped.tree[tp][sub] if i.path.stem in self._cmp["common"]]
+        else:
+            return
+        self._just_ticked = True        # the click that follows is the tick, not "open"
+        ex = self._cmp["excluded"]
+        self._cmp["excluded"] = (ex - set(stems)) if ticked else (ex | set(stems))
+        self._cmp["on_tick"](stems, ticked)
+        from PySide6.QtCore import QTimer      # not inside the signal that is being handled
+        key = self._group_of_idx.get(int(item.data(0, ROLE_KEY))) if kind == "img" else (tp, sub)
+        QTimer.singleShot(0, lambda: key in self._group_items and self._fill_group(self._group_items[key], *key))
 
     def refresh_group_of(self, idx: int) -> None:
         """Repaint one image's group (rows, counter, details) after an edit."""
@@ -183,6 +262,14 @@ class QtSidebar(QWidget):
         self._update_filter_count()
 
     def _fill_group(self, sub_item: QTreeWidgetItem, tp: str, sub: str) -> None:
+        was = self._building
+        self._building = True          # text and tick changes here are not user ticks
+        try:
+            self._fill_group_rows(sub_item, tp, sub)
+        finally:
+            self._building = was
+
+    def _fill_group_rows(self, sub_item: QTreeWidgetItem, tp: str, sub: str) -> None:
         infos = self.grouped.tree[tp][sub]
         for k in reversed(range(sub_item.childCount())):
             self._item_by_idx.pop(sub_item.child(k).data(0, ROLE_KEY), None)
@@ -204,7 +291,13 @@ class QtSidebar(QWidget):
             if k is not None:      # for the status line, also when the filter hides the row
                 off_k = counted is not None and info.path.stem not in counted and status != "unsegmented"
                 (self._off_idx.add if off_k else self._off_idx.discard)(k)
-            if not passes_filter(self._filter, status, has_note, stale):
+            cmp = self._cmp
+            if self._filter in self.CMP_FILTERS:
+                if cmp is None or info.path.stem not in cmp["common"]:
+                    continue
+                if self._filter == "cmp_diffs" and not cmp["differs"](info):
+                    continue
+            elif not passes_filter(self._filter, status, has_note, stale):
                 continue
             idx = self._idx_by_name.get(info.path.name)
             if idx is None:
@@ -224,9 +317,14 @@ class QtSidebar(QWidget):
                 col = QColor(self.P["fg_muted"])
             it.setForeground(0, QBrush(col))
             it.setToolTip(0, info.path.name + ("\n" + self.S["qt_tip_not_counted"] if off else ""))
+            if self._cmp is not None and info.path.stem in self._cmp["common"]:
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(0, Qt.Unchecked if info.path.stem in self._cmp["excluded"] else Qt.Checked)
+                it.setToolTip(0, it.toolTip(0) + "\n" + self.S["sb_calc_tip"])
             sub_item.addChild(it)
             self._item_by_idx[idx] = it
         self._stale[(tp, sub)] = stale_paths
+        self._tick_group(sub_item, infos)
         name = (self.S["sb_ungrouped"] if sub == UNGROUPED_SUBJECT
                 else f"{self.S['pe_role_subject']} {sub}")
         text = f"{name}  ·  {n_finished}/{len(infos)}"
@@ -249,6 +347,23 @@ class QtSidebar(QWidget):
         self._update_filter_count()
         if self._current is not None and self._group_of_idx.get(self._current) == (tp, sub):
             self._show_details((tp, sub))
+
+    def _tick_group(self, sub_item: QTreeWidgetItem, infos) -> None:
+        """The proband's tick: all / some (◩) / none of its common images."""
+        was = self._building
+        self._building = True
+        common = [i.path.stem for i in infos] if self._cmp is None else \
+            [i.path.stem for i in infos if i.path.stem in self._cmp["common"]]
+        if self._cmp is None or not common:
+            sub_item.setData(0, Qt.CheckStateRole, None)
+            sub_item.setFlags(sub_item.flags() & ~Qt.ItemIsUserCheckable)
+        else:
+            n_in = sum(1 for st in common if st not in self._cmp["excluded"])
+            sub_item.setFlags(sub_item.flags() | Qt.ItemIsUserCheckable)
+            sub_item.setCheckState(0, Qt.Checked if n_in == len(common)
+                                   else Qt.Unchecked if n_in == 0 else Qt.PartiallyChecked)
+        self._building = was
+        self._update_calc_line()
 
     def _counted_stems(self, tp: str, sub: str) -> set[str] | None:
         """Stems of the group's images that count toward the target; None if
@@ -350,6 +465,9 @@ class QtSidebar(QWidget):
 
     def _on_item_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
         if self._building:
+            return
+        if getattr(self, "_just_ticked", False):
+            self._just_ticked = False
             return
         if item.data(0, ROLE_KIND) == "img":
             from PySide6.QtWidgets import QApplication

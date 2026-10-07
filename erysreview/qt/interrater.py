@@ -159,7 +159,9 @@ class InterraterWindow(QDialog):
             self.fig.clear(); self.plot.draw_idle()
             return
         a_dir = ir.a_backup_dir(self.folder, rater) if self.snap_cb.isChecked() else None
-        self.ag = ag = ir.compare(self.folder, self.grouped, self.profile, rater, self.me, a_dir=a_dir)
+        sel = ir.selection(self.folder, rater)          # ticks in the list, metric in the bar
+        self.ag = ag = ir.compare(self.folder, self.grouped, self.profile, rater, self.me, a_dir=a_dir,
+                                  excluded=sel["excluded"], metric=sel["metric"])
         self.title.setText(S["ir_head"].format(a=self.me, b=rater))
         while self.tiles.count():
             w = self.tiles.takeAt(0).widget()
@@ -174,12 +176,12 @@ class InterraterWindow(QDialog):
                                    good(ag.pct_same, 90), P))
         self.tiles.addWidget(_tile(S["ir_kappa"], _fmt(S, k), S["ir_ci"].format(lo=_fmt(S, klo), hi=_fmt(S, khi))
                                    + " · " + S[self._kappa_word(k)], good(k, 0.8), P))
-        self.tiles.addWidget(_tile(S["ir_icc"], _fmt(S, i), S["ir_ci"].format(lo=_fmt(S, ilo), hi=_fmt(S, ihi))
+        self.tiles.addWidget(_tile(S["ir_icc"].format(m=self._metric_name()), _fmt(S, i), S["ir_ci"].format(lo=_fmt(S, ilo), hi=_fmt(S, ihi))
                                    + f" · n = {len(ag.groups)}", good(i, 0.75), P))
         if self.all_cb.isChecked():
             names = [r for r in ir.list_raters(self.folder) if not ir.blind_locked(self.folder, r)[0]]
             many = ir.compare_many(self.folder, self.grouped, self.profile, [None, *names], [self.me, *names],
-                                   a_dir=a_dir)
+                                   a_dir=a_dir, excluded=sel["excluded"], metric=sel["metric"])
             fi, flo, fhi = many.icc
             self.tiles.addWidget(_tile(S["ir_fleiss"].format(k=len(many.raters)), _fmt(S, many.fleiss),
                                        S["ir_fleiss_sub"].format(n=many.n_cells, icc=_fmt(S, fi),
@@ -193,7 +195,13 @@ class InterraterWindow(QDialog):
         self._fill_matrix()
         self._draw_plots()
         self.foot.setText(S["ir_foot"].format(n=ag.n_images, a=ag.manual_only_a, b=ag.manual_only_b,
-                                              me=self.me, rater=rater))
+                                              me=self.me, rater=rater)
+                          + (" " + S["ir_left_out"].format(n=ag.n_left_out) if ag.n_left_out else ""))
+
+    def _metric_name(self) -> str:
+        from ..stats import available_metrics
+        key = self.ag.metric if self.ag else ir.DEFAULT_METRIC
+        return dict(available_metrics(self.profile)).get(key, key)
 
     def _kappa_word(self, k: float) -> str:
         # Landis & Koch (1977)
@@ -244,8 +252,8 @@ class InterraterWindow(QDialog):
         S, P = self.S, self.P
         tp = self.tp_combo.currentData()
         groups = [g for g in self.ag.groups if tp is None or g.tp == tp]
-        x = [g.pct_a for g in groups]
-        y = [g.pct_b for g in groups]
+        x = [g.val_a for g in groups]
+        y = [g.val_b for g in groups]
         self.fig.clear()
         ax1, ax2 = self.fig.subplots(1, 2)
         for ax in (ax1, ax2):
@@ -261,8 +269,8 @@ class InterraterWindow(QDialog):
         ax1.plot([0, hi], [0, hi], linestyle="--", color=P["state_finished"], linewidth=1.3, label="y = x (45°)")
         ax1.scatter(x, y, s=26, color=acc, alpha=0.8, edgecolors="white", linewidths=0.6, zorder=3)
         ax1.set_xlim(0, hi); ax1.set_ylim(0, hi)          # same scale on both axes
-        ax1.set_xlabel(S["ir_axis_a"].format(a=self.ag.rater_a), color=fg, fontsize=9)
-        ax1.set_ylabel(S["ir_axis_b"].format(b=self.ag.rater_b), color=fg, fontsize=9)
+        ax1.set_xlabel(S["ir_axis_a"].format(a=self.ag.rater_a, m=self._metric_name()), color=fg, fontsize=9)
+        ax1.set_ylabel(S["ir_axis_b"].format(b=self.ag.rater_b, m=self._metric_name()), color=fg, fontsize=9)
         ax1.set_title(S["ir_scatter"], color=fg, fontsize=10, loc="left")
         ax1.legend(loc="upper left", fontsize=8, frameon=False, labelcolor=P["state_finished"])
         # Bland-Altman
@@ -277,9 +285,9 @@ class InterraterWindow(QDialog):
             ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3, fontsize=7.5,
                        frameon=False, labelcolor=fg)
         ax2.scatter(means, diffs, s=26, color=acc, alpha=0.8, edgecolors="white", linewidths=0.6, zorder=3)
-        ax2.set_xlabel(S["ir_ba_x"], color=fg, fontsize=9)
+        ax2.set_xlabel(S["ir_ba_x"].format(m=self._metric_name()), color=fg, fontsize=9)
         ax2.set_ylabel(S["ir_ba_y"].format(a=self.ag.rater_a, b=self.ag.rater_b), color=fg, fontsize=9)
-        ax2.set_title(S["ir_ba"], color=fg, fontsize=10, loc="left")
+        ax2.set_title(S["ir_ba"].format(m=self._metric_name()), color=fg, fontsize=10, loc="left")
         if diffs:
             span = max(abs(v) for v in [*diffs, up, lo] if v == v) * 1.25 or 1.0
             ax2.set_ylim(-span, span)

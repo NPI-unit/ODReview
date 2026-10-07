@@ -114,6 +114,28 @@ def main() -> int:
           f"({ag.n_cells - ag.n_same} cells, κ = {ag.kappa[0]:.3f})")
     check(len(ag.groups) == 6 and ir.EXCLUDED in ag.categories, "one pair per proband × timepoint, excluded as category")
 
+    # selection for the statistics: common images, unticked ones, the metric
+    common = ir.common_stems(folder, "Anna")
+    check(len(common) == 11 and s_resegmented not in common, f"common images = rated by A and B ({len(common)})")
+    check(ir.selection(folder, "Anna") == {"excluded": set(), "metric": "pct_changed_2000"},
+          "default: every image, % verändert pro 2000")
+    ir.set_excluded(folder, "Anna", [s0], True)
+    sel = ir.selection(folder, "Anna")
+    ag_x = ir.compare(folder, grouped, prof, "Anna", "Finn", excluded=sel["excluded"], metric=sel["metric"])
+    check(ag_x.n_images == 10 and ag_x.n_left_out == 1 and ag_x.n_cells == 10 * 16,
+          "an unticked image leaves κ, matrix and ICC")
+    check(ag_x.n_same == ag_x.n_cells, "…here exactly the one that differed")
+    g = next(g for g in ag.groups if g.pct_a != g.pct_b)
+    check(abs(g.val_a - g.pct_a * prof.target_cells / g.active_a) < 1e-9,
+          "default metric = % verändert × target / counted")
+    ir.set_metric(folder, "Anna", "rbc")
+    ag_r = ir.compare(folder, grouped, prof, "Anna", "Finn", metric=ir.selection(folder, "Anna")["metric"])
+    check(all(gr.val_a == gr.active_a and gr.val_b == gr.active_b for gr in ag_r.groups) and ag_r.metric == "rbc",
+          "metric 'RBC gesamt' compares the counted cells")
+    check(ir.image_differs(folder, next(i for d in grouped.tree.values() for l in d.values() for i in l if i.path.stem == s0), prof, "Anna"),
+          "image_differs finds the image A and B rate differently")
+    ir.set_excluded(folder, "Anna", [s0], False); ir.set_metric(folder, "Anna", ir.DEFAULT_METRIC)
+
     # broken package: every mask different → refused
     saved = {}
     for nm in names:
@@ -158,7 +180,7 @@ def main() -> int:
     QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
     w._export(str(csv_path))
     text = csv_path.read_text(encoding="utf-8-sig")
-    check("cohen_kappa" in text and "icc_2_1_pct_veraendert" in text and csv_path.with_suffix(".png").is_file(),
+    check("cohen_kappa" in text and "icc_2_1_pct_changed_2000" in text and csv_path.with_suffix(".png").is_file(),
           "export writes cells, groups, summary and the figure")
     w.close(); tmp.cleanup()
     print(f"OK — {CHECKS} checks: second ratings only with identical masks; κ, ICC, heatmap and plots.")

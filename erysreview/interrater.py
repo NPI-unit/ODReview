@@ -15,7 +15,8 @@ cells exist for one rater only; they are counted, not compared.
 
 Measures:
   - percent agreement and Cohen's κ (with 95 % CI) over all compared cells
-  - per proband × timepoint "% verändert" for both raters, and on these
+  - per proband × timepoint a chosen metric (default "% verändert pro
+    2000"; selection.json per B, with the images left out) for both raters, and on these
     pairs ICC(2,1) — two-way random, absolute agreement, single rater
     (Shrout & Fleiss 1979; McGraw & Wong 1996 for the CI) — and Bland-Altman
     (mean difference, ±1.96 SD limits of agreement).
@@ -214,6 +215,132 @@ def set_decision(folder: Path, rater: str, stem: str, cid: int, value: str | Non
     write_json_atomic(rater_dir(folder, rater) / "decisions.json", d)
 
 
+# ── what goes into the agreement statistics (per B) ──
+DEFAULT_METRIC = "pct_changed_2000"
+
+
+def _selection_path(folder: Path, rater: str) -> Path:
+    return rater_dir(folder, rater) / "auswahl.json"
+
+
+def selection(folder: Path, rater: str) -> dict:
+    """{"excluded": set of stems left out of the statistics, "metric": key}.
+    Default: every common image, "% verändert pro 2000"."""
+    try:
+        d = json.loads(_selection_path(folder, rater).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        d = {}
+    return {"excluded": set(d.get("excluded") or []), "metric": d.get("metric") or DEFAULT_METRIC}
+
+
+def _write_selection(folder: Path, rater: str, sel: dict) -> None:
+    write_json_atomic(_selection_path(folder, rater),
+                      {"excluded": sorted(sel["excluded"]), "metric": sel["metric"]})
+
+
+def set_excluded(folder: Path, rater: str, stems, excluded: bool) -> None:
+    sel = selection(folder, rater)
+    sel["excluded"] = (sel["excluded"] | set(stems)) if excluded else (sel["excluded"] - set(stems))
+    _write_selection(folder, rater, sel)
+
+
+def set_metric(folder: Path, rater: str, metric: str) -> None:
+    sel = selection(folder, rater)
+    sel["metric"] = metric
+    _write_selection(folder, rater, sel)
+
+
+def common_stems(folder: Path, rater: str) -> set[str]:
+    """Images both A and B have rated (a review in both namespaces)."""
+    def stems(d: Path) -> set[str]:
+        return {f.name[:-len("_review.json")] for f in d.glob("*_review.json")} if d.is_dir() else set()
+    return stems(review_dir(folder, None)) & stems(rater_dir(folder, rater))
+
+
+_PAIR_CACHE: dict[tuple, tuple | None] = {}
+
+
+def _mtime(p: Path | None) -> float:
+    try:
+        return p.stat().st_mtime if p is not None else 0.0
+    except OSError:
+        return 0.0
+
+
+def pair_cats(folder: Path, info, profile: ProfileData, rater_b: str):
+    """(A's categories, B's categories — mask cells plus counted manual cells —,
+    differs) for one image, A as it is now; None if not comparable. Cached on
+    the review and mask file times, so list filters and the proband line do
+    not reload masks on every click."""
+    from .cellpose_runner import mask_read_paths
+    from .counts import profile_signature
+    stem = info.path.stem
+    key = (str(folder), rater_b, stem, profile_signature(profile),
+           _mtime(review_dir(folder, None) / f"{stem}_review.json"),
+           _mtime(rater_dir(folder, rater_b) / f"{stem}_review.json"),
+           _mtime(mask_read_paths(folder, info.path)[0]))
+    if key in _PAIR_CACHE:
+        return _PAIR_CACHE[key]
+    pair = _image_pair(folder, info, profile, None, rater_b)
+    out = None
+    if pair is not None and pair != "changed":
+        ids, auto, ra, rb, _m = pair
+        ca, cb = categories(ids, auto, ra, profile), categories(ids, auto, rb, profile)
+        default = profile.default_type_key()
+        out = (list(ca.values()) + _manual(ra, default), list(cb.values()) + _manual(rb, default),
+               any(ca[c] != cb[c] for c in ids))
+    if len(_PAIR_CACHE) > 4000:
+        _PAIR_CACHE.clear()
+    _PAIR_CACHE[key] = out
+    return out
+
+
+def _manual(rv: ReviewState, default: str) -> list[str]:
+    return [rv.types.get(str(m.cell_id), default) for m in rv.manual_cells if m.cell_id not in rv.force_excluded]
+
+
+def image_differs(folder: Path, info, profile: ProfileData, rater_b: str) -> bool:
+    """Does A (now) rate at least one cell of this image differently from B?"""
+    pc = pair_cats(folder, info, profile, rater_b)
+    return bool(pc and pc[2])
+
+
+def group_values(folder: Path, infos, profile: ProfileData, rater_b: str, excluded: set[str],
+                 metric: str) -> tuple[float, float, int] | None:
+    """The metric for A (now) and B over one proband's ticked common images:
+    (A, B, images); None if there is none."""
+    target = max(1, profile.target_cells)
+    ga: list[str] = []
+    gb: list[str] = []
+    n = 0
+    for info in infos:
+        if info.path.stem in excluded:
+            continue
+        pc = pair_cats(folder, info, profile, rater_b)
+        if pc is None:
+            continue
+        ga += pc[0]; gb += pc[1]; n += 1
+    return (metric_of(ga, metric, target), metric_of(gb, metric, target), n) if n else None
+
+
+def group_record(cats: list[str], target: int) -> dict:
+    """A rater's group as a stats record (stats.metric_value reads it), from
+    the categories of all its cells (EXCLUDED ones do not count)."""
+    act = [c for c in cats if c != EXCLUDED]
+    by_type: dict[str, int] = {}
+    for c in act:
+        by_type[c] = by_type.get(c, 0) + 1
+    n = len(act)
+    pct = 100.0 * (n - by_type.get("normal", 0)) / n if n else 0.0
+    return {"rbc": n, "by_type": by_type, "pct_changed": pct,
+            "pct_changed_2000": pct * target / n if n else 0.0}
+
+
+def metric_of(cats: list[str], metric: str, target: int) -> float:
+    from .stats import metric_value
+    return metric_value(group_record(cats, target), metric)
+
+
 def take_cell(target: ReviewState, source: ReviewState, cid: int) -> dict:
     """Give `target` (A) the rating `source` (B) has for mask cell `cid`:
     type and counted / excluded / re-included. Returns what A had before
@@ -385,6 +512,8 @@ class GroupPair:
     active_b: int
     pct_a: float          # % verändert, rater A
     pct_b: float
+    val_a: float = 0.0    # the chosen metric (ICC, Bland-Altman, plots)
+    val_b: float = 0.0
 
 
 @dataclass
@@ -405,6 +534,8 @@ class Agreement:
     per_image: list[tuple[str, int, int]] = field(default_factory=list)   # (name, n, same)
     cells: list[tuple[str, int, str, str]] = field(default_factory=list)  # (image, id, A, B)
     n_masks_changed: int = 0                     # left out: masks changed since a rating
+    metric: str = DEFAULT_METRIC
+    n_left_out: int = 0                          # common images unticked in the list
 
     @property
     def pct_same(self) -> float:
@@ -441,12 +572,17 @@ def _image_pair(folder: Path, info, profile: ProfileData, base: str | None, rate
 
 
 def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: str = "",
-            base: str | None = None, a_dir: Path | None = None) -> Agreement:
+            base: str | None = None, a_dir: Path | None = None, excluded: set[str] | None = None,
+            metric: str = DEFAULT_METRIC) -> Agreement:
     """Rating A (`base`; None = the main reviews) against `rater_b`, over
-    every image both have on unchanged masks. `rater_a` is A's display name."""
+    every image both have on unchanged masks, except the stems in `excluded`
+    (unticked in the list). ICC and Bland-Altman run on `metric` per group.
+    `rater_a` is A's display name."""
+    excluded = excluded or set()
+    target = max(1, profile.target_cells)
     from .grouping import UNGROUPED_TIMEPOINT
     a_all, b_all, cells, per_image, groups = [], [], [], [], []
-    man_a = man_b = n_images = n_changed = 0
+    man_a = man_b = n_images = n_changed = n_left = 0
     default = profile.default_type_key()
     for tp in grouped.timepoints():
         if tp == UNGROUPED_TIMEPOINT:
@@ -456,6 +592,9 @@ def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: 
             gb: list[str] = []
             n_grp = 0
             for info in grouped.tree[tp][sub]:
+                if info.path.stem in excluded:
+                    n_left += load_review(folder, rater_b, info.path.stem) is not None
+                    continue
                 pair = _image_pair(folder, info, profile, base, rater_b, a_dir)
                 if pair == "changed":
                     n_changed += 1
@@ -482,7 +621,8 @@ def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: 
             if n_grp:
                 na, pa = _pct_changed(dict(enumerate(ga)), [])
                 nb, pb = _pct_changed(dict(enumerate(gb)), [])
-                groups.append(GroupPair(tp, sub, n_grp, na, nb, pa, pb))
+                groups.append(GroupPair(tp, sub, n_grp, na, nb, pa, pb,
+                                        metric_of(ga, metric, target), metric_of(gb, metric, target)))
     order = [t.key for t in profile.cell_types]
     present = set(a_all) | set(b_all)
     cats = [c for c in order if c in present] + sorted(present - set(order) - {EXCLUDED}) + \
@@ -491,11 +631,12 @@ def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: 
     m = np.zeros((len(cats), len(cats)), dtype=int)
     for x, y in zip(a_all, b_all):
         m[idx[x], idx[y]] += 1
-    xa, yb = [g.pct_a for g in groups], [g.pct_b for g in groups]
+    xa, yb = [g.val_a for g in groups], [g.val_b for g in groups]
     ag = Agreement(rater_a or "A", rater_b, cats, m, len(a_all), int(np.trace(m)) if len(cats) else 0,
                    cohen_kappa(a_all, b_all), groups, icc_2_1(xa, yb), bland_altman(xa, yb),
                    n_images, man_a, man_b, per_image, cells)
     ag.n_masks_changed = n_changed
+    ag.metric, ag.n_left_out = metric, n_left
     return ag
 
 
@@ -549,13 +690,17 @@ class MultiAgreement:
     n_images: int
     fleiss: float
     icc: tuple[float, float, float]
-    groups: list[tuple[str, str, list[float]]]       # tp, sub, % verändert per rater
+    groups: list[tuple[str, str, list[float]]]       # tp, sub, the metric per rater
 
 
 def compare_many(folder: Path, grouped, profile: ProfileData, ratings: list[str | None],
-                 labels: list[str], a_dir: Path | None = None) -> MultiAgreement:
+                 labels: list[str], a_dir: Path | None = None, excluded: set[str] | None = None,
+                 metric: str = DEFAULT_METRIC) -> MultiAgreement:
     """All ratings at once, on the images every one of them has (unchanged
-    masks): Fleiss' κ over the cells, ICC(2,1) over the groups' % verändert."""
+    masks), without `excluded`: Fleiss' κ over the cells, ICC(2,1) over the
+    groups' `metric`."""
+    excluded = excluded or set()
+    target = max(1, profile.target_cells)
     from .cellpose_runner import load_cached_masks
     from .grouping import UNGROUPED_TIMEPOINT
     rows: list[list[str]] = []
@@ -569,6 +714,8 @@ def compare_many(folder: Path, grouped, profile: ProfileData, ratings: list[str 
             n_grp = 0
             for info in grouped.tree[tp][sub]:
                 stem = info.path.stem
+                if stem in excluded:
+                    continue
                 def _a():
                     if a_dir is not None:
                         p = a_dir / f"{stem}_review.json"
@@ -589,7 +736,7 @@ def compare_many(folder: Path, grouped, profile: ProfileData, ratings: list[str 
                 n_grp += 1
                 n_images += 1
             if n_grp:
-                groups.append((tp, sub, [_pct_changed(dict(enumerate(v)), [])[1] for v in per_rater]))
+                groups.append((tp, sub, [metric_of(v, metric, target) for v in per_rater]))
     allcats = sorted({c for r in rows for c in r})
     idx = {c: i for i, c in enumerate(allcats)}
     table = np.zeros((len(rows), len(allcats)), dtype=int)
@@ -610,17 +757,19 @@ def write_csv(ag: Agreement, path: Path, type_names: dict[str, str]) -> None:
         for img, cid, a, b in ag.cells:
             w.writerow([img, cid, name(a), name(b), int(a == b)])
         w.writerow([])
-        w.writerow(["zeitpunkt", "proband", "bilder", f"pct_veraendert_{ag.rater_a}", f"pct_veraendert_{ag.rater_b}"])
+        m = ag.metric.replace("::", "_")
+        w.writerow(["zeitpunkt", "proband", "bilder", f"{m}_{ag.rater_a}", f"{m}_{ag.rater_b}"])
         for g in ag.groups:
-            w.writerow([g.tp, g.sub, g.n_images, f"{g.pct_a:.2f}", f"{g.pct_b:.2f}"])
+            w.writerow([g.tp, g.sub, g.n_images, f"{g.val_a:.2f}", f"{g.val_b:.2f}"])
         w.writerow([])
         k, klo, khi = ag.kappa
         i, ilo, ihi = ag.icc
         md, lo, hi = ag.ba
         for row in (("zellen_verglichen", ag.n_cells), ("uebereinstimmung_pct", f"{ag.pct_same:.2f}"),
                     ("cohen_kappa", f"{k:.3f}"), ("kappa_ci95", f"{klo:.3f}–{khi:.3f}"),
-                    ("icc_2_1_pct_veraendert", f"{i:.3f}"), ("icc_ci95", f"{ilo:.3f}–{ihi:.3f}"),
+                    (f"icc_2_1_{m}", f"{i:.3f}"), ("icc_ci95", f"{ilo:.3f}–{ihi:.3f}"),
                     ("bland_altman_mittlere_differenz", f"{md:.3f}"), ("loa_unten", f"{lo:.3f}"),
                     ("loa_oben", f"{hi:.3f}"), ("manuelle_zellen_nur_A", ag.manual_only_a),
-                    ("manuelle_zellen_nur_B", ag.manual_only_b)):
+                    ("manuelle_zellen_nur_B", ag.manual_only_b),
+                    ("kennzahl", ag.metric), ("bilder_nicht_in_rechnung", ag.n_left_out)):
             w.writerow(row)
