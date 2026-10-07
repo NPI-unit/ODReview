@@ -680,6 +680,10 @@ class SettingsDialog(QDialog):
         v.addWidget(card)
         note = QLabel(S["qt_look_live_note"]); note.setObjectName("checkLine"); note.setWordWrap(True)
         v.addWidget(note)
+        from .about import about_card, uninstall_card
+        v.addSpacing(6)
+        v.addWidget(about_card(self, self.P, S))
+        v.addWidget(uninstall_card(self, self.P, S))
 
     # Rechner · Bearbeiten
     def _page_edit(self, v: QVBoxLayout) -> None:

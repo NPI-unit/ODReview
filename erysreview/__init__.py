@@ -1,3 +1,3 @@
-"""Erys – Single-threaded Tk-shell around matplotlib for Cellpose-based Ery review."""
+"""ErysReview — reviewing Cellpose-segmented erythrocytes (Qt front end)."""
 
-__version__ = "17.5.0"
+__version__ = "18.0.0"
