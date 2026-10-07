@@ -1031,6 +1031,10 @@ class MainWindow(QMainWindow):
             self.show_image(self.ctl.idx)
         elif field == "raters":
             self._after_rater_removed()
+        elif field == "show_cell_numbers":
+            for c in (self.canvas, self.canvas_b):
+                if c is not None and c.image is not None:
+                    c._apply_number_visibility(); c._full_redraw()
 
     def remove_rater(self, name: str, confirm=None) -> bool:
         """'B entfernen …' in the comparison bar (also Einstellungen › Zweitbewertungen)."""

@@ -760,6 +760,8 @@ class CanvasCore:
                 a.set_visible(shown)
 
     def _numbers_shown(self) -> bool:
+        if not getattr(self.settings, "show_cell_numbers", False):
+            return False          # off by default (Einstellungen › Bedienung)
         overlay_on = self._overlay_handle is not None and self._overlay_handle.get_visible()
         return overlay_on and self._is_zoomed_in()
 

@@ -315,6 +315,7 @@ STRINGS = {
         # Settings
         "settings_reviewer":   "Reviewer-Name (für Pakete)",
         "settings_overlay_autoshow": "Overlay beim Bearbeiten automatisch einblenden",
+        "settings_cell_numbers": "Zellnummern über den Zellen anzeigen (beim Hineinzoomen)",
         "qt_menu_edit":        "Bearbeiten",
         "qt_nav_study": "Studie",
         "qt_nav_local": "Nur dieser Rechner",
@@ -1113,6 +1114,7 @@ STRINGS = {
         # Settings
         "settings_reviewer":   "Reviewer name (for packages)",
         "settings_overlay_autoshow": "Show overlay automatically when editing",
+        "settings_cell_numbers": "Show cell numbers over the cells (when zoomed in)",
         "qt_menu_edit":        "Edit",
         "qt_nav_study": "Study",
         "qt_nav_local": "This computer only",

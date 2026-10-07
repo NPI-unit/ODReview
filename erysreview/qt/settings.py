@@ -778,6 +778,9 @@ class SettingsDialog(QDialog):
         ov = QCheckBox(S["settings_overlay_autoshow"]); ov.setChecked(st.overlay_autoshow)
         ov.toggled.connect(lambda on: self._local("overlay_autoshow", bool(on)))
         cv.addWidget(ov)
+        nums = QCheckBox(S["settings_cell_numbers"]); nums.setChecked(st.show_cell_numbers)
+        nums.toggled.connect(lambda on: self._local("show_cell_numbers", bool(on)))
+        cv.addWidget(nums)
         v.addWidget(card)
         for title, field, opts in (
                 ("settings_toolbar", "toolbar_layout",

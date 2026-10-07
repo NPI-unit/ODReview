@@ -83,6 +83,16 @@ def main() -> int:
 
     check(ctl.profile.name == "QtTest" and len(ctl.images) == 3, "the last study and its folder open")
     check(win.canvas.masks is not None and win.canvas.masks.max() == 2, "the segmented image shows its masks")
+    cv0 = win.canvas
+    cv0._is_zoomed_in = lambda: True
+    check(not win.settings.show_cell_numbers and not cv0._numbers_shown(),
+          "cell numbers are off by default, even zoomed in")
+    win.settings.show_cell_numbers = True; win._on_local_setting("show_cell_numbers")
+    check(cv0._numbers_shown() and any(a.get_visible() for a in cv0._number_artists.values()),
+          "Einstellungen › Bedienung turns them on at once")
+    win.settings.show_cell_numbers = False; win._on_local_setting("show_cell_numbers")
+    check(not any(a.get_visible() for a in cv0._number_artists.values()), "…and off again")
+    del cv0._is_zoomed_in
     check(win.empty_btn.isHidden(), "the empty-state button is gone once images show")
     check("[1/3]" in win.status_label.text(), "the status line counts the images")
     from PySide6.QtGui import QAction, QShortcut
