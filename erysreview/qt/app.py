@@ -905,6 +905,9 @@ class MainWindow(QMainWindow):
         from .interrater import compare_package_flow
         name = compare_package_flow(self, self.P, self.S, self.ctl.folder, Path(zip_path))
         if name:
+            self._update_abgleich_ui()               # "⇆ Abgleich" appears at once
+            if self.split.active:
+                self.split.refresh_raters()
             self.open_interrater(name)
 
     def open_interrater(self, rater: str | None = None) -> None:
@@ -1087,6 +1090,7 @@ class MainWindow(QMainWindow):
         if self.ctl.has_images:
             self.sidebar.populate(self.ctl.folder, self.ctl.images, self.ctl.grouped)
             self.show_image(self.ctl.idx)
+        self._update_abgleich_ui()
 
     # ── status / misc ──
     def _update_status(self) -> None:

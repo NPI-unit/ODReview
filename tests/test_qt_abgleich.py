@@ -343,6 +343,19 @@ def main() -> int:
           "the masks and study A's reviews stay untouched")
     check(bk_before <= {b.id for b in backups.list_backups(folder)},
           "the backups ('A vor Abgleich …') stay")
+
+    # importing a second rating shows '⇆ Abgleich' at once
+    from erysreview.qt import interrater as qir
+    real_flow = qir.compare_package_flow
+    def fake_flow(*_a, **_k):
+        ir.create_self_rating(folder, "Janina", [Path(n).stem for n in names])
+        return "Janina"
+    qir.compare_package_flow = fake_flow
+    win.open_interrater = lambda *_a, **_k: None
+    win._compare_package(root / "Janina.zip")
+    qir.compare_package_flow = real_flow
+    check(win.toolbar.btn_abgleich.isVisibleTo(win.toolbar),
+          "after importing a second rating '⇆ Abgleich' is in the toolbar right away")
     win.close()
     from erysreview.qt.tasks import shutdown
     shutdown(); tmp.cleanup()
