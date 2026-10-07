@@ -147,6 +147,27 @@ def main() -> int:
     except ZeroDivisionError:
         check(True, "a worker exception is re-raised on the GUI thread")
 
+    # right button: drag moves the image, a right click opens no remark
+    from types import SimpleNamespace
+    cv = win.canvas
+    cv.reset_zoom()
+    ax = cv.ax
+    (px, py) = ax.transData.transform((30, 30))
+    ev = lambda kind, x, y: SimpleNamespace(button=3, inaxes=ax, x=x, y=y,
+                                            xdata=ax.transData.inverted().transform((x, y))[0],
+                                            ydata=ax.transData.inverted().transform((x, y))[1])
+    notes = []
+    cv.note_callback = notes.append
+    before = ax.get_xlim()
+    cv._on_button_press(ev("press", px, py))
+    cv._on_motion(ev("move", px - 40, py))
+    cv._on_button_release(ev("release", px - 40, py))
+    check(ax.get_xlim() != before and not notes and not win.notebox.visible,
+          "right-drag moves the image; no remark opens")
+    cv._on_button_press(ev("press", px, py)); cv._on_button_release(ev("release", px, py))
+    check(not notes, "a plain right click does nothing")
+    cv.reset_zoom()
+
     # helper grid (exploratory): G cycles, choice is kept per computer
     win.cycle_grid()
     from erysreview.persistence import AppSettings as _AS

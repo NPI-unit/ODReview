@@ -847,24 +847,16 @@ class CanvasCore:
             elif not self.settings.overlay_visible and tool in (TOOL_ADD, TOOL_REMOVE, TOOL_TYPE):
                 # Auto-show is off: the edit saved but nothing on screen moved.
                 self.on_edit_overlay_hidden()
-        elif event.button == 3:
-            # Remarks are occasional, so they get their own gesture instead of a
-            # fourth tool: no mode switch, available whatever tool is active.
-            # matplotlib normalises button numbers (3 = right) on every platform,
-            # unlike raw Tk where macOS reports right-click as Button-2.
-            cid = self._find_cell_at(x, y)
-            if cid is not None:
-                revealed = self._autoshow_overlay()
-                self.note_callback(cid)
-                if revealed:
-                    self.on_overlay_autoshown()
-        elif event.button == 2:
+        elif event.button in (2, 3):
+            # Right (or middle) button held: move the image. A plain right
+            # click does nothing — remarks only through the Anmerkung tool.
+            # matplotlib normalises button numbers (3 = right) on every platform.
             self._pan_start = (
                 event.x, event.y, *self.ax.get_xlim(), *self.ax.get_ylim(),
             )
 
     def _on_button_release(self, event):
-        if event.button == 2:
+        if event.button in (2, 3):
             self._pan_start = None
 
     def _on_motion(self, event):
