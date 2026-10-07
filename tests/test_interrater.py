@@ -117,8 +117,18 @@ def main() -> int:
     # selection for the statistics: common images, unticked ones, the metric
     common = ir.common_stems(folder, "Anna")
     check(len(common) == 11 and s_resegmented not in common, f"common images = rated by A and B ({len(common)})")
-    check(ir.selection(folder, "Anna") == {"excluded": set(), "metric": "pct_changed_2000"},
-          "default: every image, % verändert pro 2000")
+    check(ir.selection(folder, "Anna") == {"excluded": set(), "metric": "pct_changed_2000", "diffs": "all"},
+          "default: every image, % verändert pro 2000, all differences")
+    X = ir.EXCLUDED
+    check(all(ir.is_shown_diff(a, b, "all") for a, b in (("normal", X), ("normal", "stechapfel"))),
+          "'Alle': every difference")
+    check(ir.is_shown_diff("normal", "stechapfel", "changed") and ir.is_shown_diff("stechapfel", X, "changed")
+          and ir.is_shown_diff("elongiert", "stechapfel", "changed")
+          and not ir.is_shown_diff("normal", X, "changed") and not ir.is_shown_diff(X, "normal", "changed"),
+          "'Nur veränderte': a type other than normal on either side; normal ↔ excluded is skipped")
+    ir.set_diff_mode(folder, "Anna", "changed")
+    check(ir.selection(folder, "Anna")["diffs"] == "changed", "the difference mode is stored per B")
+    ir.set_diff_mode(folder, "Anna", "all")
     ir.set_excluded(folder, "Anna", [s0], True)
     sel = ir.selection(folder, "Anna")
     ag_x = ir.compare(folder, grouped, prof, "Anna", "Finn", excluded=sel["excluded"], metric=sel["metric"])

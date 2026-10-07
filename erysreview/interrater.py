@@ -217,6 +217,7 @@ def set_decision(folder: Path, rater: str, stem: str, cid: int, value: str | Non
 
 # ── what goes into the agreement statistics (per B) ──
 DEFAULT_METRIC = "pct_changed_2000"
+DIFF_MODES = ("all", "changed")
 
 
 def _selection_path(folder: Path, rater: str) -> Path:
@@ -230,12 +231,13 @@ def selection(folder: Path, rater: str) -> dict:
         d = json.loads(_selection_path(folder, rater).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         d = {}
-    return {"excluded": set(d.get("excluded") or []), "metric": d.get("metric") or DEFAULT_METRIC}
+    return {"excluded": set(d.get("excluded") or []), "metric": d.get("metric") or DEFAULT_METRIC,
+            "diffs": d.get("diffs") if d.get("diffs") in DIFF_MODES else "all"}
 
 
 def _write_selection(folder: Path, rater: str, sel: dict) -> None:
     write_json_atomic(_selection_path(folder, rater),
-                      {"excluded": sorted(sel["excluded"]), "metric": sel["metric"]})
+                      {"excluded": sorted(sel["excluded"]), "metric": sel["metric"], "diffs": sel["diffs"]})
 
 
 def set_excluded(folder: Path, rater: str, stems, excluded: bool) -> None:
@@ -250,10 +252,27 @@ def set_metric(folder: Path, rater: str, metric: str) -> None:
     _write_selection(folder, rater, sel)
 
 
+def set_diff_mode(folder: Path, rater: str, mode: str) -> None:
+    sel = selection(folder, rater)
+    sel["diffs"] = mode if mode in DIFF_MODES else "all"
+    _write_selection(folder, rater, sel)
+
+
+def is_shown_diff(a: str, b: str, mode: str, default: str = "normal") -> bool:
+    """Which differences the comparison walks through. "all": every one.
+    "changed": only where A or B gave a type other than normal — not the ones
+    that are just normal ↔ excluded (counted or not)."""
+    if mode != "changed":
+        return True
+    return any(c not in (default, EXCLUDED) for c in (a, b))
+
+
 def common_stems(folder: Path, rater: str) -> set[str]:
     """Images both A and B have rated (a review in both namespaces)."""
     def stems(d: Path) -> set[str]:
-        return {f.name[:-len("_review.json")] for f in d.glob("*_review.json")} if d.is_dir() else set()
+        # not macOS' "._…" companions (exFAT/FAT drives such as USB sticks)
+        return ({f.name[:-len("_review.json")] for f in d.glob("*_review.json") if not f.name.startswith("._")}
+                if d.is_dir() else set())
     return stems(review_dir(folder, None)) & stems(rater_dir(folder, rater))
 
 
@@ -287,8 +306,9 @@ def pair_cats(folder: Path, info, profile: ProfileData, rater_b: str):
         ids, auto, ra, rb, _m = pair
         ca, cb = categories(ids, auto, ra, profile), categories(ids, auto, rb, profile)
         default = profile.default_type_key()
+        diffs = [(ca[c], cb[c]) for c in ids if ca[c] != cb[c]]
         out = (list(ca.values()) + _manual(ra, default), list(cb.values()) + _manual(rb, default),
-               any(ca[c] != cb[c] for c in ids))
+               {m: any(is_shown_diff(a, b, m, default) for a, b in diffs) for m in DIFF_MODES})
     if len(_PAIR_CACHE) > 4000:
         _PAIR_CACHE.clear()
     _PAIR_CACHE[key] = out
@@ -299,10 +319,11 @@ def _manual(rv: ReviewState, default: str) -> list[str]:
     return [rv.types.get(str(m.cell_id), default) for m in rv.manual_cells if m.cell_id not in rv.force_excluded]
 
 
-def image_differs(folder: Path, info, profile: ProfileData, rater_b: str) -> bool:
-    """Does A (now) rate at least one cell of this image differently from B?"""
+def image_differs(folder: Path, info, profile: ProfileData, rater_b: str, mode: str = "all") -> bool:
+    """Does A (now) rate at least one cell of this image differently from B
+    (in the sense of `mode`, see is_shown_diff)?"""
     pc = pair_cats(folder, info, profile, rater_b)
-    return bool(pc and pc[2])
+    return bool(pc and pc[2].get(mode, False))
 
 
 def group_values(folder: Path, infos, profile: ProfileData, rater_b: str, excluded: set[str],

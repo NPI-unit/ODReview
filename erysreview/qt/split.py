@@ -66,6 +66,14 @@ class SplitController:
             b.clicked.connect(lambda _c=False, k=key: self.set_layout(k))
             self.layout_group.addButton(b); sh.addWidget(b)
         h.addWidget(seg)
+        # which differences: all, or only those with a changed type (not normal ↔ excluded)
+        h.addWidget(QLabel(S["sp_diffs"]))
+        self.diff_combo = QComboBox()
+        self.diff_combo.addItem(S["sp_diffs_all"], "all")
+        self.diff_combo.addItem(S["sp_diffs_changed"], "changed")
+        self.diff_combo.setToolTip(S["sp_diffs_tip"])
+        self.diff_combo.activated.connect(lambda _i: self.set_diff_mode(self.diff_combo.currentData()))
+        h.addWidget(self.diff_combo)
         self.only_cb = QCheckBox(S["sp_only_diffs"]); self.only_cb.toggled.connect(lambda _on: self._apply_only())
         h.addWidget(self.only_cb)
         self.bar.hide()
@@ -181,16 +189,30 @@ class SplitController:
         folder, rater, prof = w.ctl.folder, self.rater, w.ctl.profile
         sel = ir.selection(folder, rater)
         w.sidebar.set_compare(ir.common_stems(folder, rater), sel["excluded"],
-                              lambda info: ir.image_differs(folder, info, prof, rater),
+                              lambda info: ir.image_differs(folder, info, prof, rater, self.diff_mode()),
                               self._on_tick)
 
     def _on_tick(self, stems: list[str], ticked: bool) -> None:
         ir.set_excluded(self.win.ctl.folder, self.rater, stems, not ticked)
         self._update_group_vals()
 
+    def diff_mode(self) -> str:
+        return self.diff_combo.currentData() or "all"
+
+    def set_diff_mode(self, mode: str) -> None:
+        if not self.active:
+            return
+        ir.set_diff_mode(self.win.ctl.folder, self.rater, mode)
+        self.diff_combo.setCurrentIndex(max(0, self.diff_combo.findData(mode)))
+        self.pos = 0
+        self.refresh()
+        self.win.sidebar.refresh_all()
+
     def _fill_metrics(self) -> None:
         from ..stats import available_metrics
-        cur = ir.selection(self.win.ctl.folder, self.rater)["metric"]
+        sel = ir.selection(self.win.ctl.folder, self.rater)
+        cur = sel["metric"]
+        self.diff_combo.setCurrentIndex(max(0, self.diff_combo.findData(sel["diffs"])))
         self.metric_combo.blockSignals(True)
         self.metric_combo.clear()
         for key, label in available_metrics(self.win.ctl.profile):
@@ -271,9 +293,10 @@ class SplitController:
         ca = ir.categories(ids, auto, w.ctl.review, w.ctl.profile)
         cb = ir.categories(ids, auto, self.rb, w.ctl.profile)
         dec = ir.decisions(w.ctl.folder, self.rater).get(w.ctl.current_path.stem, {})
+        mode, default = self.diff_mode(), w.ctl.profile.default_type_key()
         self.diffs = []
         for cid in ids:
-            if ca[cid] != cb[cid] or str(cid) in dec:
+            if (ca[cid] != cb[cid] or str(cid) in dec) and ir.is_shown_diff(ca[cid], cb[cid], mode, default):
                 i = self._infos.get(cid)
                 if i is not None:
                     self.diffs.append((cid, ca[cid], cb[cid], (i.bbox_x0, i.bbox_y0, i.bbox_x1, i.bbox_y1)))

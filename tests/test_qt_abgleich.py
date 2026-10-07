@@ -159,6 +159,10 @@ def main() -> int:
     sp.set_layout("rows")
     check(win.views.orientation() == Qt.Vertical, "'Untereinander' stacks A above B")
     sp.set_layout("side")
+    sp.set_diff_mode("changed")
+    check([d[0] for d in sp.diffs] == [2, 5] and ir.selection(folder, "Finn 2")["diffs"] == "changed",
+          "'Nur veränderte' keeps differences with a type other than normal (Stechapfel ↔ Normal)")
+    sp.set_diff_mode("all")
     sp.only_cb.setChecked(True)
     check(win.canvas.only_ids == {2, 5}, "'Nur Unterschiede' colours only the differing cells")
     sp.only_cb.setChecked(False)

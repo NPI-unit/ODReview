@@ -29,7 +29,10 @@ def main() -> int:
     folder = Path(tempfile.mkdtemp())
     for k in (1, 2):
         rv = ReviewState(); rv.types = {"1": "stechapfel"}; rv.save(folder, f"img{k}")
+    from erysreview.persistence import review_dir
+    (review_dir(folder, None) / "._img1_review.json").write_bytes(b"\x00\x05\x16\x07")  # macOS on exFAT
     b = backups.create(folder, "A vor Abgleich mit Anna", "abgleich")
+    check(not (b.path / "._img1_review.json").exists(), "macOS '._' companion files are not backed up")
     check(b.n_images == 2 and (b.path / "img1_review.json").is_file() and b.kind == "abgleich",
           "a backup copies the review files of that moment")
     check(not list(b.path.glob("*masks*")), "…and nothing else (no images, no masks)")

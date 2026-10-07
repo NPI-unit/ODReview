@@ -47,8 +47,13 @@ def backups_dir(folder: Path) -> Path:
     return cache_dir_for(folder) / "sicherungen"
 
 
+def _reviews_in(d: Path) -> list[Path]:
+    """Review files — not macOS' "._…" companions on exFAT/FAT drives."""
+    return sorted(f for f in d.glob("*_review.json") if not f.name.startswith("._"))
+
+
 def _main_reviews(folder: Path) -> list[Path]:
-    return sorted(review_dir(folder, None).glob("*_review.json"))
+    return _reviews_in(review_dir(folder, None))
 
 
 def create(folder: Path, name: str, kind: str = "manual") -> Backup:
@@ -121,11 +126,11 @@ def restore(folder: Path, bid: str, auto_name: str = "A vor dem Laden") -> Backu
         raise FileNotFoundError(bid)
     before = create(folder, auto_name, "auto")
     target = review_dir(folder, None)
-    keep = {f.name for f in b.path.glob("*_review.json")}
+    keep = {f.name for f in _reviews_in(b.path)}
     for f in _main_reviews(folder):
         if f.name not in keep:              # rated after the backup → not in that state
             f.unlink()
-    for f in b.path.glob("*_review.json"):
+    for f in _reviews_in(b.path):
         shutil.copyfile(f, target / f.name)
     return before
 
