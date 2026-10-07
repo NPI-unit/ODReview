@@ -490,9 +490,14 @@ class MainWindow(QMainWindow):
         self._save_review()
         self._set_status(self.S["eval_toggled_in" if state == "in" else "eval_toggled_out"])
 
+    def _views(self) -> list:
+        """A, and in the comparison B too — overlay and grid switch both."""
+        return [c for c in (self.canvas, self.canvas_b) if c is not None]
+
     def toggle_overlay(self) -> None:
         self.settings.overlay_visible = not self.settings.overlay_visible
-        self.canvas.set_overlay_visible(self.settings.overlay_visible)
+        for c in self._views():
+            c.set_overlay_visible(self.settings.overlay_visible)
         self.settings.save()
 
     # ── comparison in the main window (split.py) & backups of A ──
@@ -611,7 +616,8 @@ class MainWindow(QMainWindow):
     def set_grid(self, n: int) -> None:
         self.settings.grid_n = n
         self.settings.save()
-        self.canvas.set_grid(n)
+        for c in self._views():
+            c.set_grid(n)
         self._sync_grid_menu()
 
     def cycle_grid(self) -> None:
@@ -626,6 +632,8 @@ class MainWindow(QMainWindow):
             a.setChecked(n == (self.settings.grid_n or 0))
 
     def _on_overlay_autoshown(self) -> None:
+        if self.canvas_b is not None:            # an edit on A revealed the overlay: B follows
+            self.canvas_b.set_overlay_visible(True)
         self.settings.save()
         self._set_status(self.S["overlay_auto_shown"])
 

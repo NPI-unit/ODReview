@@ -165,6 +165,17 @@ def main() -> int:
     check(len(sp.diffs) == 2 and [d[0] for d in sp.diffs] == [2, 5], f"image 1: cells 2 and 5 differ ({sp.diffs})")
     OUT.mkdir(exist_ok=True); win.grab().save(str(OUT / "qt_split.png"))
 
+    ov0 = win.settings.overlay_visible
+    win.toggle_overlay()
+    check(win.canvas._overlay_handle.get_visible() == win.canvas_b._overlay_handle.get_visible() == (not ov0),
+          "overlay on/off switches A and B together")
+    win.toggle_overlay()
+    check(win.canvas_b._overlay_handle.get_visible() == ov0, "…and back")
+    win.set_grid(3)
+    check(win.canvas.grid_n == win.canvas_b.grid_n == 3 and len(win.canvas_b._grid_artists) == len(win.canvas._grid_artists) > 0,
+          "the helper grid shows on A and B")
+    win.set_grid(0)
+    check(win.canvas_b.grid_n == 0 and not win.canvas_b._grid_artists, "…and goes off on both")
     win.canvas.set_view((10, 60), (60, 10)); win.canvas._notify_view()
     check(tuple(win.canvas_b.ax.get_xlim()) == (10, 60), "zoom and pan move both sides together")
     sp.set_layout("rows")
