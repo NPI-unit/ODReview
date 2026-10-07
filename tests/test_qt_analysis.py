@@ -132,6 +132,22 @@ def main() -> int:
     sw.resize(1100, 720); sw.show(); QTest.qWait(50)
     check(sw.table.topLevelItemCount() == 2, "statistics by timepoint: two groups (d0, d7)")
     sw.grab().save(str(OUT / "qt_stats.png"))
+    subs = {r["subject"] for r in sw.records}
+    check(len(sw.ax_traj.get_lines()) == len(subs) and [t.get_text() for t in sw.ax_traj.get_xticklabels()] == ["d0", "d7"],
+          "trajectories: one line per proband over the timepoints")
+    ax_items = [it for it in sw.hover.items if it[0] is sw.ax_traj]
+    _ax, xs, ys, labels = ax_items[0]
+    px, py = sw.ax_traj.transData.transform((xs[0], ys[0]))
+    hit = sw.hover.nearest(sw.ax_traj, px + 2, py - 2)
+    check(hit is not None and "Proband" in hit[2] and "d0" in hit[2],
+          f"pointing at a dot names proband and timepoint ({hit and hit[2]!r})")
+    check(sw.hover.nearest(sw.ax, -500, -500) is None, "…and nothing away from the dots")
+    box_items = [it for it in sw.hover.items if it[0] is sw.ax]
+    check(sum(len(it[1]) for it in box_items) == len(sw.records), "every value is a named dot in the box plot")
+    sw.profile.timepoint_order = ["d7", "d0"]; sw.redraw()
+    check(sw.table.topLevelItem(0).text(0) == "d7" and sw.ax_traj.get_xticklabels()[0].get_text() == "d7",
+          "the study's timepoint order is used (d7 before d0)")
+    sw.profile.timepoint_order = []; sw.redraw()
     sw.by.buttons()[1].setChecked(True); QTest.qWait(20)
     check(sw.table.topLevelItemCount() == 2 and sw.table.topLevelItem(0).text(0) == "01",
           "…and by subject")

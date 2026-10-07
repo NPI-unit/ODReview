@@ -71,7 +71,7 @@ _FIELDS: list[tuple[str, str]] = [
     ("overview_xlsx", "export"), ("overlay_png", "export"),
     ("copy_originals_to_outputs", "export"), ("use_gpu", "export"),
     ("overlay_alpha", "display"), ("type_outlines_enabled", "display"),
-    ("show_margin_overlay", "display"),
+    ("show_margin_overlay", "display"), ("timepoint_order", "display"),
 ]
 
 

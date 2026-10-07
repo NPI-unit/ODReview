@@ -106,14 +106,38 @@ def describe(values: list[float]) -> dict:
             "min": s[0], "max": s[-1], "q1": q1, "q3": q3}
 
 
-def grouped_values(records: list[dict], by: str, metric_key: str
+def grouped_values(records: list[dict], by: str, metric_key: str, tp_order: list[str] | None = None
                    ) -> dict[str, list[float]]:
-    """Group metric values by 'timepoint' or 'subject'. Returns ordered dict."""
-    out: dict[str, list[float]] = {}
+    """Group metric values by 'timepoint' (in the study's order) or 'subject'.
+    Returns ordered dict."""
+    return {k: [v for v, _r in pts] for k, pts in grouped_points(records, by, metric_key, tp_order).items()}
+
+
+def grouped_points(records: list[dict], by: str, metric_key: str, tp_order: list[str] | None = None
+                   ) -> dict[str, list[tuple[float, dict]]]:
+    """Like grouped_values, with the record behind every value — what the
+    plots need to name a point (Proband · Zeitpunkt)."""
+    from .grouping import order_timepoints
+    out: dict[str, list[tuple[float, dict]]] = {}
     for r in records:
-        key = r[by]
-        out.setdefault(key, []).append(metric_value(r, metric_key))
-    return dict(sorted(out.items(), key=lambda kv: natural_key(kv[0])))
+        out.setdefault(r[by], []).append((metric_value(r, metric_key), r))
+    keys = order_timepoints(out, tp_order) if by == "timepoint" else sorted(out, key=natural_key)
+    return {k: out[k] for k in keys}
+
+
+def trajectories(records: list[dict], metric_key: str, tp_order: list[str] | None = None
+                 ) -> tuple[list[str], dict[str, list[tuple[int, float, dict]]]]:
+    """(timepoints in order, {subject: [(timepoint index, value, record)]}) —
+    one line per proband over the timepoints."""
+    from .grouping import order_timepoints
+    tps = order_timepoints({r["timepoint"] for r in records}, tp_order)
+    pos = {t: i for i, t in enumerate(tps)}
+    lines: dict[str, list[tuple[int, float, dict]]] = {}
+    for r in records:
+        lines.setdefault(r["subject"], []).append((pos[r["timepoint"]], metric_value(r, metric_key), r))
+    for sub in lines:
+        lines[sub].sort(key=lambda t: t[0])
+    return tps, {s: lines[s] for s in sorted(lines, key=natural_key)}
 
 
 def fmt_duration(seconds: float) -> str:

@@ -42,6 +42,8 @@ class ImageGroupInfo:
 class GroupedFolder:
     """All images in a folder organized as timepoint -> subject -> [images]."""
     profile_name: str
+    # the study's timepoint order (ProfileData.timepoint_order)
+    tp_order: list[str] = field(default_factory=list)
     # tree[timepoint][subject] -> list of ImageGroupInfo sorted by image_num
     tree: dict[str, dict[str, list[ImageGroupInfo]]] = field(default_factory=dict)
     # flat: keep the original list order for index-based navigation
@@ -55,10 +57,9 @@ class GroupedFolder:
         return len(self.flat)
 
     def timepoints(self) -> list[str]:
-        # Natural order (d2 < d7 < d14), ungrouped always last.
-        keys = list(self.tree.keys())
-        keys.sort(key=lambda k: (k == UNGROUPED_TIMEPOINT, natural_key(k)))
-        return keys
+        # The study's order first, the rest in natural order (d2 < d7 < d14),
+        # ungrouped always last.
+        return order_timepoints(self.tree.keys(), self.tp_order)
 
     def subjects_in(self, timepoint: str) -> list[str]:
         keys = list(self.tree.get(timepoint, {}).keys())
@@ -111,8 +112,14 @@ def parse_filename(filename: str, profile: ProfileData) -> ImageGroupInfo | None
     )
 
 
+def order_timepoints(keys, order: list[str] | None = None) -> list[str]:
+    """Timepoints in the study's order; ones not in it follow naturally sorted."""
+    pos = {t: i for i, t in enumerate(order or [])}
+    return sorted(keys, key=lambda k: (k == UNGROUPED_TIMEPOINT, pos.get(k, len(pos)), natural_key(k)))
+
+
 def group_images(image_paths: list[Path], profile: ProfileData) -> GroupedFolder:
-    grouped = GroupedFolder(profile_name=profile.name)
+    grouped = GroupedFolder(profile_name=profile.name, tp_order=list(profile.timepoint_order))
     for p in image_paths:
         info = parse_filename(p.name, profile)
         if info is None:

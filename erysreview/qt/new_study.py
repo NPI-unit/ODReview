@@ -32,7 +32,7 @@ from .. import study_setup as setup
 from ..cellpose_runner import BUILTIN_MODEL, known_builtins
 from ..package import fmt_bytes
 from ..persistence import TypeDef
-from ..profile import LIMITS, ProfileData, list_profiles, load_profile, save_profile
+from ..profile import LIMITS, ProfileData, list_profiles, load_profile, name_is_free, save_profile
 from ..tasks import Task
 from .settings import DELIMS, ROLE_COLORS, ROLE_KEYS, _dspin, label
 from .tasks import start_task
@@ -164,7 +164,7 @@ class NewStudyWizard(QDialog):
     def _valid(self, i: int) -> bool:
         if i == 0:
             name = self.name_edit.text().strip()
-            return bool(name) and name not in list_profiles() and self.scan is not None and self.scan.count > 0
+            return bool(name) and name not in list_profiles() and name_is_free(name) and self.scan is not None and self.scan.count > 0
         if i == 1:
             ok, _ = nameparser.validate_roles(self.roles)
             return ok and self.scan is not None and setup.read_result(self.scan.images, self.delims, self.roles).ok > 0
@@ -249,7 +249,7 @@ class NewStudyWizard(QDialog):
 
     def _name_changed(self) -> None:
         name = self.name_edit.text().strip()
-        self.name_msg.setText(self.S["qt_name_taken"] if name and name in list_profiles() else "")
+        self.name_msg.setText(self.S["qt_name_taken"] if name and (name in list_profiles() or not name_is_free(name)) else "")
         self._update()
 
     def _choose_folder(self) -> None:

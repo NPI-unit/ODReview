@@ -31,7 +31,8 @@ from ..profile_diff import diff_profiles, profile_diff
 from ..theme import COLOR_SCHEMES, FONT_SCALE_CHOICES, OUTLINE_ORDER, apply_scheme_to_types
 
 STUDY_PAGES = [("images", "qt_page_images"), ("seg", "qt_page_seg"), ("types", "qt_page_types"),
-               ("size", "qt_page_size"), ("display", "qt_page_display"), ("export", "qt_page_export")]
+               ("size", "qt_page_size"), ("display", "qt_page_display"), ("export", "qt_page_export"),
+               ("raters", "qt_page_raters")]
 LOCAL_PAGES = [("general", "qt_page_general"), ("edit", "qt_page_edit"), ("keys", "qt_page_keys"),
                ("models", "qt_page_models")]
 
@@ -48,6 +49,7 @@ FIELD_LABELS = {
     "copy_originals_to_outputs": "pe_copy_originals", "use_gpu": "qt_gpu",
     "overlay_alpha": "pe_overlay_alpha", "type_outlines_enabled": "pe_outlines_enabled",
     "show_margin_overlay": "settings_show_margin_overlay", "cell_types": "qt_page_types",
+    "timepoint_order": "qt_tp_order",
 }
 ROLE_KEYS = {nameparser.ROLE_SUBJECT: "pe_role_subject", nameparser.ROLE_TIMEPOINT: "pe_role_timepoint",
              nameparser.ROLE_IMAGE_NUM: "pe_role_image_num", nameparser.ROLE_IGNORE: "pe_role_ignore"}
@@ -222,7 +224,12 @@ class SettingsDialog(QDialog):
         if sheet.exec() != QDialog.Accepted:
             return
         saved = copy.deepcopy(self.work)
-        self._on_study_saved(saved, sheet.choice)
+        from ..profile import ProfileNameClash
+        try:
+            self._on_study_saved(saved, sheet.choice)
+        except ProfileNameClash:
+            QMessageBox.information(self, self.S["settings_title"], self.S["qt_name_taken"])
+            return
         self.orig = copy.deepcopy(saved)
         self.study_btn.setText(f"●  {saved.name}   ▾")
         self._changed()
@@ -256,11 +263,11 @@ class SettingsDialog(QDialog):
         builders = {"images": self._page_images, "seg": self._page_seg, "types": self._page_types,
                     "size": self._page_size, "display": self._page_display, "export": self._page_export,
                     "general": self._page_general, "edit": self._page_edit, "keys": self._page_keys,
-                    "models": self._page_models}
+                    "models": self._page_models, "raters": self._page_raters}
         subs = {"images": "qt_page_images_sub", "seg": "qt_page_seg_sub", "types": "qt_page_types_sub",
                 "size": "qt_page_size_sub", "display": "qt_page_display_sub", "export": "qt_page_export_sub",
                 "general": "qt_page_local_sub", "edit": "qt_page_local_sub", "keys": "qt_page_keys_sub",
-                "models": "qt_page_models_sub"}
+                "models": "qt_page_models_sub", "raters": "qt_page_raters_sub"}
         titles = dict(STUDY_PAGES + LOCAL_PAGES)
         for key, build in builders.items():
             page = QWidget(); v = QVBoxLayout(page); v.setContentsMargins(32, 24, 32, 24); v.setSpacing(14)
@@ -307,7 +314,71 @@ class SettingsDialog(QDialog):
         self.parse_check = QLabel(""); self.parse_check.setWordWrap(True); self.parse_check.setObjectName("checkLine")
         cv.addWidget(self.parse_check)
         v.addWidget(card)
+        # order of the timepoints — for the list, statistics (trajectories) and export
+        card, cv = _card()
+        hl = QLabel(S["qt_tp_order"]); hl.setStyleSheet("font-weight: 600;")
+        hint = QLabel(S["qt_tp_order_hint"]); hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {self.P['fg_secondary']}; font-size: 12px;")
+        from PySide6.QtWidgets import QAbstractItemView, QListWidget
+        self.tp_list = QListWidget(); self.tp_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.tp_list.setMaximumHeight(220)
+        self.tp_list.model().rowsMoved.connect(lambda *_: self._tp_order_moved())
+        cv.addWidget(hl); cv.addWidget(hint); cv.addWidget(self.tp_list)
+        v.addWidget(card)
         self._fill_parser()
+
+    # Studie · Zweitbewertungen (acts at once on this folder; not part of a package)
+    def _page_raters(self, v: QVBoxLayout) -> None:
+        card, cv = _card()
+        self.raters_box = QVBoxLayout(); self.raters_box.setSpacing(8)
+        cv.addLayout(self.raters_box)
+        v.addWidget(card)
+        self._fill_raters()
+
+    def _fill_raters(self) -> None:
+        from .. import interrater as ir
+        S, P = self.S, self.P
+        self._clear(self.raters_box)
+        names = ir.list_raters(self.folder) if self.folder is not None else []
+        if not names:
+            e = QLabel(S["rd_none"]); e.setStyleSheet(f"color: {P['fg_secondary']};")
+            self.raters_box.addWidget(e)
+            return
+        for name in names:
+            info = ir.rater_summary(self.folder, name)
+            row = QHBoxLayout()
+            t = QLabel(f"<b>{name}</b>"); t.setTextFormat(Qt.RichText)
+            sub = QLabel(S["rd_row"].format(n=info["n_images"], date=info["date"].replace("T", " ")[:16] or "–"))
+            sub.setStyleSheet(f"color: {P['fg_secondary']};")
+            b = QPushButton(S["rd_delete"])
+            b.clicked.connect(lambda _c=False, n=name: self.delete_rater(n))
+            row.addWidget(t); row.addWidget(sub, 1); row.addWidget(b)
+            self.raters_box.addLayout(row)
+
+    def delete_rater(self, name: str, confirm=None) -> bool:
+        from .interrater import delete_rater_flow
+        done = delete_rater_flow(self, self.S, self.folder, name, self.orig.name, confirm=confirm)
+        if done:
+            self._fill_raters()
+            self._on_local_changed("raters")
+        return done
+
+    def _fill_tp_order(self, grouped) -> None:
+        """The timepoints the parser finds, in the study's order."""
+        from ..grouping import UNGROUPED_TIMEPOINT
+        if not hasattr(self, "tp_list"):
+            return
+        tps = [t for t in grouped.timepoints() if t != UNGROUPED_TIMEPOINT] if grouped is not None else []
+        self.tp_list.blockSignals(True)
+        self.tp_list.clear()
+        for t in tps:
+            self.tp_list.addItem("≡  " + t)
+        self.tp_list.blockSignals(False)
+        self._tps_shown = tps
+
+    def _tp_order_moved(self) -> None:
+        order = [self.tp_list.item(i).text().removeprefix("≡  ") for i in range(self.tp_list.count())]
+        self._set(lambda: setattr(self.work, "timepoint_order", order))
 
     def _choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, self.S["pe_import_folder"],
@@ -417,6 +488,7 @@ class SettingsDialog(QDialog):
         except Exception as e:  # noqa: BLE001 — e.g. a broken regex while typing
             self.parse_check.setText(f"⚠ {e}")
             return
+        self._fill_tp_order(g)
         ung = sum(1 for i in g.flat if i.is_ungrouped)
         subs = {i.subject for i in g.flat if not i.is_ungrouped}
         tps = {i.timepoint for i in g.flat if not i.is_ungrouped}

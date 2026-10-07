@@ -117,6 +117,8 @@ class InterraterWindow(QDialog):
         pv = QVBoxLayout(pcard); pv.setContentsMargins(8, 8, 8, 8)
         self.fig = Figure(figsize=(8.5, 4.0), facecolor=P["panel_bg"])
         self.plot = FigureCanvasQTAgg(self.fig)
+        from .hover import Hover
+        self.hover = Hover(self.plot, P)          # pointing at a dot names proband × timepoint
         pv.addWidget(self.plot)
         mid.addWidget(pcard, 3)
         v.addLayout(mid, 1)
@@ -255,6 +257,7 @@ class InterraterWindow(QDialog):
         x = [g.val_a for g in groups]
         y = [g.val_b for g in groups]
         self.fig.clear()
+        self.hover.clear()
         ax1, ax2 = self.fig.subplots(1, 2)
         for ax in (ax1, ax2):
             ax.set_facecolor(P["panel_bg"])
@@ -268,6 +271,8 @@ class InterraterWindow(QDialog):
         hi = max([*x, *y, 1.0]) * 1.08
         ax1.plot([0, hi], [0, hi], linestyle="--", color=P["state_finished"], linewidth=1.3, label="y = x (45°)")
         ax1.scatter(x, y, s=26, color=acc, alpha=0.8, edgecolors="white", linewidths=0.6, zorder=3)
+        name = lambda g: f"{S['pe_role_subject']} {g.sub} · {g.tp}"
+        self.hover.add(ax1, x, y, [f"{name(g)}\nA {_fmt(S, g.val_a)} · B {_fmt(S, g.val_b)}" for g in groups])
         ax1.set_xlim(0, hi); ax1.set_ylim(0, hi)          # same scale on both axes
         ax1.set_xlabel(S["ir_axis_a"].format(a=self.ag.rater_a, m=self._metric_name()), color=fg, fontsize=9)
         ax1.set_ylabel(S["ir_axis_b"].format(b=self.ag.rater_b, m=self._metric_name()), color=fg, fontsize=9)
@@ -285,6 +290,8 @@ class InterraterWindow(QDialog):
             ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3, fontsize=7.5,
                        frameon=False, labelcolor=fg)
         ax2.scatter(means, diffs, s=26, color=acc, alpha=0.8, edgecolors="white", linewidths=0.6, zorder=3)
+        self.hover.add(ax2, means, diffs, [f"{name(g)}\n{S['ir_hover_ba'].format(m=_fmt(S, m), d=_fmt(S, d))}"
+                                           for g, m, d in zip(groups, means, diffs)])
         ax2.set_xlabel(S["ir_ba_x"].format(m=self._metric_name()), color=fg, fontsize=9)
         ax2.set_ylabel(S["ir_ba_y"].format(a=self.ag.rater_a, b=self.ag.rater_b), color=fg, fontsize=9)
         ax2.set_title(S["ir_ba"].format(m=self._metric_name()), color=fg, fontsize=10, loc="left")
@@ -329,3 +336,25 @@ def compare_package_flow(parent, P, S, folder: Path, zip_path: Path) -> str | No
             msg += f"\n… +{more}"
     QMessageBox.information(parent, S["ir_title"], msg)
     return res["name"]
+
+
+def delete_rater_flow(parent, S, folder: Path, name: str, current_study: str = "", confirm=None) -> bool:
+    """Remove a second rating after two questions. `confirm(step)` replaces
+    the questions in tests. Study A and its backups stay."""
+    if current_study and current_study in ir.rater_studies(folder, name):
+        QMessageBox.information(parent, S["rd_title"], S["rd_open_a_first"].format(name=name))
+        return False
+    info = ir.rater_summary(folder, name)
+    studies = ir.rater_studies(folder, name)
+    ask1 = lambda: QMessageBox.warning(
+        parent, S["rd_title"], S["rd_q1"].format(name=name, n=info["n_images"],
+                                                 studies=", ".join(studies) or "–"),
+        QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) == QMessageBox.Yes
+    ask2 = lambda: QMessageBox.warning(
+        parent, S["rd_title"], S["rd_q2"].format(name=name),
+        QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) == QMessageBox.Yes
+    ok = (confirm(1) and confirm(2)) if confirm else (ask1() and ask2())
+    if not ok:
+        return False
+    ir.delete_rater(folder, name)
+    return True

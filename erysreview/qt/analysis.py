@@ -329,19 +329,23 @@ class StatsWindow(QDialog):
         refresh = QPushButton(S["btn_refresh"]); refresh.clicked.connect(self._reload)
         h.addWidget(refresh)
         v.addWidget(top)
-        body = QWidget(); bh = QHBoxLayout(body); bh.setContentsMargins(24, 18, 24, 18); bh.setSpacing(18)
-        self.fig = Figure(figsize=(5, 4), facecolor=P["panel_bg"])
-        self.ax = self.fig.add_subplot(111)
+        # box plots | trajectories (one line per proband), the table below;
+        # pointing at a dot names it (Proband · Zeitpunkt · value)
+        body = QWidget(); bv = QVBoxLayout(body); bv.setContentsMargins(24, 18, 24, 18); bv.setSpacing(14)
+        self.fig = Figure(figsize=(10, 4.2), facecolor=P["panel_bg"])
+        self.ax, self.ax_traj = self.fig.subplots(1, 2)
         self.canvas = FigureCanvasQTAgg(self.fig)
+        from .hover import Hover
+        self.hover = Hover(self.canvas, P)
         chart = QFrame(); chart.setObjectName("settingsCard")
         cl = QVBoxLayout(chart); cl.setContentsMargins(10, 10, 10, 10); cl.addWidget(self.canvas)
-        bh.addWidget(chart, 5)
+        bv.addWidget(chart, 3)
         self.table = QTreeWidget(); self.table.setRootIsDecorated(False)
         self.table.setHeaderLabels([S["stats_col_group"], "n", S["stats_mean"], S["stats_median"],
                                     S["stats_sd"], S["stats_min"], S["stats_max"], "Q1", "Q3"])
         from PySide6.QtWidgets import QHeaderView
         self.table.header().setSectionResizeMode(QHeaderView.Stretch)   # all 9 columns fit
-        bh.addWidget(self.table, 6)
+        bv.addWidget(self.table, 2)
         v.addWidget(body, 1)
         self.empty = QLabel(S["stats_no_data"]); self.empty.setAlignment(Qt.AlignCenter)
         v.addWidget(self.empty)
@@ -351,34 +355,78 @@ class StatsWindow(QDialog):
         self.records = statsmod.collect_group_records(self.folder, self.profile, self.grouped)
         self.redraw()
 
-    def redraw(self) -> None:
-        P, S = self.P, self.S
-        by = next(b.property("val") for b in self.by.buttons() if b.isChecked())
-        groups = statsmod.grouped_values(self.records, by, self.metric_combo.currentData())
-        self.empty.setVisible(not groups)
-        ax = self.ax
+    def _style_ax(self, ax) -> None:
+        P = self.P
         ax.clear()
         ax.set_facecolor(P["panel_bg"])
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
         for side in ("left", "bottom"):
             ax.spines[side].set_color(P["border"])
-        ax.tick_params(colors=P["fg_secondary"])
+        ax.tick_params(colors=P["fg_secondary"], labelsize=8.5)
+        ax.grid(axis="y", color=P["border"], alpha=0.8)
+        ax.set_axisbelow(True)
+
+    def _point_label(self, r: dict, v: float) -> str:
+        return f"{self.S['pe_role_subject']} {r['subject']} · {r['timepoint']}\n{_num(v, self.S, 2)}"
+
+    def redraw(self) -> None:
+        P, S = self.P, self.S
+        by = next(b.property("val") for b in self.by.buttons() if b.isChecked())
+        metric = self.metric_combo.currentData()
+        order = self.profile.timepoint_order
+        points = statsmod.grouped_points(self.records, by, metric, order)
+        groups = {k: [v for v, _r in pts] for k, pts in points.items()}
+        self.empty.setVisible(not groups)
+        self.hover.clear()
+        ax, axt = self.ax, self.ax_traj
+        self._style_ax(ax); self._style_ax(axt)
         if groups:
             labels = list(groups)
             bp = ax.boxplot([groups[k] for k in labels], tick_labels=labels, showmeans=True,
+                            showfliers=False,          # every value is drawn as a dot below
                             patch_artist=True, widths=0.5,
                             medianprops={"color": P["accent_warn"], "linewidth": 2.2},
                             meanprops={"marker": "^", "markerfacecolor": P["state_finished"],
                                        "markeredgecolor": P["state_finished"]},
                             whiskerprops={"color": P["fg_secondary"]},
-                            capprops={"color": P["fg_secondary"]},
-                            flierprops={"markeredgecolor": P["fg_muted"]})
+                            capprops={"color": P["fg_secondary"]})
             for box in bp["boxes"]:
                 box.set_facecolor(_mix(P["panel_bg"], P["accent_primary"], 0.18))
                 box.set_edgecolor(P["accent_primary"]); box.set_linewidth(1.8)
+            # the single values, spread a little sideways; outliers (beyond
+            # 1.5 IQR) stand out in the warning colour
+            for i, k in enumerate(labels, start=1):
+                vals = [v for v, _r in points[k]]
+                d = statsmod.describe(vals)
+                iqr = d["q3"] - d["q1"]
+                lo, hi = d["q1"] - 1.5 * iqr, d["q3"] + 1.5 * iqr
+                n = len(vals)
+                xs = [i + (0.18 * ((j / (n - 1)) - 0.5) if n > 1 else 0.0) for j in range(n)]
+                cols = [P["accent_warn"] if (v < lo or v > hi) else P["fg_secondary"] for v in vals]
+                ax.scatter(xs, vals, s=16, c=cols, alpha=0.85, edgecolors="white", linewidths=0.5, zorder=3)
+                self.hover.add(ax, xs, vals, [self._point_label(r, v) for v, r in points[k]])
             ax.set_ylabel(self.metric_combo.currentText(), color=P["fg_secondary"])
-            ax.grid(axis="y", color=P["border"], alpha=0.8)
+            ax.set_title(S["stats_box_title"], color=P["fg"], fontsize=10, loc="left")
+            if len(labels) > 6:
+                ax.tick_params(axis="x", labelrotation=45)
+            # trajectories: x = timepoints in the study's order, one line per proband
+            tps, lines = statsmod.trajectories(self.records, metric, order)
+            import matplotlib
+            n_col = 10 if len(lines) <= 10 else 20
+            cmap = matplotlib.colormaps[f"tab{n_col}"]
+            for c, (sub, pts) in enumerate(lines.items()):
+                xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+                col = cmap(c % n_col)
+                axt.plot(xs, ys, "-o", color=col, markersize=4, linewidth=1.4, alpha=0.9)
+                axt.annotate(sub, (xs[-1], ys[-1]), xytext=(4, 0), textcoords="offset points",
+                             fontsize=7.5, color=col, va="center")
+                self.hover.add(axt, xs, ys, [self._point_label(r, v) for _x, v, r in pts])
+            axt.set_xticks(range(len(tps)), tps)
+            axt.set_xlim(-0.3, len(tps) - 0.4)
+            if len(tps) > 6:
+                axt.tick_params(axis="x", labelrotation=45)
+            axt.set_title(S["stats_traj_title"], color=P["fg"], fontsize=10, loc="left")
             self.fig.tight_layout()
         self.canvas.draw_idle()
         self.table.clear()

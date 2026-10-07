@@ -291,7 +291,43 @@ def main() -> int:
     check(any("Fleiss" in t and "3" in t for t in titles), f"'Alle Bewertungen' shows Fleiss' κ over 3 ratings ({titles})")
     check("Shrout" in w.findChildren(type(w.title))[-3].text() or any("Shrout" in l.text() for l in w.findChildren(type(w.title))),
           "the window lists the references")
-    w.close(); win.close()
+    w.close()
+
+    # a study whose file name equals a second rating's ("Studie Finn 2" / "Studie · Finn 2")
+    from erysreview.profile import ProfileData as _PD, ProfileNameClash, load_profile as _lp, save_profile as _sp
+    try:
+        _sp(_PD(name="Studie Finn 2")); clash = False
+    except ProfileNameClash:
+        clash = True
+    check(clash and _lp("Studie · Finn 2") is not None and _lp("Studie · Finn 2").rater == "Finn 2",
+          "a study cannot overwrite another one that maps to the same file")
+
+    # remove second ratings: in the settings and from the comparison bar
+    from erysreview.qt import settings as qsettings
+    bk_before = {b.id for b in backups.list_backups(folder)}
+    dlg = qsettings.SettingsDialog(win, win.P, win.S, win.settings, win.ctl.profile, win.ctl.folder,
+                                   win.ctl.images, on_study_saved=lambda *a: None,
+                                   on_local_changed=win._on_local_setting, on_switch_study=lambda: None,
+                                   start_page="raters")
+    asked = []
+    check(not dlg.delete_rater("Finn 3", confirm=lambda step: asked.append(step) or step == 1)
+          and "Finn 3" in ir.list_raters(folder) and asked == [1, 2],
+          "removing asks twice; 'Abbrechen' at the second question keeps it")
+    check(dlg.delete_rater("Finn 3", confirm=lambda step: True) and "Finn 3" not in ir.list_raters(folder)
+          and not (ir.raters_dir(folder) / "Finn_3").exists(),
+          "Einstellungen › Zweitbewertungen removes 'Finn 3' (ratings, decisions, selection)")
+    dlg.close()
+    win.toolbar.btn_abgleich.click(); QTest.qWait(50)
+    check(win.split.active and win.split.rater == "Finn 2", "comparison with the remaining B")
+    check(win.remove_rater("Finn 2", confirm=lambda step: True) and ir.list_raters(folder) == [],
+          "'B entfernen …' in the comparison bar removes 'Finn 2'")
+    check(not win.split.active and not win.toolbar.btn_abgleich.isVisibleTo(win.toolbar),
+          "with no B left the comparison closes and '⇆ Abgleich' disappears")
+    check(_lp("Studie · Finn 2") is None and _lp("Studie") is not None,
+          "the study made for the second rating goes, study A stays")
+    check(bk_before <= {b.id for b in backups.list_backups(folder)},
+          "the backups ('A vor Abgleich …') stay")
+    win.close()
     from erysreview.qt.tasks import shutdown
     shutdown(); tmp.cleanup()
     print(f"OK — {CHECKS} checks: blind intra-rater rating, comparison in the main window, backups and Fleiss' κ.")

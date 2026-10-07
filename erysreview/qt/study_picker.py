@@ -22,7 +22,7 @@ from ..cellpose_runner import ModelUnavailable, list_images, resolve_model
 from ..grouping import group_images
 from ..profile import (
     DEFAULT_PROFILE_NAME, ProfileData, delete_profile, duplicate_profile,
-    ensure_default_profile, list_profiles, load_profile, rename_profile, save_profile,
+    ensure_default_profile, list_profiles, load_profile, name_is_free, rename_profile, save_profile,
 )
 from ..persistence import app_support_dir, read_json, write_json_atomic
 from ..study import StudyProgress, study_progress
@@ -291,7 +291,7 @@ class StudyPicker(QDialog):
         name = name.strip()
         if not ok or not name:
             return None
-        if name in list_profiles():
+        if name in list_profiles() or not name_is_free(name):
             QMessageBox.information(self, self.S["qt_studies_title"], self.S["qt_name_taken"])
             return None
         return name

@@ -995,6 +995,28 @@ class MainWindow(QMainWindow):
             self._apply_shortcuts()
         elif field == "cellpose_models" and self.ctl.has_images:
             self.show_image(self.ctl.idx)
+        elif field == "raters":
+            self._after_rater_removed()
+
+    def remove_rater(self, name: str, confirm=None) -> bool:
+        """'B entfernen …' in the comparison bar (also Einstellungen › Zweitbewertungen)."""
+        from .interrater import delete_rater_flow
+        if not delete_rater_flow(self, self.S, self.ctl.folder, name, self.ctl.profile.name, confirm=confirm):
+            return False
+        self._after_rater_removed()
+        self._set_status(self.S["rd_done"].format(name=name))
+        return True
+
+    def _after_rater_removed(self) -> None:
+        from .. import interrater as ir
+        left = ir.list_raters(self.ctl.folder) if self.ctl.folder else []
+        if self.split.active:
+            if self.split.rater not in left:
+                if left:
+                    self.split.activate(left[0])
+                else:
+                    self.split.deactivate()
+        self._update_abgleich_ui()
 
     def switch_study(self) -> None:
         chosen, segment_now, compare_with = pick_study(self, self.P, self.S, self.settings)

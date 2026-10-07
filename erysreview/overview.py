@@ -72,8 +72,8 @@ def build_overview(folder: Path, profile, grouped) -> dict:
         tidy_rows.append(row)
 
     # Matrix axes.
-    timepoints = sorted({tp for tp, _, _ in records},
-                        key=lambda k: (k == UNGROUPED_TIMEPOINT, natural_key(k)))
+    from .grouping import order_timepoints
+    timepoints = order_timepoints({tp for tp, _, _ in records}, profile.timepoint_order)
     subjects = sorted({sub for _, sub, _ in records},
                       key=lambda k: (k == UNGROUPED_SUBJECT, natural_key(k)))
     lookup = {(tp, sub): s for tp, sub, s in records}

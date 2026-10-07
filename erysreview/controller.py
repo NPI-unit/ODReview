@@ -364,8 +364,8 @@ class AppController:
             cellpose_changed=(a.diameter, a.flow_threshold, a.cellprob_threshold, a.model)
             != (b.diameter, b.flow_threshold, b.cellprob_threshold, b.model),
         )
+        save_profile(new, replaces=old.name)    # raises ProfileNameClash before anything changes
         self.profile = new
-        save_profile(new)
         self.regroup()     # the filename parser may have changed
         return change
 

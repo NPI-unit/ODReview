@@ -110,6 +110,9 @@ class ProfileData:
     delimiters: list[str] = field(default_factory=lambda: ["_"])
     field_roles: list[str] = field(default_factory=list)
     target_cells: int = 2000
+    # Order of the timepoints (list, statistics, trajectories, export). Not
+    # listed ones follow in natural order. Empty = natural order (d2 < d7 < d14).
+    timepoint_order: list[str] = field(default_factory=list)
     # Batch default: compute the first N images per parsed (timepoint, subject)
     # group; images beyond N are left raw. Pre-selects the batch dialog.
     images_per_subject: int = 13
@@ -203,6 +206,7 @@ class ProfileData:
             sidebar_open_groups=list(raw.get("sidebar_open_groups", [])),
             details_collapsed=bool(raw.get("details_collapsed", False)),
             recent_folders=list(raw.get("recent_folders", [])),
+            timepoint_order=[str(t) for t in raw.get("timepoint_order", []) or []],
             active_type_key=raw.get("active_type_key", "normal"),
             rater=str(raw.get("rater", "") or ""),
             rater_base=str(raw.get("rater_base", "") or ""),
@@ -236,6 +240,7 @@ class ProfileData:
             "sidebar_open_groups": self.sidebar_open_groups,
             "details_collapsed": self.details_collapsed,
             "recent_folders": self.recent_folders,
+            "timepoint_order": self.timepoint_order,
             "active_type_key": self.active_type_key,
             "rater": self.rater,
             "rater_base": self.rater_base,
@@ -290,6 +295,12 @@ def _slugify(name: str) -> str:
     return s or "profile"
 
 
+def name_is_free(name: str) -> bool:
+    """No other study uses the file this name maps to."""
+    raw = read_json(profile_path(name))
+    return not raw or raw.get("name") == name
+
+
 def profile_path(name: str) -> Path:
     return profiles_dir() / f"{_slugify(name)}.json"
 
@@ -314,7 +325,17 @@ def load_profile(name: str) -> ProfileData | None:
         return None
 
 
-def save_profile(profile: ProfileData) -> None:
+class ProfileNameClash(ValueError):
+    """Another study already lives in the file this name maps to
+    ("Bedrest Janina" and "Bedrest · Janina" both become Bedrest_Janina.json)."""
+
+
+def save_profile(profile: ProfileData, replaces: str | None = None) -> None:
+    """`replaces`: the study's old name when renaming (it may own the file)."""
+    raw = read_json(profile_path(profile.name))
+    if raw and raw.get("name") not in (None, profile.name, replaces):
+        raise ProfileNameClash(f"{profile.name!r} → {profile_path(profile.name).name} "
+                               f"belongs to {raw.get('name')!r}")
     if not profile.created_at:
         profile.created_at = _now_iso()
     profile.updated_at = _now_iso()
@@ -381,7 +402,7 @@ def rename_profile(p: ProfileData, new_name: str) -> ProfileData:
     settings.last_profile_name if this was the active study."""
     old = p.name
     p.name = new_name.strip()
-    save_profile(p)
+    save_profile(p, replaces=old)
     if profile_path(old) != profile_path(p.name):
         delete_profile(old)
     return p

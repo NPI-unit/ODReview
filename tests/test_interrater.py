@@ -180,6 +180,12 @@ def main() -> int:
            if r != c and w.table.item(r, c).text() != "0"]
     check(diag.blue() > diag.red() and off and off[0].background().color().red() > off[0].background().color().blue(),
           "agreement is blue, disagreement red")
+    pts = [it for it in w.hover.items]
+    ax1, xs, ys, _l = pts[0]
+    px, py = ax1.transData.transform((xs[0], ys[0]))
+    hit = w.hover.nearest(ax1, px, py)
+    check(len(pts) == 2 and hit is not None and "Proband" in hit[2] and " · A " not in hit[2][:3],
+          f"pointing at a dot in A-vs-B / Bland-Altman names proband × timepoint ({hit and hit[2]!r})")
     axes = w.fig.axes
     check(len(axes) == 2 and axes[0].get_xlabel() and any(l.get_linestyle() == "--" for l in axes[0].lines)
           and len(axes[1].lines) >= 3, "A-vs-B with 45° line, Bland-Altman with mean and ±1.96 SD")

@@ -403,8 +403,12 @@ def rater_study(base: ProfileData, rater: str, blind: bool = False) -> ProfileDa
     """The study to open a second rating with: the base study's settings and
     folder, reading/writing the rater's namespace. Saved; reused if present."""
     import copy as _copy
-    from .profile import load_profile, save_profile
+    from .profile import load_profile, name_is_free, save_profile
     name = f"{base.name} · {rater}"
+    k = 2
+    while not name_is_free(name):            # e.g. a study "Bedrest Janina" owns Bedrest_Janina.json
+        name = f"{base.name} · {rater} ({k})"
+        k += 1
     existing = load_profile(name)
     if existing is not None and existing.rater == rater:
         return existing
@@ -414,6 +418,47 @@ def rater_study(base: ProfileData, rater: str, blind: bool = False) -> ProfileDa
     p.sidebar_open_groups = []
     save_profile(p)
     return p
+
+
+def rater_summary(folder: Path, name: str) -> dict:
+    """What the settings list shows: images rated, imported/created, kind."""
+    info = rater_info(folder, name)
+    d = rater_dir(folder, name)
+    n = sum(1 for f in d.glob("*_review.json") if not f.name.startswith("._")) if d.is_dir() else 0
+    return {"name": name, "n_images": n, "kind": info.get("kind", ""),
+            "date": info.get("imported_at") or info.get("created_at") or "",
+            "a_backup": info.get("a_backup")}
+
+
+def rater_studies(folder: Path, name: str) -> list[str]:
+    """Studies made to rate `name` in this folder (rater_study). Matched on
+    what is inside the study, never on the file name — a study "Bedrest
+    Janina" is not the second rating "Bedrest · Janina"."""
+    from .profile import list_profiles, load_profile
+    out = []
+    for pn in list_profiles():
+        p = load_profile(pn)
+        if p is not None and p.rater == name and p.import_folder \
+                and Path(p.import_folder).resolve() == Path(folder).resolve():
+            out.append(p.name)
+    return out
+
+
+def delete_rater(folder: Path, name: str) -> dict:
+    """Remove a second rating: its reviews, decisions and selection
+    (raters/<name>/) and the studies made to rate it. Study A, its reviews
+    and the backup "A vor Abgleich mit <name>" stay. Returns what went."""
+    import shutil
+    from .profile import delete_profile
+    d = rater_dir(folder, name)
+    if not d.is_dir() or name not in list_raters(folder):
+        raise FileNotFoundError(name)
+    studies = rater_studies(folder, name)
+    n = rater_summary(folder, name)["n_images"]
+    shutil.rmtree(d)
+    for pn in studies:
+        delete_profile(pn)
+    return {"name": name, "n_images": n, "studies": studies}
 
 
 def blind_locked(folder: Path, rater: str) -> tuple[bool, int, int]:
