@@ -94,6 +94,14 @@ class CanvasCore:
         # A right click WITHOUT dragging -> the app's menu for this image.
         self.context_callback = context_callback or (lambda: None)
         self._right_down: tuple[float, float] | None = None
+        # Comparison (Abgleich): a view that only shows (B), a listener for
+        # zoom/pan so two views move together, frames around differences,
+        # and "colour only these cells".
+        self.read_only = False
+        self.view_listener: Callable[[], None] | None = None
+        self.only_ids: set[int] | None = None
+        self._marker_artists: list = []
+        self._markers: list[tuple[float, float, float, float, str]] = []
         self._theme_palette = P
         self.status_callback = status_callback or (lambda s: None)
 
@@ -232,6 +240,8 @@ class CanvasCore:
         self._refresh_outlines()
         self._refresh_notes()
         self._refresh_grid()
+        self._marker_artists = []
+        self._markers = []
         self._full_redraw()
 
     # ── helper grid ──
@@ -283,6 +293,48 @@ class CanvasCore:
         h, w = self.image.shape[:2]
         self.ax.set_xlim(-0.5, w - 0.5)
         self.ax.set_ylim(h - 0.5, -0.5)
+        self._full_redraw()
+        self._notify_view()
+
+    def _notify_view(self) -> None:
+        if self.view_listener is not None:
+            self.view_listener()
+
+    def set_view(self, xlim, ylim) -> None:
+        """Take another view's zoom/pan (comparison: both sides move together)."""
+        if self.image is None:
+            return
+        self.ax.set_xlim(*xlim)
+        self.ax.set_ylim(*ylim)
+        self._full_redraw()
+
+    def set_markers(self, markers: list[tuple[float, float, float, float, str]]) -> None:
+        """Frames around cells: (x0, y0, x1, y1, state) with state 'open',
+        'current' or 'done' — the comparison's differences."""
+        self._markers = list(markers)
+        self._draw_markers()
+        self._full_redraw()
+
+    def _draw_markers(self) -> None:
+        from matplotlib.patches import Rectangle
+        for a in self._marker_artists:
+            try:
+                a.remove()
+            except (ValueError, NotImplementedError):
+                pass
+        self._marker_artists = []
+        P = self._theme_palette
+        for x0, y0, x1, y1, state in self._markers:
+            col = P["state_finished"] if state == "done" else P["accent_warn"]
+            r = Rectangle((x0 - 4, y0 - 4), x1 - x0 + 8, y1 - y0 + 8, fill=False, edgecolor=col,
+                          linewidth=3.0 if state == "current" else 1.6,
+                          linestyle="-" if state != "open" else (0, (5, 4)), zorder=8)
+            self.ax.add_patch(r)
+            self._marker_artists.append(r)
+
+    def set_only_ids(self, ids: set[int] | None) -> None:
+        self.only_ids = ids
+        self._refresh_overlay()
         self._full_redraw()
 
     def set_overlay_visible(self, visible: bool) -> None:
@@ -398,6 +450,9 @@ class CanvasCore:
             self.masks, self.cell_infos, self.review, self.profile,
             self.border_ids, self.duplicate_ids,
         )
+        if self.only_ids is not None:        # comparison: colour only the differences
+            keep = np.isin(self.masks, list(self.only_ids))
+            self._overlay_rgba[~keep, 3] = 0
         self._overlay_handle.set_data(self._overlay_rgba)
 
     def _patch_cell(self, cid: int, colors: OverlayColors | None = None) -> None:
@@ -830,6 +885,8 @@ class CanvasCore:
     def _on_button_press(self, event):
         if event.inaxes != self.ax or self.image is None:
             return
+        if self.read_only and event.button == 1:
+            return                               # comparison B: look, don't touch
         x, y = event.xdata, event.ydata
         if x is None or y is None:
             return
@@ -895,6 +952,7 @@ class CanvasCore:
             self.ax.set_xlim(xl0 + dx, xl1 + dx)
             self.ax.set_ylim(yl0 + dy, yl1 + dy)
             self._full_redraw()
+            self._notify_view()
 
     def _on_scroll(self, event):
         if event.inaxes != self.ax or self.image is None or event.xdata is None:
@@ -911,3 +969,4 @@ class CanvasCore:
             event.ydata + (yl[1] - event.ydata) * scale,
         )
         self._full_redraw()
+        self._notify_view()

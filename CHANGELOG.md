@@ -12,7 +12,9 @@ Neue Oberfläche (Qt) — die alte Tk-Oberfläche ist entfernt.
 - **Info (I)**: Proband × Zeitpunkt und Bild nebeneinander.
 - **Helligkeit & Kontrast**: Rechtsklick auf Bilder (Mehrfachauswahl) oder aufs Bild — großes Fenster mit Live-Vorschau, Automatisch, für ausgewählte Bilder, ganzen Probanden oder alle; nur Anzeige, reist im Paket mit.
 - **Eigene Tastenkürzel** pro Rechner, auch Maus-Seitentasten; **Hilfsraster** (G); rechte Maustaste ziehen verschiebt das Bild.
-- **Interrater / Intra-Rater**: Zweitbewertung aus einem Paket oder selbst (auch blind), Abgleich-Ansicht, Konsens, Cohens κ, Fleiss-κ, ICC(2,1), Bland-Altman — nur auf identischen Masken.
+- **Interrater / Intra-Rater**: Zweitbewertung aus einem Paket oder selbst (auch blind), Cohens κ, Fleiss-κ, ICC(2,1), Bland-Altman — nur auf identischen Masken.
+- **Abgleich im Hauptfenster** (⇆ Abgleich): A und B nebeneinander oder untereinander, gekoppelter Zoom, Unterschiede gerahmt; je Unterschied **B → A übernehmen** (in Studie A, für die echte Auswertung) oder **A behalten**, rückgängig machbar. Die Statistik rechnet mit der Sicherung „A vor Abgleich“.
+- **Sicherungen** der Bewertungen (Datei › Sicherungen …): automatisch vor jedem Abgleich und vor dem Laden, eigene per „Jetzt sichern“; jederzeit wieder ladbar; optional im Paket.
 - **Export** zeigt „Fertig“ und „Exportiert“; **Paket erstellen** schätzt die Größe.
 - **Installation (macOS)**: „ErysReview installieren“ mit Fenster, getestete Paketversionen, offline aus dem Ordner (vendor/), Selbsttest; Deinstallieren unter Einstellungen › Allgemein.
 - **Nach Updates suchen** (Hilfe-Menü).

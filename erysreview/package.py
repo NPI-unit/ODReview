@@ -72,8 +72,11 @@ def create_package(
     reviewer: str = "",
     selected_stems: set[str] | None = None,
     progress_cb: Callable[[int, int, str], None] | None = None,
+    include_backups: bool = False,
 ) -> dict:
     """Write a share package. Only images with a cached mask are included.
+    include_backups: also pack the study's Sicherungen (backups.py) as
+    sicherungen/<id>/… — off by default.
 
     If `selected_stems` is given, only those image stems are packed (still
     subject to having a cached mask); None means every cached image.
@@ -115,7 +118,15 @@ def create_package(
             "n_images": len(stems),
             "stems": stems,
             "profile": profile.to_dict(),
+            "includes_backups": bool(include_backups),
         }
+        if include_backups:
+            from .backups import backups_dir
+            bdir = backups_dir(folder)
+            if bdir.is_dir():
+                for f in sorted(bdir.rglob("*")):
+                    if f.is_file():
+                        zf.write(f, "sicherungen/" + f.relative_to(bdir).as_posix())
         zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
 
     return {"path": dest_zip, "n_images": len(stems), "includes_images": include_images}
@@ -200,6 +211,14 @@ def import_package(
                 out = target_folder / Path(name).name
                 with zf.open(name) as src, out.open("wb") as dst:
                     dst.write(src.read())
+
+        # 1b) Sicherungen, if the package carries them (never overwrites one)
+        for name in names:
+            if name.startswith("sicherungen/") and not name.endswith("/"):
+                out = cache_dir / name
+                if not out.exists():
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_bytes(zf.read(name))
 
         # 2) Per-image cache + review merge
         for i, stem in enumerate(stems, start=1):

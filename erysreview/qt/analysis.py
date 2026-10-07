@@ -53,6 +53,11 @@ class PackageCreateDialog(QDialog):
         self.include = QCheckBox(S["pkg_include_images"]); self.include.setChecked(True)
         self.include.toggled.connect(lambda *_: self._update())
         bv.addWidget(self.include)
+        from ..backups import list_backups
+        n_bk = len(list_backups(folder))
+        self.include_backups = QCheckBox(S["pkg_include_backups"].format(n=n_bk))
+        self.include_backups.setEnabled(n_bk > 0)
+        bv.addWidget(self.include_backups)
         self._sizes: dict[str, tuple[int, int, int]] = {}
         row = QHBoxLayout()
         lab = QLabel(S["pkg_pick_images"]); lab.setStyleSheet("font-weight: 600;")
@@ -159,6 +164,7 @@ class PackageCreateDialog(QDialog):
         work = lambda progress, cancelled: pkg.create_package(
             self.folder, self.grouped, self.profile, Path(dest),
             include_images=self.include.isChecked(), reviewer=reviewer, selected_stems=sel,
+            include_backups=self.include_backups.isChecked(),
             progress_cb=lambda i, n, name: progress(i, f"{i}/{n}  {name}"))
         try:
             res = run_task_modal(self, Task(work=work), S["pkg_create_title"], S["pkg_creating"],

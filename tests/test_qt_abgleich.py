@@ -75,6 +75,7 @@ def main() -> int:
     for f in (folder / ".erys_cache").glob("*_review.json"):
         d = json.loads(f.read_text()); d.pop("time_spent_s", None); d.pop("next_manual_id", None); a_before[f.name] = d
 
+    from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QDialog, QMessageBox
     from erysreview.qt import abgleich, study_picker
@@ -133,27 +134,111 @@ def main() -> int:
     check(not w.lock.isVisibleTo(w) and w.ag is not None and w.ag.n_cells - w.ag.n_same == 8,
           f"finished: the comparison opens, 8 cells differ ({w.ag and w.ag.n_cells - w.ag.n_same})")
 
-    # ── comparison view + consensus ──
-    from erysreview.qt.compare_view import CompareWindow
-    made = []
-    cv = CompareWindow(w, win.P, win.S, folder, win.ctl.grouped, win.ctl.profile, "Finn 2", "Finn",
-                       on_consensus=lambda: (made.append(1), ir.rater_study(load_profile("Studie"), ir.CONSENSUS)))
-    cv.resize(1300, 800); cv.show(); QTest.qWait(80)
-    check(cv.list.count() == 4 and len(cv.diffs) == 2 and cv.pos == 0, "4 images listed; the first has 2 differences, shown")
-    ax = cv.fig.axes
-    check(len(ax) == 2 and ax[0].get_shared_x_axes().joined(ax[0], ax[1]), "two views that zoom and pan together")
-    first = cv.diffs[0].cid
-    cv.grab().save(str(OUT / "qt_compare_view.png"))
-    cv.take("b")
-    cons = ir.load_review(folder, ir.CONSENSUS, Path(names[0]).stem)
-    check(first == 2 and cons is not None and cons.types == {"1": "stechapfel"},
-          f"'B übernehmen' on cell 2: consensus = A with cell 2 as B rated it ({cons and cons.types})")
-    check(cv.pos == 1 and made and load_profile("Studie · Konsens") is not None,
-          "…jumps to the next difference and creates the study 'Studie · Konsens'")
-    cv.set_mode("flip"); cv.flip()
-    check(len(cv.fig.axes) == 1 and cv.flip_b, "Umschalten: one view, space flips A/B")
-    cv.close()
+    w.close()
 
+    # ── the comparison in the main window (split) ──
+    from erysreview import backups
+    from erysreview.qt.backups_dialog import BackupsDialog
+    win.settings.abgleich_hint_shown = True              # the first-take note is tested below
+    win.show_image(0)
+    win._update_abgleich_ui()
+    check(win.toolbar.btn_abgleich.isVisibleTo(win.toolbar) and win.toolbar.btn_stats.isVisibleTo(win.toolbar),
+          "study A with a comparison: '⇆ Abgleich' and 'Statistik' appear in the toolbar")
+    win.toolbar.btn_abgleich.click(); QTest.qWait(80)
+    sp = win.split
+    check(sp.active and win.canvas_b.isVisible() and win.canvas_b.read_only and sp.panel.isVisible(),
+          "the view splits: A and B (view only), decision panel on the right")
+    bks = backups.list_backups(folder)
+    check(any(b.kind == "abgleich" and "Finn 2" in b.name for b in bks), "A was backed up when the comparison started")
+    st0 = Path(names[0]).stem
+    check(len(sp.diffs) == 2 and [d[0] for d in sp.diffs] == [2, 5], f"image 1: cells 2 and 5 differ ({sp.diffs})")
+    OUT.mkdir(exist_ok=True); win.grab().save(str(OUT / "qt_split.png"))
+
+    win.canvas.set_view((10, 60), (60, 10)); win.canvas._notify_view()
+    check(tuple(win.canvas_b.ax.get_xlim()) == (10, 60), "zoom and pan move both sides together")
+    sp.set_layout("rows")
+    check(win.views.orientation() == Qt.Vertical, "'Untereinander' stacks A above B")
+    sp.set_layout("side")
+    sp.only_cb.setChecked(True)
+    check(win.canvas.only_ids == {2, 5}, "'Nur Unterschiede' colours only the differing cells")
+    sp.only_cb.setChecked(False)
+
+    from types import SimpleNamespace
+    ax = win.canvas_b.ax
+    x, y = ax.transData.transform((60, 30))
+    types_b_before = dict(sp.rb.types)
+    win.canvas_b._on_button_press(SimpleNamespace(button=1, inaxes=ax, x=x, y=y, xdata=60, ydata=30))
+    check(sp.rb.types == types_b_before, "B cannot be edited from the split")
+
+    # cell 2: A Stechapfel, B normal → B is right → take B
+    sp.pos = 0; sp.take_b()
+    a_now = ReviewState.load(folder, st0)
+    check("2" not in a_now.types and ir.decisions(folder, "Finn 2")[st0]["2"] == "taken",
+          "'B → A' changes cell 2 in study A itself (normal now) and records the decision")
+    # cell 5: A normal, B Stechapfel → A is right → keep
+    sp.pos = next(k for k, d in enumerate(sp.diffs) if d[0] == 5); sp.keep_a()
+    check("5" not in ReviewState.load(folder, st0).types and ir.decisions(folder, "Finn 2")[st0]["5"] == "kept",
+          "'A behalten' leaves A as it is")
+    check(sp.prog_text.text().startswith("2 von 2"), f"progress shows both decided ({sp.prog_text.text()})")
+    sp.undo()
+    check("5" not in ir.decisions(folder, "Finn 2")[st0], "the last decision can be undone")
+    sp.undo()
+    check(ReviewState.load(folder, st0).types.get("2") == "stechapfel", "undoing 'B → A' restores A's cell")
+    sp.pos = 0; sp.take_b()
+
+    # first take shows the note (backup can be loaded any time) — once
+    win.settings.abgleich_hint_shown = False
+    shown = []
+    from PySide6.QtWidgets import QMessageBox
+    real_exec = QMessageBox.exec
+    def fake_exec(box):
+        shown.append(box.text())
+        box.checkBox().setChecked(True)
+        box._clicked = box.buttons()[0]
+        return 0
+    QMessageBox.exec = fake_exec
+    QMessageBox.clickedButton = lambda box: getattr(box, "_clicked", None)
+    check(sp._first_take_hint() and shown and "Sicherung" in shown[0] and win.settings.abgleich_hint_shown,
+          "the first 'B → A' explains: study A changes, the backup can be loaded any time")
+    QMessageBox.exec = real_exec
+    del QMessageBox.clickedButton
+
+    # statistics: with the backup A is unchanged → the original 8 differences
+    ws = InterraterWindow(win, win.P, win.S, folder, win.ctl.grouped, win.ctl.profile, me="Finn", rater="Finn 2")
+    check(ws.snap_cb.isChecked() and ws.ag.n_cells - ws.ag.n_same == 8,
+          "the statistics use 'A vor Abgleich' — the taken correction does not flatter κ")
+    ws.snap_cb.setChecked(False)
+    check(ws.ag.n_cells - ws.ag.n_same == 7, "…and can compare the current A instead (one difference fewer)")
+    ws.close()
+
+    # backups: load 'A vor Abgleich' back
+    bd = BackupsDialog(win, win.P, win.S, folder)
+    target = next(i for i in range(bd.tree.topLevelItemCount())
+                  if "Finn 2" in bd.tree.topLevelItem(i).text(0))
+    bd.tree.setCurrentItem(bd.tree.topLevelItem(target)); bd.tree.topLevelItem(target).setSelected(True)
+    bd.load(confirm=lambda: True)
+    check(bd.restored and ReviewState.load(folder, st0).types.get("2") == "stechapfel",
+          "loading the backup brings A's original rating back")
+    check(any(b.kind == "auto" for b in backups.list_backups(folder)), "…after saving the state before as an automatic backup")
+    bd.close()
+    sp.deactivate()
+    check(not win.canvas_b.isVisible() and win.canvas.only_ids is None, "'⇆ Abgleich' off: back to the single view")
+
+    # backups travel in a package only when asked
+    from erysreview import package as pkg
+    import zipfile
+    zp1, zp2 = root / "ohne.zip", root / "mit.zip"
+    pkg.create_package(folder, win.ctl.grouped, win.ctl.profile, zp1, include_images=False)
+    pkg.create_package(folder, win.ctl.grouped, win.ctl.profile, zp2, include_images=False, include_backups=True)
+    has = lambda z: any(n.startswith("sicherungen/") for n in zipfile.ZipFile(z).namelist())
+    check(not has(zp1) and has(zp2), "backups go into a package only with 'Sicherungen mitnehmen'")
+
+    # three ratings for Fleiss' κ: a second self rating
+    ir.create_self_rating(folder, "Finn 3", [Path(n).stem for n in names])
+    for n in names:
+        rv = ReviewState.load(folder, Path(n).stem); rv.is_finished = True
+        (ir.rater_dir(folder, "Finn 3") / f"{Path(n).stem}_review.json").write_text(json.dumps(rv.to_dict()))
+    w = InterraterWindow(win, win.P, win.S, folder, win.ctl.grouped, win.ctl.profile, me="Finn", rater="Finn 2")
     w.all_cb.setEnabled(True); w.all_cb.setChecked(True); QTest.qWait(30)
     titles = [w.tiles.itemAt(i).widget().findChildren(type(w.title))[0].text() for i in range(w.tiles.count())]
     check(any("Fleiss" in t and "3" in t for t in titles), f"'Alle Bewertungen' shows Fleiss' κ over 3 ratings ({titles})")
@@ -162,7 +247,7 @@ def main() -> int:
     w.close(); win.close()
     from erysreview.qt.tasks import shutdown
     shutdown(); tmp.cleanup()
-    print(f"OK — {CHECKS} checks: blind intra-rater rating, comparison view, consensus and Fleiss' κ.")
+    print(f"OK — {CHECKS} checks: blind intra-rater rating, comparison in the main window, backups and Fleiss' κ.")
     return 0
 
 

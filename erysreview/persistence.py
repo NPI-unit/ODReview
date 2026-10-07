@@ -240,6 +240,8 @@ class AppSettings:
     overlay_autoshow: bool = True
     # Helper grid over the image: n × n fields (0 = off). Per computer, exploratory.
     grid_n: int = 0
+    # The note before the first "B → A" in a comparison was read (don't show again).
+    abgleich_hint_shown: bool = False
     # Toolbar layout: "grouped" (one row) or "two_row" (cell types as chips).
     toolbar_layout: str = "grouped"
     # What happens to existing masks after the study's Cellpose parameters
@@ -290,6 +292,7 @@ class AppSettings:
                 sidebar_width=int(raw.get("sidebar_width", 270)),
                 overlay_visible=bool(raw.get("overlay_visible", True)),
                 overlay_autoshow=bool(raw.get("overlay_autoshow", True)),
+                abgleich_hint_shown=bool(raw.get("abgleich_hint_shown", False)),
                 grid_n=(int(raw.get("grid_n", 0)) if str(raw.get("grid_n", 0)).isdigit()
                         and 0 <= int(raw.get("grid_n", 0)) <= 10 else 0),
                 toolbar_layout=(raw.get("toolbar_layout") if raw.get("toolbar_layout")
@@ -324,6 +327,7 @@ class AppSettings:
             "overlay_visible": self.overlay_visible,
             "overlay_autoshow": self.overlay_autoshow,
             "grid_n": self.grid_n,
+            "abgleich_hint_shown": self.abgleich_hint_shown,
             "toolbar_layout": self.toolbar_layout,
             "resegment_default": self.resegment_default,
             "active_tool": self.active_tool,

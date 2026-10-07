@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QPoint, QTimer, Qt
 from PySide6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
     QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
             "overlay": self.toggle_overlay, "reset_zoom": lambda: self.canvas.reset_zoom(),
             "undo": self.undo, "info": self.show_info, "export": self.export,
             "study": self._show_study_card,
+            "abgleich": self.toggle_split, "stats": lambda: self.open_interrater(self.split.rater),
         })
         v.addWidget(self.toolbar)
 
@@ -154,7 +155,16 @@ class MainWindow(QMainWindow):
                                   on_edit_overlay_hidden=lambda: self._set_status(
                                       S["overlay_hidden_edit"]),
                                   context_callback=self._image_menu)
-        cl.addWidget(self.canvas)
+        # Comparison (Abgleich): bar on top, A | B views, decision panel right.
+        from .split import SplitController
+        self.views = QSplitter(Qt.Horizontal)
+        self.views.addWidget(self.canvas)
+        self.canvas_b = None
+        self.split = SplitController(self)
+        cl.addWidget(self.split.bar)
+        body = QWidget(); bl = QHBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
+        bl.addWidget(self.views, 1); bl.addWidget(self.split.panel)
+        cl.addWidget(body, 1)
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
         self.canvas.grid_n = self.settings.grid_n
         self.notebox = QtNoteBox(self.canvas, S, self._on_note_saved, self._on_note_closed,
@@ -201,6 +211,7 @@ class MainWindow(QMainWindow):
         m_file.addSeparator()
         self._act(m_file, S["menu_package_create"], self.package_create)
         self._act(m_file, S["menu_package_import"], self.package_import)
+        self._act(m_file, S["bk_menu"], self.open_backups)
         m_file.addSeparator()
         quit_ = self._act(m_file, S["menu_quit"], self.close, "quit")
         quit_.setMenuRole(QAction.QuitRole)
@@ -253,6 +264,9 @@ class MainWindow(QMainWindow):
             "prev_image": lambda: self.step(-1), "next_image": lambda: self.step(+1),
             "toggle_finished": self.toggle_finished, "cycle_eval": self.cycle_eval,
             "resegment": self.resegment, "info": self.show_info,
+            "next_diff": lambda: self.split.step(+1), "prev_diff": lambda: self.split.step(-1),
+            "take_b": lambda: self.split.take_b(), "keep_a": lambda: self.split.keep_a(),
+            "split_layout": self._toggle_split_layout,
         }
 
     def _bind_keys(self) -> None:
@@ -290,6 +304,13 @@ class MainWindow(QMainWindow):
                                                          context=Qt.WindowShortcut))
         self._mapping = mapping
 
+    def _toggle_split_layout(self) -> None:
+        if self.split.active:
+            rows = self.views.orientation() == Qt.Horizontal
+            self.split.set_layout("rows" if rows else "side")
+            for b in self.split.layout_group.buttons():
+                b.setChecked(b.text() == self.S["sp_rows" if rows else "sp_side"])
+
     def run_action(self, action_id: str) -> None:
         if action_id in self._qactions:
             self._qactions[action_id].trigger()
@@ -312,6 +333,7 @@ class MainWindow(QMainWindow):
         self.empty_btn.hide()
         self.sidebar.populate(path, self.ctl.images, self.ctl.grouped)
         self.show_image(start)
+        self._update_abgleich_ui()
 
     def _fill_recent(self) -> None:
         self.m_recent.clear()
@@ -363,6 +385,8 @@ class MainWindow(QMainWindow):
         self.canvas.reset_zoom()
         self._update_status()
         self._update_tool_label()
+        if self.split.active:
+            self.split.load_image()
 
     def _show_cellpose_state(self, loaded) -> None:
         """The Cellpose button carries the image's state (mockup v4): quiet,
@@ -439,6 +463,8 @@ class MainWindow(QMainWindow):
             self.saved_label.setText(f"! {e}")
         self.sidebar.refresh_group_of(self.ctl.idx)
         self._update_status()
+        if self.split.active:
+            self.split.refresh()
 
     def undo(self) -> None:
         if self.canvas.undo():
@@ -461,6 +487,66 @@ class MainWindow(QMainWindow):
         self.settings.overlay_visible = not self.settings.overlay_visible
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
         self.settings.save()
+
+    # ── comparison in the main window (split.py) & backups of A ──
+    def ensure_canvas_b(self) -> None:
+        if self.canvas_b is None:
+            self.canvas_b = QtEryCanvas(self.settings, self.ctl.profile, lambda: None)
+            self.canvas_b.read_only = True
+            self.canvas_b.grid_n = self.settings.grid_n
+            self.views.addWidget(self.canvas_b)
+        self.canvas_b.set_profile(self.ctl.profile)
+
+    def _update_abgleich_ui(self) -> None:
+        avail = self.split.available()
+        if not avail and self.split.active:
+            self.split.deactivate()
+        self.toolbar.set_abgleich(avail, self.split.active)
+
+    def toggle_split(self, on: bool) -> None:
+        if on:
+            from .. import interrater as ir
+            raters = ir.list_raters(self.ctl.folder) if self.ctl.folder else []
+            rater = None
+            if len(raters) > 1:
+                from PySide6.QtGui import QCursor
+                from PySide6.QtWidgets import QMenu
+                m = QMenu(self); m.addSection(self.S["sp_with_whom"])
+                acts = {m.addAction(r): r for r in raters}
+                chosen = m.exec(QCursor.pos())
+                if chosen is None:
+                    self.toolbar.set_abgleich(True, False)
+                    return
+                rater = acts[chosen]
+            if not self.split.activate(rater):
+                self.toolbar.set_abgleich(self.split.available(), False)
+        else:
+            self.split.deactivate()
+        self.toolbar.set_abgleich(self.split.available(), self.split.active)
+
+    def backup_now(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        from .. import backups
+        if self.ctl.folder is None:
+            return
+        name, ok = QInputDialog.getText(self, self.S["bk_title"], self.S["bk_name_prompt"],
+                                        text=self.S["bk_default_name"])
+        if ok and name.strip():
+            self.ctl.flush_time()
+            backups.create(self.ctl.folder, name.strip(), "manual")
+            self._set_status(self.S["bk_saved"].format(name=name.strip()))
+
+    def open_backups(self) -> None:
+        from .backups_dialog import BackupsDialog
+        if self.ctl.folder is None:
+            return
+        self.ctl.flush_time()
+        dlg = BackupsDialog(self, self.P, self.S, self.ctl.folder)
+        dlg.exec()
+        if dlg.restored:
+            self.ctl.reload_review()
+            self.sidebar.refresh_all()
+            self.show_image(self.ctl.idx)
 
     # ── brightness & contrast (display only, display_adjust.py) ──
     def _image_menu(self) -> None:
@@ -902,6 +988,7 @@ class MainWindow(QMainWindow):
         elif field == "toolbar_layout":
             self.toolbar.rebuild()
             self.toolbar.set_active_tool(self.settings.active_tool)
+            self._update_abgleich_ui()
             if self.ctl.has_images:
                 self.show_image(self.ctl.idx)       # restores the parameter banner
         elif field == "shortcuts":
@@ -926,6 +1013,8 @@ class MainWindow(QMainWindow):
     def _profile_changed(self, reopen_folder: bool) -> None:
         """Push the (new or edited) study to every widget."""
         p = self.ctl.profile
+        if self.split.active:
+            self.split.deactivate()
         self.setWindowTitle(self.S["title_with_profile"].format(profile=p.name))
         self.canvas.set_profile(p)
         self.toolbar.set_profile(p)

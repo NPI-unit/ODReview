@@ -114,6 +114,8 @@ QPushButton {{
 QPushButton:hover {{ background: {T['hover']}; }}
 QPushButton:disabled {{ color: {T['fg_muted']}; }}
 QPushButton[class~="tool"] {{ min-height: 40px; }}
+QPushButton[class~="tool"]:checked {{ border: 2px solid {T['accent_primary']}; background: {T['accent_soft']};
+    color: {T['accent_primary']}; font-weight: 700; }}
 QPushButton[class~="icon"] {{ min-width: 40px; max-width: 40px; padding: 0; font-size: 16px; }}
 QPushButton[class~="primary"] {{ border: none; background: {T['accent_primary']};
     color: {T['fg_on_accent']}; font-weight: 600; }}

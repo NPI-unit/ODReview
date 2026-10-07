@@ -31,6 +31,22 @@ def dot_icon(color: str, ring: str, size: int = 14) -> QIcon:
     return QIcon(pm)
 
 
+def bars_icon(color: str, size: int = 16) -> QIcon:
+    """Statistik symbol (mockup choice D): three small bars in the text colour."""
+    pm = QPixmap(size * 2, size * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    u = size / 16.0
+    for x, y in ((2, 9), (6.5, 5), (11, 2)):
+        p.drawRoundedRect(x * u, y * u, 3 * u, (14 - y) * u, 0.6 * u, 0.6 * u)
+    p.end()
+    return QIcon(pm)
+
+
 def _set_class(w: QWidget, cls: str) -> QWidget:
     w.setProperty("class", cls)
     return w
@@ -75,6 +91,11 @@ class QtToolbar(QWidget):
         b.style().unpolish(b); b.style().polish(b)
         b.setToolTip(tooltip)
         self._cp_dot.setVisible(state == "stale")
+
+    def set_abgleich(self, available: bool, active: bool = False) -> None:
+        self.btn_abgleich.setVisible(available)
+        self.btn_abgleich.setChecked(active)
+        self.btn_stats.setVisible(available)
 
     def set_profile(self, profile) -> None:
         self.profile = profile
@@ -150,6 +171,17 @@ class QtToolbar(QWidget):
     def _finish(self, h: QHBoxLayout) -> None:
         self.banner = QLabel("")            # no longer shown (see set_cellpose_state)
         self.banner.hide()
+        # Comparison (Abgleich): only shown when the study has one.
+        self.btn_abgleich = QPushButton("⇆  " + self.S["sp_button"])
+        _set_class(self.btn_abgleich, "tool"); self.btn_abgleich.setCheckable(True)
+        self.btn_abgleich.setToolTip(self.S["sp_button_tip"])
+        self.btn_abgleich.clicked.connect(lambda on: self.cb.get("abgleich", lambda _o: None)(on))
+        self.btn_stats = QPushButton(self.S["sp_stats"])
+        _set_class(self.btn_stats, "tool"); self.btn_stats.setIcon(bars_icon(self.P["fg"]))
+        self.btn_stats.setToolTip(self.S["sp_stats_tip"])
+        self.btn_stats.clicked.connect(lambda: self.cb.get("stats", lambda: None)())
+        for b in (self.btn_abgleich, self.btn_stats):
+            b.setVisible(False); h.addWidget(b)
         h.addWidget(self._action("undo", "tool_undo", "undo", icon_only=True))
         self.btn_resegment = self._action("resegment", "tool_resegment", "resegment")
         self.btn_resegment.setObjectName("cellposeBtn")

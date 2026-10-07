@@ -158,6 +158,7 @@ def import_rater(zip_path: Path, folder: Path, name: str | None = None) -> dict:
                       imported_at=_dt.datetime.now().isoformat(timespec="seconds"),
                       created_at=manifest.get("created_at"), stems=ok, rejected=rejected,
                       masks={stem: _local_mask_digest(folder, stem) for stem in ok})
+    ensure_a_backup(folder, rater)
     return {"name": rater, "imported": ok, "rejected": rejected}
 
 
@@ -169,6 +170,77 @@ def create_self_rating(folder: Path, name: str, stems: list[str], blind: bool = 
     _write_rater_meta(folder, name, kind="self", blind=bool(blind),
                       created_at=_dt.datetime.now().isoformat(timespec="seconds"),
                       masks={stem: _local_mask_digest(folder, stem) for stem in stems})
+    ensure_a_backup(folder, name)
+
+
+def ensure_a_backup(folder: Path, rater: str) -> str:
+    """The backup "A vor Abgleich mit <rater>": made once when the comparison
+    starts, remembered in the rater's meta. The statistics compare B with
+    it, so corrections taken over from B later cannot flatter κ / ICC.
+    Returns the backup id."""
+    from . import backups
+    bid = rater_info(folder, rater).get("a_backup")
+    if bid and backups.get(folder, bid) is not None:
+        return bid
+    b = backups.create(folder, f"A vor Abgleich mit {rater}", "abgleich")
+    _write_rater_meta(folder, rater, a_backup=b.id)
+    return b.id
+
+
+def a_backup_dir(folder: Path, rater: str) -> Path | None:
+    from . import backups
+    bid = rater_info(folder, rater).get("a_backup")
+    b = backups.get(folder, bid) if bid else None
+    return b.path if b is not None else None
+
+
+def decisions(folder: Path, rater: str) -> dict[str, dict[str, str]]:
+    """{stem: {cell id: "taken" | "kept"}} — what was decided per difference."""
+    p = rater_dir(folder, rater) / "decisions.json"
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_decision(folder: Path, rater: str, stem: str, cid: int, value: str | None) -> None:
+    d = decisions(folder, rater)
+    per = d.setdefault(stem, {})
+    if value is None:
+        per.pop(str(cid), None)
+    else:
+        per[str(cid)] = value
+    write_json_atomic(rater_dir(folder, rater) / "decisions.json", d)
+
+
+def take_cell(target: ReviewState, source: ReviewState, cid: int) -> dict:
+    """Give `target` (A) the rating `source` (B) has for mask cell `cid`:
+    type and counted / excluded / re-included. Returns what A had before
+    (for undo with restore_cell)."""
+    key = str(cid)
+    before = {"type": target.types.get(key), "excl": cid in target.force_excluded,
+              "incl": cid in target.force_included}
+    for name in ("force_excluded", "force_included"):
+        lst = [x for x in getattr(target, name) if x != cid]
+        if cid in getattr(source, name):
+            lst.append(cid)
+        setattr(target, name, lst)
+    if key in source.types:
+        target.types[key] = source.types[key]
+    else:
+        target.types.pop(key, None)
+    return before
+
+
+def restore_cell(target: ReviewState, cid: int, before: dict) -> None:
+    key = str(cid)
+    target.force_excluded = [x for x in target.force_excluded if x != cid] + ([cid] if before["excl"] else [])
+    target.force_included = [x for x in target.force_included if x != cid] + ([cid] if before["incl"] else [])
+    if before["type"] is None:
+        target.types.pop(key, None)
+    else:
+        target.types[key] = before["type"]
 
 
 def masks_unchanged(folder: Path, rater: str | None, stem: str) -> bool:
@@ -205,42 +277,6 @@ def blind_locked(folder: Path, rater: str) -> tuple[bool, int, int]:
     stems = list((info.get("masks") or {}).keys())
     done = sum(1 for st in stems if (load_review(folder, rater, st) or ReviewState()).is_finished)
     return done < len(stems), done, len(stems)
-
-
-# ─────────────────────────────────────────────
-# Consensus
-# ─────────────────────────────────────────────
-CONSENSUS = "Konsens"
-
-
-def set_consensus_cell(folder: Path, stem: str, cid: int, source: ReviewState, base: ReviewState) -> None:
-    """Take one cell's rating (type, excluded / re-included) from `source`
-    into the consensus review of the image, which starts as a copy of `base`
-    (rating A) the first time it is touched."""
-    import copy as _copy
-    cons = load_review(folder, CONSENSUS, stem)
-    if cons is None:
-        cons = _copy.deepcopy(base)
-        cons.is_finished = False
-    key = str(cid)
-    for lst_name in ("force_excluded", "force_included"):
-        lst = [x for x in getattr(cons, lst_name) if x != cid]
-        if cid in getattr(source, lst_name):
-            lst.append(cid)
-        setattr(cons, lst_name, lst)
-    if key in source.types:
-        cons.types[key] = source.types[key]
-    else:
-        cons.types.pop(key, None)
-    d = rater_dir(folder, CONSENSUS)
-    write_json_atomic(d / f"{stem}_review.json", cons.to_dict())
-    if not (d / "rater.json").is_file():
-        _write_rater_meta(folder, CONSENSUS, kind="consensus",
-                          created_at=_dt.datetime.now().isoformat(timespec="seconds"), masks={})
-    masks = rater_info(folder, CONSENSUS).get("masks") or {}
-    if stem not in masks:
-        masks[stem] = _local_mask_digest(folder, stem)
-        _write_rater_meta(folder, CONSENSUS, masks=masks)
 
 
 # ─────────────────────────────────────────────
@@ -381,7 +417,8 @@ def _pct_changed(cats: dict[int, str], manual: list[str]) -> tuple[int, float]:
     return len(act), (100.0 * changed / len(act) if act else 0.0)
 
 
-def _image_pair(folder: Path, info, profile: ProfileData, base: str | None, rater_b: str):
+def _image_pair(folder: Path, info, profile: ProfileData, base: str | None, rater_b: str,
+                a_dir: Path | None = None):
     """(ids, auto, review A, review B) for one image, or None if it is not
     comparable (no B review, no masks, or masks changed since a rating)."""
     from .cellpose_runner import load_cached_masks
@@ -394,13 +431,17 @@ def _image_pair(folder: Path, info, profile: ProfileData, base: str | None, rate
     masks = load_cached_masks(folder, info.path)
     if masks is None:
         return None
-    ra = load_review(folder, base, stem) or ReviewState()
+    if a_dir is not None:                    # A as backed up when the comparison started
+        p = a_dir / f"{stem}_review.json"
+        ra = ReviewState.load_file(p) if p.is_file() else ReviewState()
+    else:
+        ra = load_review(folder, base, stem) or ReviewState()
     ids, auto = mask_cells(masks, profile)
     return ids, auto, ra, rb, masks
 
 
 def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: str = "",
-            base: str | None = None) -> Agreement:
+            base: str | None = None, a_dir: Path | None = None) -> Agreement:
     """Rating A (`base`; None = the main reviews) against `rater_b`, over
     every image both have on unchanged masks. `rater_a` is A's display name."""
     from .grouping import UNGROUPED_TIMEPOINT
@@ -415,7 +456,7 @@ def compare(folder: Path, grouped, profile: ProfileData, rater_b: str, rater_a: 
             gb: list[str] = []
             n_grp = 0
             for info in grouped.tree[tp][sub]:
-                pair = _image_pair(folder, info, profile, base, rater_b)
+                pair = _image_pair(folder, info, profile, base, rater_b, a_dir)
                 if pair == "changed":
                     n_changed += 1
                     continue
@@ -512,7 +553,7 @@ class MultiAgreement:
 
 
 def compare_many(folder: Path, grouped, profile: ProfileData, ratings: list[str | None],
-                 labels: list[str]) -> MultiAgreement:
+                 labels: list[str], a_dir: Path | None = None) -> MultiAgreement:
     """All ratings at once, on the images every one of them has (unchanged
     masks): Fleiss' κ over the cells, ICC(2,1) over the groups' % verändert."""
     from .cellpose_runner import load_cached_masks
@@ -528,8 +569,12 @@ def compare_many(folder: Path, grouped, profile: ProfileData, ratings: list[str 
             n_grp = 0
             for info in grouped.tree[tp][sub]:
                 stem = info.path.stem
-                revs = [load_review(folder, r, stem) if r else (load_review(folder, None, stem) or ReviewState())
-                        for r in ratings]
+                def _a():
+                    if a_dir is not None:
+                        p = a_dir / f"{stem}_review.json"
+                        return ReviewState.load_file(p) if p.is_file() else ReviewState()
+                    return load_review(folder, None, stem) or ReviewState()
+                revs = [load_review(folder, r, stem) if r else _a() for r in ratings]
                 if any(rv is None for rv in revs) or not all(masks_unchanged(folder, r, stem) for r in ratings):
                     continue
                 masks = load_cached_masks(folder, info.path)

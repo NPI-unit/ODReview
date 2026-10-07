@@ -86,6 +86,12 @@ class InterraterWindow(QDialog):
         self.all_cb.toggled.connect(lambda _on: self.refresh())
         self.all_cb.setEnabled(len(ir.list_raters(folder)) >= 2)
         head.addWidget(self.all_cb)
+        # A as it was when the comparison started: corrections taken over from
+        # B afterwards would otherwise flatter the agreement.
+        self.snap_cb = QCheckBox(S["ir_use_backup"]); self.snap_cb.setChecked(True)
+        self.snap_cb.setToolTip(S["ir_use_backup_tip"])
+        self.snap_cb.toggled.connect(lambda _on: self.refresh())
+        head.addWidget(self.snap_cb)
         v.addLayout(head)
         self.lock = QLabel(""); self.lock.setObjectName("staleBox"); self.lock.setWordWrap(True); self.lock.hide()
         v.addWidget(self.lock)
@@ -124,9 +130,7 @@ class InterraterWindow(QDialog):
 
         foot = QHBoxLayout()
         self.foot = QLabel(""); self.foot.setStyleSheet(f"color: {P['fg_secondary']};"); self.foot.setWordWrap(True)
-        self.view_btn = QPushButton(S["ir_open_view"]); self.view_btn.clicked.connect(self.open_view)
         exp = QPushButton(S["ir_export"]); exp.clicked.connect(lambda: self._export())
-        foot.addWidget(self.view_btn)
         close = QPushButton(S["qt_close"]); close.setProperty("class", "primary"); close.clicked.connect(self.accept)
         foot.addWidget(self.foot, 1); foot.addWidget(exp); foot.addWidget(close)
         v.addLayout(foot)
@@ -143,7 +147,6 @@ class InterraterWindow(QDialog):
             return
         locked, done, total = ir.blind_locked(self.folder, rater)
         self.lock.setVisible(locked)
-        self.view_btn.setEnabled(not locked)
         if locked:
             self.lock.setText(S["ir_blind_locked"].format(name=rater, done=done, total=total))
             self.title.setText(S["ir_head"].format(a=self.me, b=rater))
@@ -155,7 +158,8 @@ class InterraterWindow(QDialog):
             self.table.clear(); self.table.setRowCount(0); self.table.setColumnCount(0)
             self.fig.clear(); self.plot.draw_idle()
             return
-        self.ag = ag = ir.compare(self.folder, self.grouped, self.profile, rater, self.me)
+        a_dir = ir.a_backup_dir(self.folder, rater) if self.snap_cb.isChecked() else None
+        self.ag = ag = ir.compare(self.folder, self.grouped, self.profile, rater, self.me, a_dir=a_dir)
         self.title.setText(S["ir_head"].format(a=self.me, b=rater))
         while self.tiles.count():
             w = self.tiles.takeAt(0).widget()
@@ -174,7 +178,8 @@ class InterraterWindow(QDialog):
                                    + f" · n = {len(ag.groups)}", good(i, 0.75), P))
         if self.all_cb.isChecked():
             names = [r for r in ir.list_raters(self.folder) if not ir.blind_locked(self.folder, r)[0]]
-            many = ir.compare_many(self.folder, self.grouped, self.profile, [None, *names], [self.me, *names])
+            many = ir.compare_many(self.folder, self.grouped, self.profile, [None, *names], [self.me, *names],
+                                   a_dir=a_dir)
             fi, flo, fhi = many.icc
             self.tiles.addWidget(_tile(S["ir_fleiss"].format(k=len(many.raters)), _fmt(S, many.fleiss),
                                        S["ir_fleiss_sub"].format(n=many.n_cells, icc=_fmt(S, fi),
@@ -189,21 +194,6 @@ class InterraterWindow(QDialog):
         self._draw_plots()
         self.foot.setText(S["ir_foot"].format(n=ag.n_images, a=ag.manual_only_a, b=ag.manual_only_b,
                                               me=self.me, rater=rater))
-
-    def open_view(self) -> None:
-        from .compare_view import CompareWindow
-        rater = self.rater_combo.currentText()
-        if not rater:
-            return
-
-        def made_consensus():
-            ir.rater_study(self.base_profile, ir.CONSENSUS)
-            if self.rater_combo.findText(ir.CONSENSUS) < 0:
-                self.rater_combo.addItem(ir.CONSENSUS)
-        w = CompareWindow(self, self.P, self.S, self.folder, self.grouped, self.profile, rater, self.me,
-                          on_consensus=made_consensus)
-        w.exec()
-        self.refresh()
 
     def _kappa_word(self, k: float) -> str:
         # Landis & Koch (1977)

@@ -117,7 +117,7 @@ class AbgleichDialog(QDialog):
         folder = Path(p.import_folder)
         if self.rb_self.isChecked():
             name = self.name.text().strip()
-            if name in ir.list_raters(folder) or name == ir.CONSENSUS:
+            if name in ir.list_raters(folder):
                 QMessageBox.information(self, S["ab_title"], S["qt_name_taken"])
                 return
             ir.create_self_rating(folder, name, self._stems_with_masks(p), blind=self.blind.isChecked())
