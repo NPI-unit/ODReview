@@ -167,6 +167,15 @@ def main() -> int:
     check(win.sidebar.det_cells.property("reached") is False and "/" in win.sidebar.det_cells.text(),
           f"the sidebar line shows cells vs. target, red below it ({win.sidebar.det_cells.text()})")
 
+    # ── the progress window is big enough to read ──
+    from erysreview.qt.tasks import progress_dialog
+    pd = progress_dialog(win, "Export", "Export läuft … die gezählten Zellen jeder Gruppe werden geschrieben "
+                                        "(Prä · Proband 01)")
+    pd.setCancelButton(None); pd.show(); QTest.qWait(20)
+    pd.grab().save(str(OUT / "qt_progress.png"))
+    check(pd.width() >= 520 and pd.height() >= 150, f"the progress window is readable ({pd.width()}×{pd.height()})")
+    pd.close()
+
     # ── export ──
     orig_exec = processing.ExportDialog.exec
 

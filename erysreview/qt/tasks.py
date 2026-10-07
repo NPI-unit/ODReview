@@ -8,7 +8,7 @@ dialog shows arrives via queued signals, which Qt delivers on the GUI thread.
 from __future__ import annotations
 
 from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, Qt, Signal, Slot
-from PySide6.QtWidgets import QProgressDialog, QWidget
+from PySide6.QtWidgets import QLabel, QProgressDialog, QWidget
 
 from ..tasks import CancelFlag, Task
 
@@ -49,18 +49,30 @@ class _Relay(QObject):
         self._f(result, error)
 
 
+def progress_dialog(parent, title: str, label: str, maximum: int = 0,
+                    cancel_text: str | None = None) -> QProgressDialog:
+    """The progress window: big enough to read — long texts ("Export … Prä ·
+    Proband 12 …") wrap instead of squeezing it to the width of its title."""
+    dlg = QProgressDialog(label, cancel_text, 0, maximum, parent)
+    dlg.setWindowTitle(title)
+    lab = QLabel(label); lab.setWordWrap(True); lab.setMinimumWidth(440)
+    lab.setContentsMargins(6, 8, 6, 4)
+    dlg.setLabel(lab)
+    dlg.setMinimumSize(520, 150)
+    dlg.setWindowModality(Qt.WindowModal)
+    dlg.setMinimumDuration(300)
+    dlg.setAutoClose(False)
+    dlg.setAutoReset(False)
+    return dlg
+
+
 def run_task_modal(parent: QWidget, task: Task, title: str, label: str,
                    maximum: int = 0, cancel_text: str | None = None):
     """Run `task` behind a modal progress dialog and return its result
     (re-raising its exception). maximum=0 shows a busy indicator. The window
     keeps repainting meanwhile; only the dialog accepts input."""
     cancel = CancelFlag()
-    dlg = QProgressDialog(label, cancel_text, 0, maximum, parent)
-    dlg.setWindowTitle(title)
-    dlg.setWindowModality(Qt.WindowModal)
-    dlg.setMinimumDuration(300)
-    dlg.setAutoClose(False)
-    dlg.setAutoReset(False)
+    dlg = progress_dialog(parent, title, label, maximum, cancel_text)
     if cancel_text is None:
         dlg.setCancelButton(None)
     else:
