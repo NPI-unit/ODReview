@@ -39,26 +39,39 @@ class SplitController:
 
     # ── widgets ──
     def _build_bar(self) -> None:
+        """One compact row: A ↔ B, metric, differences, layout, colour only
+        differences, and "⋯" (backups, remove B). Combos size to their content
+        but stay narrow, so the window fits a laptop screen."""
+        from PySide6.QtWidgets import QMenu, QSizePolicy, QToolButton
         S = self.S
         self.bar = QFrame(); self.bar.setObjectName("cmpBar")
-        h = QHBoxLayout(self.bar); h.setContentsMargins(12, 6, 12, 6); h.setSpacing(10)
+        h = QHBoxLayout(self.bar); h.setContentsMargins(12, 6, 12, 6); h.setSpacing(8)
+
+        def combo(min_chars: int) -> QComboBox:
+            c = QComboBox()
+            c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(min_chars)
+            c.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            return c
+
         self.a_label = QLabel(""); self.a_label.setStyleSheet("font-weight: 600;")
-        self.snap_label = QLabel(""); self.snap_label.setStyleSheet(f"color: {self.P['state_finished']}; font-size: 12px;")
-        load = QPushButton(S["sp_load_backup"]); load.clicked.connect(lambda: self.win.open_backups())
-        save = QPushButton(S["sp_save_now"]); save.clicked.connect(lambda: self.win.backup_now())
-        h.addWidget(self.a_label); h.addWidget(self.snap_label); h.addWidget(load); h.addWidget(save)
-        h.addWidget(QLabel("↔"))
-        self.b_combo = QComboBox(); self.b_combo.setMinimumWidth(140)
+        h.addWidget(self.a_label)
+        h.addWidget(QLabel("↔ " + S["sp_b"]))
+        self.b_combo = combo(8)
         self.b_combo.activated.connect(lambda _i: self.set_rater(self.b_combo.currentText()))
-        h.addWidget(QLabel(S["sp_b"])); h.addWidget(self.b_combo)
-        rm = QPushButton(S["rd_remove_b"]); rm.setToolTip(S["qt_page_raters_sub"])
-        rm.clicked.connect(lambda: self.rater and self.win.remove_rater(self.rater))
-        h.addWidget(rm)
+        h.addWidget(self.b_combo)
+        h.addSpacing(6)
         # which number ICC / Bland-Altman compare per proband (stored per B)
-        h.addWidget(QLabel(S["sp_metric"]))
-        self.metric_combo = QComboBox(); self.metric_combo.setMinimumWidth(190)
+        self.metric_combo = combo(14); self.metric_combo.setToolTip(S["sp_metric_tip"])
         self.metric_combo.activated.connect(lambda _i: self.set_metric(self.metric_combo.currentData()))
-        h.addWidget(self.metric_combo)
+        h.addWidget(QLabel(S["sp_metric"])); h.addWidget(self.metric_combo)
+        # which differences: all, or only those with a changed type (not normal ↔ excluded)
+        self.diff_combo = combo(10)
+        self.diff_combo.addItem(S["sp_diffs_all"], "all")
+        self.diff_combo.addItem(S["sp_diffs_changed"], "changed")
+        self.diff_combo.setToolTip(S["sp_diffs_tip"])
+        self.diff_combo.activated.connect(lambda _i: self.set_diff_mode(self.diff_combo.currentData()))
+        h.addWidget(self.diff_combo)
         h.addStretch(1)
         seg = QFrame(); seg.setObjectName("segment")
         sh = QHBoxLayout(seg); sh.setContentsMargins(0, 0, 0, 0); sh.setSpacing(0)
@@ -69,17 +82,33 @@ class SplitController:
             b.clicked.connect(lambda _c=False, k=key: self.set_layout(k))
             self.layout_group.addButton(b); sh.addWidget(b)
         h.addWidget(seg)
-        # which differences: all, or only those with a changed type (not normal ↔ excluded)
-        h.addWidget(QLabel(S["sp_diffs"]))
-        self.diff_combo = QComboBox()
-        self.diff_combo.addItem(S["sp_diffs_all"], "all")
-        self.diff_combo.addItem(S["sp_diffs_changed"], "changed")
-        self.diff_combo.setToolTip(S["sp_diffs_tip"])
-        self.diff_combo.activated.connect(lambda _i: self.set_diff_mode(self.diff_combo.currentData()))
-        h.addWidget(self.diff_combo)
         self.only_cb = QCheckBox(S["sp_only_diffs"]); self.only_cb.toggled.connect(lambda _on: self._apply_only())
         h.addWidget(self.only_cb)
+        # backups and removing B: rarely needed, so behind "⋯"
+        self.more_btn = QToolButton(); self.more_btn.setText("⋯"); self.more_btn.setToolTip(S["sp_more"])
+        self.more_btn.setPopupMode(QToolButton.InstantPopup)
+        self.more_btn.setStyleSheet("QToolButton { font-size: 18px; padding: 2px 10px; }"
+                                    " QToolButton::menu-indicator { image: none; width: 0; }")
+        self.more_menu = QMenu(self.more_btn)
+        self.more_menu.aboutToShow.connect(self._fill_more)
+        self.more_btn.setMenu(self.more_menu)
+        h.addWidget(self.more_btn)
         self.bar.hide()
+
+    def _fill_more(self) -> None:
+        from .. import backups
+        S, w, m = self.S, self.win, self.more_menu
+        m.clear()
+        bid = ir.rater_info(w.ctl.folder, self.rater).get("a_backup") if self.rater else None
+        b = backups.get(w.ctl.folder, bid) if bid else None
+        if b is not None:
+            info = m.addAction(S["sp_backup_info"].format(date=b.created.replace("T", " ")[:16]))
+            info.setEnabled(False)
+        m.addAction(S["sp_load_backup"], lambda: w.open_backups())
+        m.addAction(S["sp_save_now"], lambda: w.backup_now())
+        m.addSeparator()
+        if self.rater:
+            m.addAction(S["sp_remove_named"].format(name=self.rater), lambda r=self.rater: w.remove_rater(r))
 
     def _build_panel(self) -> None:
         S, P = self.S, self.P
@@ -263,7 +292,7 @@ class SplitController:
         self.a_label.setText(f"A · {w.settings.reviewer_name or S['ir_me']}")
         bid = ir.rater_info(w.ctl.folder, self.rater).get("a_backup")
         b = backups.get(w.ctl.folder, bid) if bid else None
-        self.snap_label.setText(S["sp_backup_info"].format(date=b.created.replace("T", " ")[:16]) if b else "")
+        self.a_label.setToolTip(S["sp_backup_info"].format(date=b.created.replace("T", " ")[:16]) if b else "")
 
     def set_layout(self, key: str) -> None:
         self.win.views.setOrientation(Qt.Horizontal if key == "side" else Qt.Vertical)

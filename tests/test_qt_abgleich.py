@@ -150,6 +150,17 @@ def main() -> int:
           "the view splits: A and B (view only), decision panel on the right")
     bks = backups.list_backups(folder)
     check(any(b.kind == "abgleich" and "Finn 2" in b.name for b in bks), "A was backed up when the comparison started")
+    win.resize(1440, 860); QTest.qWait(80)
+    check(win.width() <= 1440 and win.minimumSizeHint().width() <= 1440,
+          f"the window with the comparison fits a laptop screen (min {win.minimumSizeHint().width()} px)")
+    check(win.toolbar.btn_abgleich.text() == "⇆", "narrow: the toolbar shows symbols (names in the tooltips)")
+    win.resize(2300, 860); QTest.qWait(80)
+    check("Abgleich" in win.toolbar.btn_abgleich.text(), "wide: the full names come back")
+    win.resize(1440, 860); QTest.qWait(80)
+    sp._fill_more()
+    acts = [a.text() for a in sp.more_menu.actions() if a.text()]
+    check(any("Sicherung laden" in t for t in acts) and any("Finn 2" in t and "entfernen" in t for t in acts),
+          f"backups and removing B sit behind '⋯' ({acts})")
     st0 = Path(names[0]).stem
     check(len(sp.diffs) == 2 and [d[0] for d in sp.diffs] == [2, 5], f"image 1: cells 2 and 5 differ ({sp.diffs})")
     OUT.mkdir(exist_ok=True); win.grab().save(str(OUT / "qt_split.png"))

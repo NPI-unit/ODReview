@@ -58,10 +58,13 @@ class QtToolbar(QWidget):
         super().__init__(parent)
         self.P, self.S, self.settings, self.profile = P, S, settings, profile
         self.cb = callbacks
+        from PySide6.QtWidgets import QSizePolicy
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(0, 0, 0, 0)
         self._root.setSpacing(0)
         self._build()
+        self.setMinimumWidth(1000)
 
     # ── public API (same names as the Tk toolbar) ──
     def rebuild(self) -> None:
@@ -70,6 +73,7 @@ class QtToolbar(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self._build()
+        self._fit()
 
     def set_active_tool(self, key: str) -> None:
         btn = self.tool_buttons.get(key)
@@ -85,17 +89,21 @@ class QtToolbar(QWidget):
         """'ok' — quiet; 'stale' — orange border + dot (masks made with other
         values); 'unsegmented' — the main action, blue "Rechnen"."""
         b = self.btn_resegment
-        b.setText(f"{GLYPHS['resegment']}  " + (self.S["qt_compute"] if state == "unsegmented"
-                                                 else self.S["tool_resegment"]))
+        full = f"{GLYPHS['resegment']}  " + (self.S["qt_compute"] if state == "unsegmented"
+                                             else self.S["tool_resegment"])
+        self._compact = [(x, full if x is b else f, sh) for x, f, sh in self._compact]
+        b.setText(full)
         b.setProperty("cpstate", state)
         b.style().unpolish(b); b.style().polish(b)
         b.setToolTip(tooltip)
         self._cp_dot.setVisible(state == "stale")
+        self._fit()
 
     def set_abgleich(self, available: bool, active: bool = False) -> None:
         self.btn_abgleich.setVisible(available)
         self.btn_abgleich.setChecked(active)
         self.btn_stats.setVisible(available)
+        self._fit()
 
     def set_profile(self, profile) -> None:
         self.profile = profile
@@ -108,6 +116,23 @@ class QtToolbar(QWidget):
             profile.active_type_key = profile.default_type_key()
         self._fill_type_selector()
 
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        self._fit()
+
+    def _fit(self) -> None:
+        """Full texts when they fit, otherwise only the symbols (the tooltips
+        keep the names) — so the window fits a laptop screen."""
+        row = self._root.itemAt(0).widget() if self._root.count() else None
+        if row is None or not getattr(self, "_compact", None):
+            return
+        for b, full, _short in self._compact:
+            b.setText(full)
+        row.layout().activate()
+        if row.sizeHint().width() > self.width():
+            for b, _full, short in self._compact:
+                b.setText(short)
+
     def eventFilter(self, obj, ev):
         from PySide6.QtCore import QEvent
         if obj is getattr(self, "btn_resegment", None) and ev.type() == QEvent.Resize:
@@ -116,6 +141,9 @@ class QtToolbar(QWidget):
 
     # ── building ──
     def _build(self) -> None:
+        # (button, full text, short text): shortened to the symbol when the
+        # window is too narrow for the full row (see _fit)
+        self._compact: list[tuple[QPushButton, str, str]] = []
         self.tool_buttons: dict[str, QPushButton] = {}
         self._tools = QButtonGroup(self)
         self._tools.setExclusive(True)
@@ -182,6 +210,8 @@ class QtToolbar(QWidget):
         self.btn_stats.clicked.connect(lambda: self.cb.get("stats", lambda: None)())
         for b in (self.btn_abgleich, self.btn_stats):
             b.setVisible(False); h.addWidget(b)
+        self._compact += [(self.btn_abgleich, self.btn_abgleich.text(), "⇆"),
+                          (self.btn_stats, self.btn_stats.text(), "")]
         h.addWidget(self._action("undo", "tool_undo", "undo", icon_only=True))
         self.btn_resegment = self._action("resegment", "tool_resegment", "resegment")
         self.btn_resegment.setObjectName("cellposeBtn")
@@ -215,6 +245,8 @@ class QtToolbar(QWidget):
             prefix = GLYPHS["note"] if key == TOOL_NOTE else (
                 GLYPHS["cursor"] if key == TOOL_CURSOR else "")
             b = QPushButton(f"{prefix}  {self.S[labels[key]]}" if prefix else self.S[labels[key]])
+            if prefix:
+                self._compact.append((b, b.text(), prefix))
             b.setCheckable(True); b.setCursor(Qt.PointingHandCursor)
             b.setToolTip(self.S[labels[key]])
             b.setProperty("first", i == 0); b.setProperty("last", i == len(keys) - 1)
@@ -227,6 +259,8 @@ class QtToolbar(QWidget):
     def _action(self, glyph: str, label_key: str, cb: str, icon_only: bool = False) -> QPushButton:
         text = GLYPHS[glyph] if icon_only else f"{GLYPHS[glyph]}  {self.S[label_key]}"
         b = _set_class(QPushButton(text), "tool icon" if icon_only else "tool")
+        if not icon_only:
+            self._compact.append((b, text, GLYPHS[glyph]))
         b.setToolTip(self.S[label_key]); b.setCursor(Qt.PointingHandCursor)
         if icon_only:
             b.setAccessibleName(self.S[label_key])
