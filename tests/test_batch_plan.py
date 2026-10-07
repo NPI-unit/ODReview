@@ -96,6 +96,18 @@ def main() -> int:
     check(inc == {"0", "1", "2"} and cum == 2700, "auto-fill stops once the target is reached")
     inc, cum = inclusion_with_overrides(imgs, counts, {"1": False, "3": True}, 2000)
     check(inc == {"0", "2", "3"} and cum == 2700, "overrides force images in and out")
+    inc, cum = inclusion_with_overrides(imgs, counts, {"0": False}, 2000)
+    check(inc == {"1", "2"} and cum == 1800, "taking one out only subtracts — nothing moves up")
+    # BDC-5 · G3 from the bug report: 001 out gave 2118 (011 moved up), must be 2054 − 191
+    real = [191, 203, 201, 202, 204, 207, 210, 218, 204, 214, 255, 248, 229, 267, 218]
+    imgs15 = [ImageGroupInfo(path=Path(f"{k:03d}.tif"), timepoint="t", subject="s", image_num=k)
+              for k in range(1, 16)]
+    c15 = {f"{k:03d}": n for k, n in enumerate(real, 1)}
+    check(inclusion_with_overrides(imgs15, c15, {}, 2000)[1] == 2054, "BDC-5 G3: automatic = 2054")
+    check(inclusion_with_overrides(imgs15, c15, {"001": False}, 2000)[1] == 1863,
+          "BDC-5 G3: 001 out = 1863, not 2118")
+    check(inclusion_with_overrides(imgs15, c15, {"001": False, "011": True}, 2000)[1] == 2118,
+          "…and 011 counts only when added by hand")
 
     rows = [("Prä", "01", 3, 3, True), ("Prä", "02", 3, 1, False), ("Post", "01", 3, 0, False)]
     check(scope_preset(rows, "edited") == {("Prä", "01"): True, ("Prä", "02"): False, ("Post", "01"): False},

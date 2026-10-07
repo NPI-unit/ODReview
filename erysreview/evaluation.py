@@ -1,17 +1,18 @@
 """Per-group evaluation membership — the editable 2000-cell cap.
 
 Each (timepoint, subject) group only needs enough images for the running active
-count to land just over the profile target (e.g. 2000). Images are auto-filled
-in image order until that happens; the user can override any single image via
-its ReviewState.eval_include flag ("statt Bild 8 lieber Bild 9"):
+count to land just over the profile target (e.g. 2000). The automatic set is
+the images in image order until that happens — computed WITHOUT looking at the
+user's choices, so it never shifts. The user then decides per image via its
+ReviewState.eval_include flag (key E):
 
-    eval_include is None  -> automatic
-    eval_include is True  -> always counts
-    eval_include is False -> never counts
+    eval_include is None  -> automatic (counts if it is in the automatic set)
+    eval_include is True  -> counts (added on top)
+    eval_include is False -> does not count
 
-Explicit choices always win and are added to the running total in order, so the
-auto-fill stops as soon as the cumulative (explicit + auto) count exceeds the
-target.
+Taking an image out only subtracts it; no later image moves up to replace it
+("ich kontrolliere, welche Bilder dazukommen"). Below the target the user adds
+images themselves.
 """
 
 from __future__ import annotations
@@ -50,29 +51,24 @@ def _group_rows(
     return rows
 
 
+def _apply(order: list[tuple[str, int, bool | None]], target: int) -> set[str]:
+    """The rule, pure: `order` is (stem, counted cells, override) per segmented
+    image in image order. The automatic set ignores the overrides."""
+    auto: set[str] = set()
+    cumulative = 0
+    for stem, n, _ov in order:
+        if cumulative >= target:
+            break
+        auto.add(stem)
+        cumulative += n
+    return {stem for stem, _n, ov in order if ov is True or (ov is None and stem in auto)}
+
+
 def _stems_from_rows(rows: list[tuple[str, dict | None, ReviewState]],
                      target: int) -> set[str]:
     """Cap logic — pure, no I/O. See the module docstring for the rules."""
-    included: set[str] = set()
-    cumulative = 0
-    auto_reached = False
-    for stem, c, review in rows:
-        if c is None:
-            continue
-        n = c["rbc"]
-        if review.eval_include is True:
-            included.add(stem)
-            cumulative += n
-        elif review.eval_include is False:
-            continue
-        else:  # automatic
-            if not auto_reached:
-                included.add(stem)
-                cumulative += n
-                if cumulative >= target:
-                    auto_reached = True
-            # once the auto-fill target is reached, further auto images drop out
-    return included
+    return _apply([(stem, c["rbc"], review.eval_include) for stem, c, review in rows
+                   if c is not None], target)
 
 
 def effective_eval_stems(
@@ -133,31 +129,16 @@ def group_eval_summary(
 
 
 def inclusion_with_overrides(images, counts, overrides, target):
-    """Effective inclusion set + cumulative active count, honoring overrides.
+    """Effective inclusion set + its active count, honoring overrides.
 
     overrides[stem] in {True, False, None(=auto)}. Same rule as
     effective_eval_stems, but on counts the eval dialog already holds, so the
     dialog can re-run it on every click without touching disk.
     """
-    included = set()
-    cum = 0
-    reached = False
-    for info in images:
-        stem = info.path.stem
-        n = counts.get(stem)
-        if n is None:
-            continue
-        ov = overrides.get(stem)
-        if ov is True:
-            included.add(stem); cum += n
-        elif ov is False:
-            continue
-        else:
-            if not reached:
-                included.add(stem); cum += n
-                if cum >= target:
-                    reached = True
-    return included, cum
+    order = [(i.path.stem, counts[i.path.stem], overrides.get(i.path.stem))
+             for i in images if counts.get(i.path.stem) is not None]
+    included = _apply(order, target)
+    return included, sum(n for stem, n, _ov in order if stem in included)
 
 
 def load_group_selection(folder: Path, images_in_group, profile: ProfileData):

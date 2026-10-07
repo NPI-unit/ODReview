@@ -303,9 +303,9 @@ class AppController:
     def toggle_eval(self) -> str:
         """E: counts <-> does not count. Returns "in" | "out".
 
-        Taking an image out stores False. Putting it back returns it to the
-        automatic fill; only if it would then still not count (the target is
-        already reached without it) is it marked to count explicitly."""
+        Taking an image out stores False (nothing moves up in its place).
+        Putting it back returns it to automatic if it is in the automatic set,
+        otherwise it is added explicitly (True)."""
         if self.is_counted():
             self.review.eval_include = False
             return "out"
