@@ -771,7 +771,8 @@ class MainWindow(QMainWindow):
         self._bg_batch = dlg
         return dlg
 
-    def export(self) -> None:
+    def export(self, confirm_under=None) -> None:
+        """`confirm_under(rows)` replaces the below-target question in tests."""
         if self.ctl.folder is None or self.ctl.grouped is None:
             return
         self.ctl.flush_time()
@@ -781,6 +782,9 @@ class MainWindow(QMainWindow):
         groups = dlg.groups
         if not groups:
             QMessageBox.information(self, self.S["export_scope_title"], self.S["export_scope_empty"])
+            return
+        under = self.ctl.under_target(groups)
+        if under and not (confirm_under or self._confirm_under_target)(under):
             return
         is_subset = len(groups) != len(self.ctl.all_groups())
         try:
@@ -796,6 +800,25 @@ class MainWindow(QMainWindow):
                 n=len(groups), marked=marked, overview=self.S["export_no_overview"] if is_subset else ""))
         self.sidebar.refresh_all()
         self.show_image(self.ctl.idx)
+
+    def _confirm_under_target(self, rows: list[tuple[str, str, int, int]]) -> bool:
+        """Warn before exporting groups below the target (e.g. 2000 cells)."""
+        from ..grouping import UNGROUPED_TIMEPOINT
+        S = self.S
+        def name(tp, sub):
+            return S["sb_ungrouped"] if tp == UNGROUPED_TIMEPOINT else f"{tp} · {S['pe_role_subject']} {sub}"
+        lines = [f"• {name(tp, sub)}: {n:,} / {t:,}".replace(",", " ") for tp, sub, n, t in rows[:20]]
+        if len(rows) > 20:
+            lines.append(f"… +{len(rows) - 20}")
+        box = QMessageBox(self); box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(S["export_under_title"])
+        box.setText(S["export_under_msg"].format(n=len(rows), target=f"{rows[0][3]:,}".replace(",", " ")))
+        box.setInformativeText("\n".join(lines))
+        go = box.addButton(S["export_under_go"], QMessageBox.AcceptRole)
+        cancel = box.addButton(S["settings_cancel"], QMessageBox.RejectRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is go
 
     def show_info(self) -> None:
         if not self.ctl.has_images:

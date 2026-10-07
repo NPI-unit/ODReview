@@ -417,6 +417,20 @@ class AppController:
         return [(tp, sub) for tp in self.grouped.timepoints()
                 for sub in self.grouped.subjects_in(tp)]
 
+    def under_target(self, groups: list[tuple[str, str]]) -> list[tuple[str, str, int, int]]:
+        """(timepoint, subject, counted cells, target) for every chosen group
+        that stays below the study's target — the export warns about them."""
+        from .evaluation import group_eval_summary
+        out = []
+        for tp, sub in groups:
+            infos = self.grouped.tree.get(tp, {}).get(sub, []) if self.grouped else []
+            if not infos:
+                continue
+            s = group_eval_summary(self.folder, infos, self.profile)
+            if s["n_active"] < s["target"]:
+                out.append((tp, sub, s["n_active"], s["target"]))
+        return out
+
     def export_task(self, groups: list[tuple[str, str]]) -> Task:
         """None to the exporter means "everything" and keeps the cross-group
         overview workbook in the run; a real subset skips it (see export.py)."""

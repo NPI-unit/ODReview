@@ -185,7 +185,11 @@ def main() -> int:
         d.grab().save(str(OUT / "qt_export.png"))
         return QDialog.Accepted
     processing.ExportDialog.exec = accept_with_mark
-    win.export()
+    warned = []
+    win.export(confirm_under=lambda rows: warned.append(rows) or False)
+    check(warned and all(n < t for _tp, _sub, n, t in warned[0]) and not (folder / "outputs").is_dir(),
+          f"groups below the target are named before exporting; 'Abbrechen' exports nothing ({warned and warned[0][:2]})")
+    win.export(confirm_under=lambda rows: True)
     processing.ExportDialog.exec = orig_exec
     check((folder / "outputs").is_dir() and any((folder / "outputs").rglob("*_summary.csv")),
           "export writes the group summaries")

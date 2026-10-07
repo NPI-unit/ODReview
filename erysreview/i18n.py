@@ -100,6 +100,9 @@ STRINGS = {
         "export_scope_count":  "{n} von {total} Gruppen ausgewählt",
         "export_scope_start":  "Exportieren",
         "export_scope_empty":  "Keine Gruppe ausgewählt.",
+        "export_under_title": "Ziel nicht erreicht",
+        "export_under_msg": "{n} Gruppe(n) Proband × Zeitpunkt haben weniger als {target} gewertete Zellen:",
+        "export_under_go": "Trotzdem exportieren",
         "export_running":      "Export läuft",
         "export_mark_finished": "Exportierte Bilder als „fertig“ markieren",
         "export_mark_finished_hint": ("Aus, damit ein Export den von Hand gepflegten "
@@ -902,6 +905,9 @@ STRINGS = {
         "export_scope_count":  "{n} of {total} groups selected",
         "export_scope_start":  "Export",
         "export_scope_empty":  "No group selected.",
+        "export_under_title": "Target not reached",
+        "export_under_msg": "{n} subject × timepoint group(s) have fewer than {target} counted cells:",
+        "export_under_go": "Export anyway",
         "export_running":      "Exporting",
         "export_mark_finished": "Mark exported images as finished",
         "export_mark_finished_hint": ("Off, so an export does not overwrite the status "
