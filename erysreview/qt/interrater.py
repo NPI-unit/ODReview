@@ -356,5 +356,8 @@ def delete_rater_flow(parent, S, folder: Path, name: str, current_study: str = "
     ok = (confirm(1) and confirm(2)) if confirm else (ask1() and ask2())
     if not ok:
         return False
-    ir.delete_rater(folder, name)
+    gone = ir.delete_rater(folder, name)
+    if confirm is None:                    # tests pass `confirm` and skip the note
+        QMessageBox.information(parent, S["rd_title"], S["rd_done_long"].format(
+            name=name, n=gone["n_images"], studies=", ".join(gone["studies"]) or "–"))
     return True

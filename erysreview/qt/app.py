@@ -1034,11 +1034,12 @@ class MainWindow(QMainWindow):
         from .. import interrater as ir
         left = ir.list_raters(self.ctl.folder) if self.ctl.folder else []
         if self.split.active:
-            if self.split.rater not in left:
-                if left:
-                    self.split.activate(left[0])
-                else:
-                    self.split.deactivate()
+            if self.split.rater in left:
+                self.split.refresh_raters()          # another B went: only the menu changes
+            elif left:
+                self.split.activate(left[0])
+            else:
+                self.split.deactivate()
         self._update_abgleich_ui()
 
     def switch_study(self) -> None:

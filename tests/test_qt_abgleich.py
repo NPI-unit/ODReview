@@ -305,6 +305,10 @@ def main() -> int:
     # remove second ratings: in the settings and from the comparison bar
     from erysreview.qt import settings as qsettings
     bk_before = {b.id for b in backups.list_backups(folder)}
+    win.toolbar.btn_abgleich.click(); QTest.qWait(50)          # comparing with Finn 2 meanwhile
+    win.split.activate("Finn 2")
+    check([win.split.b_combo.itemText(i) for i in range(win.split.b_combo.count())] == ["Finn 2", "Finn 3"],
+          "the B menu lists both second ratings")
     dlg = qsettings.SettingsDialog(win, win.P, win.S, win.settings, win.ctl.profile, win.ctl.folder,
                                    win.ctl.images, on_study_saved=lambda *a: None,
                                    on_local_changed=win._on_local_setting, on_switch_study=lambda: None,
@@ -313,12 +317,16 @@ def main() -> int:
     check(not dlg.delete_rater("Finn 3", confirm=lambda step: asked.append(step) or step == 1)
           and "Finn 3" in ir.list_raters(folder) and asked == [1, 2],
           "removing asks twice; 'Abbrechen' at the second question keeps it")
+    check(dlg.raters_box.count() == 2, "Einstellungen › Zweitbewertungen lists both")
     check(dlg.delete_rater("Finn 3", confirm=lambda step: True) and "Finn 3" not in ir.list_raters(folder)
           and not (ir.raters_dir(folder) / "Finn_3").exists(),
           "Einstellungen › Zweitbewertungen removes 'Finn 3' (ratings, decisions, selection)")
+    QTest.qWait(20)
+    check(dlg.raters_box.count() == 1, "…and its row disappears from the list at once")
+    check(win.split.active and win.split.rater == "Finn 2"
+          and [win.split.b_combo.itemText(i) for i in range(win.split.b_combo.count())] == ["Finn 2"],
+          "the comparison stays on Finn 2, and Finn 3 is gone from the B menu")
     dlg.close()
-    win.toolbar.btn_abgleich.click(); QTest.qWait(50)
-    check(win.split.active and win.split.rater == "Finn 2", "comparison with the remaining B")
     check(win.remove_rater("Finn 2", confirm=lambda step: True) and ir.list_raters(folder) == [],
           "'B entfernen …' in the comparison bar removes 'Finn 2'")
     check(not win.split.active and not win.toolbar.btn_abgleich.isVisibleTo(win.toolbar),

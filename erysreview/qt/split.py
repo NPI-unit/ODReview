@@ -144,6 +144,15 @@ class SplitController:
         self.set_rater(rater)
         return True
 
+    def refresh_raters(self) -> None:
+        """The B menu after a second rating was removed (or added)."""
+        raters = ir.list_raters(self.win.ctl.folder) if self.win.ctl.folder else []
+        self.b_combo.blockSignals(True)
+        self.b_combo.clear(); self.b_combo.addItems(raters)
+        if self.rater in raters:
+            self.b_combo.setCurrentText(self.rater)
+        self.b_combo.blockSignals(False)
+
     def _tags(self) -> None:
         """'A · Finn — editable' / 'B · Anna — view only' in the views' corner."""
         w, S = self.win, self.S
