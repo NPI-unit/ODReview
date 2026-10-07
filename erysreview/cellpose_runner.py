@@ -17,6 +17,8 @@ no locking.
 
 from __future__ import annotations
 
+import os
+
 import datetime as _dt
 import json
 import zipfile
@@ -60,6 +62,9 @@ def load_image(path: Path) -> np.ndarray:
 _SKIP_DIRS = {"outputs", "__pycache__"}
 
 
+LAST_ACCESS_DENIED: Path | None = None     # set by list_images when macOS refused access
+
+
 def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
     """All images under `folder`, RECURSIVELY (sub-folders included).
 
@@ -90,6 +95,19 @@ def list_images(folder: Path, exclude: set[Path] | None = None) -> list[Path]:
     # Per-reason drop tally so a single Windows run reveals where images are lost.
     drops = {"not_file": 0, "ext": 0, "overlay": 0, "hidden": 0, "excluded": 0}
 
+    # rglob swallows PermissionError and just yields nothing — e.g. when macOS
+    # has not (yet) allowed this Python to read a USB stick. Ask directly so
+    # the app can say so instead of "no images".
+    global LAST_ACCESS_DENIED
+    LAST_ACCESS_DENIED = None
+    try:
+        os.listdir(folder)
+    except PermissionError as e:
+        LAST_ACCESS_DENIED = folder
+        print(f"[list_images] no access to {folder!r}: {e}", flush=True)
+        return []
+    except OSError:
+        pass
     try:
         candidates = sorted(folder.rglob("*"))
     except OSError as e:

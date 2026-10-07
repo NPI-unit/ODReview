@@ -328,12 +328,20 @@ class MainWindow(QMainWindow):
     def open_folder(self, path: Path, restore_index: bool) -> None:
         start = self.ctl.open_folder(path, restore_index)
         if start is None:
-            QMessageBox.information(self, self.S["title"], self.S["err_no_images"].format(path=path))
+            QMessageBox.information(self, self.S["title"], self._no_images_text(path))
             return
         self.empty_btn.hide()
         self.sidebar.populate(path, self.ctl.images, self.ctl.grouped)
         self.show_image(start)
         self._update_abgleich_ui()
+
+    def _no_images_text(self, path) -> str:
+        """'Keine Bilder' — or, when macOS refused access (USB stick not yet
+        allowed for this Python), how to allow it."""
+        from .. import cellpose_runner
+        if cellpose_runner.LAST_ACCESS_DENIED is not None:
+            return self.S["err_no_access"].format(path=path)
+        return self.S["err_no_images"].format(path=path)
 
     def _fill_recent(self) -> None:
         self.m_recent.clear()
@@ -349,7 +357,7 @@ class MainWindow(QMainWindow):
         if not Path(p).is_dir():
             self.ctl.forget_recent_folder(p)
             self._fill_recent()
-            QMessageBox.information(self, self.S["title"], self.S["err_no_images"].format(path=p))
+            QMessageBox.information(self, self.S["title"], self._no_images_text(p))
             return
         self.ctl.remember_folder(p)
         self._fill_recent()

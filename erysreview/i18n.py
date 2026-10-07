@@ -279,6 +279,7 @@ STRINGS = {
         # Empty state
         # Errors
         "err_no_images":       "Keine Bilder im Ordner gefunden:\n{path}",
+        "err_no_access":       "Kein Zugriff auf den Ordner:\n{path}\n\nmacOS hat ErysReview (Python) das Lesen dieses Laufwerks nicht erlaubt.\nSystemeinstellungen › Datenschutz & Sicherheit › Dateien und Ordner: bei „Python“ bzw. dem Terminal „Wechseldatenträger“ einschalten. Dann ErysReview neu starten.",
         "err_load_image":      "Bild konnte nicht geladen werden:\n{path}\n\n{err}",
         "err_cellpose":        "Cellpose-Fehler:\n{err}",
         # Type defaults
@@ -1075,6 +1076,7 @@ STRINGS = {
         "batch_summary_skipped": "{n} skipped (already cached).",
         "batch_summary_errors": "{n} errors:",
         "err_no_images":       "No images found in folder:\n{path}",
+        "err_no_access":       "No access to the folder:\n{path}\n\nmacOS has not allowed ErysReview (Python) to read this drive.\nSystem Settings › Privacy & Security › Files and Folders: turn on “Removable Volumes” for “Python” or the terminal. Then restart ErysReview.",
         "err_load_image":      "Image could not be loaded:\n{path}\n\n{err}",
         "err_cellpose":        "Cellpose error:\n{err}",
         "type_normal":         "Normal",
