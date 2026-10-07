@@ -356,7 +356,18 @@ def delete_rater_flow(parent, S, folder: Path, name: str, current_study: str = "
     ok = (confirm(1) and confirm(2)) if confirm else (ask1() and ask2())
     if not ok:
         return False
-    gone = ir.delete_rater(folder, name)
+    from ..tasks import Task
+    from .tasks import run_task_modal
+
+    def work(progress, _cancelled):
+        return ir.delete_rater(folder, name, progress=lambda done, total: progress(
+            int(100 * done / max(1, total)), S["rd_progress"].format(name=name, done=done, total=total)))
+    try:
+        gone = run_task_modal(parent, Task(work), S["rd_title"], S["rd_progress_start"].format(name=name),
+                              maximum=100)
+    except Exception as e:  # noqa: BLE001 — shown, never swallowed
+        QMessageBox.warning(parent, S["rd_title"], S["rd_failed"].format(name=name, err=e))
+        return name not in ir.list_raters(folder)
     if confirm is None:                    # tests pass `confirm` and skip the note
         QMessageBox.information(parent, S["rd_title"], S["rd_done_long"].format(
             name=name, n=gone["n_images"], studies=", ".join(gone["studies"]) or "–"))

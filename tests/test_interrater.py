@@ -146,6 +146,27 @@ def main() -> int:
           "image_differs finds the image A and B rate differently")
     ir.set_excluded(folder, "Anna", [s0], False); ir.set_metric(folder, "Anna", ir.DEFAULT_METRIC)
 
+    # removing a second rating on an exFAT stick: macOS deletes the "._"
+    # companion together with its file — deleting it again must not abort
+    zd = ir.rater_dir(folder, "Zed"); zd.mkdir(parents=True)
+    (zd / "rater.json").write_text(json.dumps({"name": "Zed"}))
+    for k in range(60):
+        (zd / f"img{k}_review.json").write_text("{}")
+        (zd / f"._img{k}_review.json").write_bytes(b"\x00\x05\x16\x07")
+    check("Zed" in ir.list_raters(folder), "a second rating 'Zed' is listed")
+    seen = []
+    def vanish(done, total):          # like exFAT: the companions disappear on their own
+        seen.append((done, total))
+        if len(seen) == 1:
+            for f in ir.raters_dir(folder).glob(".entfernt_*/._*"):
+                f.unlink()
+    gone = ir.delete_rater(folder, "Zed", progress=vanish)
+    check(gone["n_images"] == 60 and "Zed" not in ir.list_raters(folder)
+          and not any(ir.raters_dir(folder).glob(".entfernt_*")) and not zd.exists(),
+          "removal finishes although '._' files vanished meanwhile (exFAT) — nothing left behind")
+    check(seen and seen[-1][0] == seen[-1][1], f"progress runs to the end ({seen[-1]})")
+    check("Anna" in ir.list_raters(folder), "the other second rating stays")
+
     # broken package: every mask different → refused
     saved = {}
     for nm in names:

@@ -6,8 +6,8 @@ No emojis — geometric Unicode where compactness matters, plain text elsewhere.
 STRINGS = {
     "de": {
         # Window
-        "title":               "Erys v17 – Erythrozyten-Review",
-        "title_with_profile":  "Erys v17 – {profile}",
+        "title":               "ErysReview",
+        "title_with_profile":  "ErysReview – Studie: {profile}",
         # Menu
         "menu_file":           "Datei",
         "menu_open_folder":    "Ordner öffnen …",
@@ -353,6 +353,9 @@ STRINGS = {
         "rd_q2": "Wirklich endgültig entfernen? „{name}“ lässt sich danach nur durch erneutes Einlesen des Pakets zurückholen.",
         "rd_open_a_first": "Die Zweitbewertung „{name}“ ist gerade geöffnet. Bitte zuerst Studie A öffnen.",
         "rd_done": "„{name}“ wurde entfernt.",
+        "rd_progress_start": "„{name}“ wird entfernt …",
+        "rd_progress": "„{name}“ wird entfernt … {done} / {total} Dateien",
+        "rd_failed": "Beim Entfernen von „{name}“ ist ein Fehler aufgetreten:\n{err}\n\nStudie A und die Masken sind nicht betroffen.",
         "rd_done_long": "„{name}“ wurde entfernt.\n\nGelöscht: {n} Bewertungen, Abgleich-Entscheidungen, Auswahl für die Statistik, Studie(n): {studies}.\n\nDeine Studie A, die Masken und die Sicherungen sind unverändert.",
         "qt_tp_order_hint": "Zum Umsortieren ziehen. Gilt für die Liste, die Statistik (Verläufe) und den Export.",
         "qt_parse_none": "Kein Bilderordner — noch nichts zu prüfen.",
@@ -369,6 +372,7 @@ STRINGS = {
         "qt_types_chip_note": "Ab 7 Zelltypen zeigt die zweizeilige Werkzeugleiste eine Auswahlliste statt Farbchips.",
         "qt_n_changes": "{n} Änderung(en) in {name}",
         "qt_no_changes": "Keine Änderungen",
+        "qt_saved_flash": "Gespeichert",
         "qt_discard": "Verwerfen",
         "qt_save_dots": "Speichern …",
         "qt_close": "Schließen",
@@ -822,8 +826,8 @@ STRINGS = {
         # Export
     },
     "en": {
-        "title":               "Erys v17 – Erythrocyte review",
-        "title_with_profile":  "Erys v17 – {profile}",
+        "title":               "ErysReview",
+        "title_with_profile":  "ErysReview – Study: {profile}",
         "menu_file":           "File",
         "menu_open_folder":    "Open folder …",
         "menu_batch":          "Multiple images …",
@@ -1143,6 +1147,9 @@ STRINGS = {
         "rd_q2": "Remove for good? “{name}” can only come back by importing the package again.",
         "rd_open_a_first": "The second rating “{name}” is open right now. Please open study A first.",
         "rd_done": "“{name}” was removed.",
+        "rd_progress_start": "Removing “{name}” …",
+        "rd_progress": "Removing “{name}” … {done} / {total} files",
+        "rd_failed": "Removing “{name}” failed:\n{err}\n\nStudy A and the masks are not affected.",
         "rd_done_long": "“{name}” was removed.\n\nDeleted: {n} ratings, comparison decisions, selection for the statistics, study/studies: {studies}.\n\nYour study A, the masks and the backups are unchanged.",
         "qt_tp_order_hint": "Drag to reorder. Used by the list, the statistics (trajectories) and the export.",
         "qt_parse_none": "No image folder — nothing to check yet.",
@@ -1159,6 +1166,7 @@ STRINGS = {
         "qt_types_chip_note": "From 7 cell types on, the two-row toolbar shows a list instead of colour chips.",
         "qt_n_changes": "{n} change(s) in {name}",
         "qt_no_changes": "No changes",
+        "qt_saved_flash": "Saved",
         "qt_discard": "Discard",
         "qt_save_dots": "Save …",
         "qt_close": "Close",

@@ -197,9 +197,20 @@ class SettingsDialog(QDialog):
         self.btn_save = QPushButton(self.S["qt_save_dots"]); self.btn_save.setProperty("class", "primary")
         self.btn_save.clicked.connect(self._save)
         close = QPushButton(self.S["qt_close"]); close.clicked.connect(self.close)
-        h.addWidget(self.footer_dot); h.addWidget(self.footer_text, 1)
+        # "✓ Gespeichert" after a change that is saved at once (this computer's
+        # pages, removing a second rating) or after "Speichern …"
+        self.footer_saved = QLabel(""); self.footer_saved.setStyleSheet(
+            f"color: {self.P['state_finished']}; font-weight: 600;")
+        h.addWidget(self.footer_dot); h.addWidget(self.footer_text, 1); h.addWidget(self.footer_saved)
         h.addWidget(self.btn_discard); h.addWidget(self.btn_save); h.addWidget(close)
         return f
+
+    def flash_saved(self, what: str = "") -> None:
+        from PySide6.QtCore import QTimer
+        self.footer_saved.setText("✓ " + self.S["qt_saved_flash"] + (f": {what}" if what else ""))
+        self._flash_n = getattr(self, "_flash_n", 0) + 1
+        n = self._flash_n
+        QTimer.singleShot(2500, lambda: n == self._flash_n and self.footer_saved.setText(""))
 
     def _changed(self) -> None:
         n = len(diff_profiles(self.orig, self.work))
@@ -233,6 +244,7 @@ class SettingsDialog(QDialog):
         self.orig = copy.deepcopy(saved)
         self.study_btn.setText(f"●  {saved.name}   ▾")
         self._changed()
+        self.flash_saved(saved.name)
 
     def _switch_study(self) -> None:
         if not self._confirm_leave():
@@ -360,6 +372,7 @@ class SettingsDialog(QDialog):
         done = delete_rater_flow(self, self.S, self.folder, name, self.orig.name, confirm=confirm)
         if done:
             self._fill_raters()
+            self.flash_saved(self.S["rd_done"].format(name=name))
             self._on_local_changed("raters")
         return done
 
@@ -724,6 +737,7 @@ class SettingsDialog(QDialog):
     def _local(self, field: str, value) -> None:
         setattr(self.settings, field, value)
         self.settings.save()
+        self.flash_saved()
         self._on_local_changed(field)
 
     def _page_general(self, v: QVBoxLayout) -> None:

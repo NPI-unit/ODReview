@@ -66,6 +66,8 @@ def list_raters(folder: Path) -> list[str]:
     out = []
     if d.is_dir():
         for sub in sorted(d.iterdir()):
+            if sub.name.startswith((".", "_")):    # being removed (see delete_rater)
+                continue
             meta = sub / "rater.json"
             if meta.is_file():
                 try:
@@ -444,11 +446,16 @@ def rater_studies(folder: Path, name: str) -> list[str]:
     return out
 
 
-def delete_rater(folder: Path, name: str) -> dict:
+def delete_rater(folder: Path, name: str, progress=None) -> dict:
     """Remove a second rating: its reviews, decisions and selection
-    (raters/<name>/) and the studies made to rate it. Study A, its reviews
-    and the backup "A vor Abgleich mit <name>" stay. Returns what went."""
-    import shutil
+    (raters/<name>/) and the studies made to rate it. Study A, its reviews,
+    the masks and the backup "A vor Abgleich mit <name>" stay. Returns what went.
+
+    First the folder is renamed in one step (raters/.entfernt_…), so the
+    rating is gone at once even if deleting the files is interrupted; the
+    files are then deleted one by one (`progress(done, total)`), and leftovers
+    of an interrupted removal are cleared next time (purge_removed)."""
+    import datetime as _dt2
     from .profile import delete_profile
     d = rater_dir(folder, name)
     if not name or not d.is_dir() or name not in list_raters(folder):
@@ -459,10 +466,45 @@ def delete_rater(folder: Path, name: str) -> dict:
         raise ValueError(f"not a second rating's folder: {d}")
     studies = rater_studies(folder, name)
     n = rater_summary(folder, name)["n_images"]
-    shutil.rmtree(d)
+    tomb = raters_dir(folder) / f".entfernt_{d.name}_{_dt2.datetime.now():%Y%m%d_%H%M%S}"
+    d.rename(tomb)
     for pn in studies:
         delete_profile(pn)
+    purge_removed(folder, progress)
     return {"name": name, "n_images": n, "studies": studies}
+
+
+def purge_removed(folder: Path, progress=None) -> int:
+    """Delete the files of removed ratings (raters/.entfernt_…). Robust on
+    exFAT/FAT drives: there macOS deletes a file's "._" companion together
+    with it, so a companion that is already gone is simply skipped. Returns
+    how many files were deleted."""
+    root = raters_dir(folder)
+    if not root.is_dir():
+        return 0
+    tombs = [t for t in root.iterdir() if t.is_dir() and t.name.startswith(".entfernt_")]
+    files = [f for t in tombs for f in t.rglob("*") if not f.is_dir()]
+    files.sort(key=lambda f: f.name.startswith("._"))      # companions last
+    done = 0
+    for k, f in enumerate(files):
+        try:
+            f.unlink()
+            done += 1
+        except FileNotFoundError:
+            pass
+        if progress is not None and (k % 25 == 0 or k == len(files) - 1):
+            progress(k + 1, len(files))
+    for t in tombs:
+        for sub in sorted((x for x in t.rglob("*") if x.is_dir()), key=lambda x: -len(x.parts)):
+            try:
+                sub.rmdir()
+            except OSError:
+                pass
+        try:
+            t.rmdir()
+        except OSError:
+            pass
+    return done
 
 
 def blind_locked(folder: Path, rater: str) -> tuple[bool, int, int]:

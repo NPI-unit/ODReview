@@ -323,6 +323,10 @@ def main() -> int:
           "Einstellungen › Zweitbewertungen removes 'Finn 3' (ratings, decisions, selection)")
     QTest.qWait(20)
     check(dlg.raters_box.count() == 1, "…and its row disappears from the list at once")
+    check(dlg.footer_saved.text().startswith("✓") and "Finn 3" in dlg.footer_saved.text(),
+          f"the footer confirms it ({dlg.footer_saved.text()!r})")
+    dlg._local("reviewer_name", win.settings.reviewer_name)
+    check(dlg.footer_saved.text() == "✓ Gespeichert", "a change on a computer page shows '✓ Gespeichert'")
     check(win.split.active and win.split.rater == "Finn 2"
           and [win.split.b_combo.itemText(i) for i in range(win.split.b_combo.count())] == ["Finn 2"],
           "the comparison stays on Finn 2, and Finn 3 is gone from the B menu")
