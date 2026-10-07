@@ -451,8 +451,12 @@ def delete_rater(folder: Path, name: str) -> dict:
     import shutil
     from .profile import delete_profile
     d = rater_dir(folder, name)
-    if not d.is_dir() or name not in list_raters(folder):
+    if not name or not d.is_dir() or name not in list_raters(folder):
         raise FileNotFoundError(name)
+    # only ever a folder directly inside raters/ — never the cache with the
+    # masks and study A's reviews
+    if d.resolve().parent != raters_dir(folder).resolve():
+        raise ValueError(f"not a second rating's folder: {d}")
     studies = rater_studies(folder, name)
     n = rater_summary(folder, name)["n_images"]
     shutil.rmtree(d)

@@ -325,6 +325,10 @@ def main() -> int:
           "with no B left the comparison closes and '⇆ Abgleich' disappears")
     check(_lp("Studie · Finn 2") is None and _lp("Studie") is not None,
           "the study made for the second rating goes, study A stays")
+    from erysreview.cellpose_runner import cache_paths as _cp
+    check(all(_cp(folder, folder / n)[0].is_file() for n in names)
+          and all(ReviewState.review_path(folder, Path(n).stem).is_file() for n in names),
+          "the masks and study A's reviews stay untouched")
     check(bk_before <= {b.id for b in backups.list_backups(folder)},
           "the backups ('A vor Abgleich …') stay")
     win.close()
