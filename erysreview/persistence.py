@@ -415,6 +415,9 @@ class ReviewState:
     #   True  -> user forced INTO the evaluation
     #   False -> user forced OUT of the evaluation
     eval_include: bool | None = None
+    # How this image is SHOWN (display_adjust.py): brightness/contrast/gamma.
+    # Not a rating — never counted, never compared; travels in packages.
+    display: dict | None = None
 
     @staticmethod
     def review_path(folder: Path, image_stem: str) -> Path:
@@ -450,6 +453,7 @@ class ReviewState:
                 notes={str(k): str(v) for k, v in (raw.get("notes") or {}).items()},
                 note=str(raw.get("note", "")),
                 eval_include=eval_include,
+                display=raw.get("display") if isinstance(raw.get("display"), dict) else None,
             )
         except (TypeError, ValueError):
             return cls()
@@ -466,6 +470,7 @@ class ReviewState:
             "notes": self.notes,
             "note": self.note,
             "eval_include": self.eval_include,
+            "display": self.display,
         }
 
     def save(self, folder: Path, image_stem: str) -> None:

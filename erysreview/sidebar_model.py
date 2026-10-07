@@ -17,6 +17,15 @@ FILTERS = [("all", "filter_all"), ("unsegmented", "filter_unsegmented"),
 FILTER_STALE = ("stale", "qt_filter_stale")
 
 
+def image_status_full(folder: Path | None, image_path: Path) -> tuple[str, bool, bool]:
+    """image_status plus 'display adjusted' (brightness/contrast) — same one load."""
+    if folder is None or not has_cache(folder, image_path):
+        return "unsegmented", False, False
+    review = ReviewState.load(folder, image_path.stem)
+    has_note = bool(review.note.strip() or any(t.strip() for t in review.notes.values()))
+    return ("finished" if review.is_finished else "in_progress"), has_note, bool(review.display)
+
+
 def image_status(folder: Path | None, image_path: Path) -> tuple[str, bool]:
     """("unsegmented" | "in_progress" | "finished", has_remark).
 

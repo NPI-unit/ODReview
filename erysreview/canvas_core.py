@@ -74,6 +74,7 @@ class CanvasCore:
         on_overlay_autoshown: Callable[[], None] | None = None,
         on_edit_overlay_hidden: Callable[[], None] | None = None,
         new_circle_radius: int = 17,
+        context_callback: Callable[[], None] | None = None,
     ):
         P = _palette(settings.theme)
         self.settings = settings
@@ -90,6 +91,9 @@ class CanvasCore:
         # Fired after an edit with the overlay hidden and auto-show turned off,
         # so the app can say why nothing visibly changed.
         self.on_edit_overlay_hidden = on_edit_overlay_hidden or (lambda: None)
+        # A right click WITHOUT dragging -> the app's menu for this image.
+        self.context_callback = context_callback or (lambda: None)
+        self._right_down: tuple[float, float] | None = None
         self._theme_palette = P
         self.status_callback = status_callback or (lambda s: None)
 
@@ -193,7 +197,9 @@ class CanvasCore:
 
     def set_image(self, image: np.ndarray, masks: np.ndarray, review: ReviewState) -> None:
         self.image = image
-        self.image_norm = normalize_image_for_display(image)
+        self._norm_raw = normalize_image_for_display(image)
+        from .display_adjust import apply as _adjust
+        self.image_norm = _adjust(self._norm_raw, review.display)
         self.selected_id = None
         # Manual cells, geometry, border and size-filter ids — all resolved
         # before anything renders, so the first paint is already consistent.
@@ -260,6 +266,16 @@ class CanvasCore:
         for lc in (halo, lines):
             self.ax.add_collection(lc)
             self._grid_artists.append(lc)
+
+    def set_display(self, display: dict | None) -> None:
+        """Re-render the image with another brightness/contrast/gamma (display only)."""
+        if self.image is None or getattr(self, "_norm_raw", None) is None:
+            return
+        from .display_adjust import apply as _adjust
+        self.image_norm = _adjust(self._norm_raw, display)
+        self._im_handle.set_data(self.image_norm)
+        self._blit_bg = None
+        self._full_redraw()
 
     def reset_zoom(self) -> None:
         if self.image is None:
@@ -854,10 +870,17 @@ class CanvasCore:
             self._pan_start = (
                 event.x, event.y, *self.ax.get_xlim(), *self.ax.get_ylim(),
             )
+            if event.button == 3:
+                self._right_down = (event.x, event.y)
 
     def _on_button_release(self, event):
         if event.button in (2, 3):
             self._pan_start = None
+        if event.button == 3 and self._right_down is not None:
+            x0, y0 = self._right_down
+            self._right_down = None
+            if event.x is not None and abs(event.x - x0) + abs(event.y - y0) < 5:
+                self.context_callback()          # a click, not a drag
 
     def _on_motion(self, event):
         if event.inaxes == self.ax and event.xdata is not None:

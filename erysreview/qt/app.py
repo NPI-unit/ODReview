@@ -141,7 +141,9 @@ class MainWindow(QMainWindow):
         self.sidebar = QtSidebar(P, S, self.ctl.profile, on_select=self.show_image,
                                  on_subject_eval=self.choose_counted,
                                  on_subject_status=self.set_subject_status,
-                                 on_rerun=self.rerun)
+                                 on_rerun=self.rerun,
+                                 on_adjust=self.adjust_display,
+                                 on_reset_display=self.reset_display)
         self.sidebar.setMinimumWidth(220)
         center = QWidget()
         cl = QVBoxLayout(center); cl.setContentsMargins(0, 0, 0, 0)
@@ -150,7 +152,8 @@ class MainWindow(QMainWindow):
                                   note_callback=self._on_cell_note,
                                   on_overlay_autoshown=self._on_overlay_autoshown,
                                   on_edit_overlay_hidden=lambda: self._set_status(
-                                      S["overlay_hidden_edit"]))
+                                      S["overlay_hidden_edit"]),
+                                  context_callback=self._image_menu)
         cl.addWidget(self.canvas)
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
         self.canvas.grid_n = self.settings.grid_n
@@ -458,6 +461,58 @@ class MainWindow(QMainWindow):
         self.settings.overlay_visible = not self.settings.overlay_visible
         self.canvas.set_overlay_visible(self.settings.overlay_visible)
         self.settings.save()
+
+    # ── brightness & contrast (display only, display_adjust.py) ──
+    def _image_menu(self) -> None:
+        """Right click (no drag) on the image: the menu for the image in view."""
+        if not self.ctl.has_images:
+            return
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction("☀︎  " + self.S["br_menu"], lambda: self.adjust_display([self.ctl.idx]))
+        reset = m.addAction(self.S["br_reset"], lambda: self.reset_display([self.ctl.idx]))
+        reset.setEnabled(bool(self.ctl.review.display))
+        m.exec(QCursor.pos())
+
+    def adjust_display(self, idxs: list[int]) -> None:
+        if not self.ctl.has_images or not idxs:
+            return
+        from .brightness import BrightnessDialog
+        imgs = self.ctl.images
+        sel = [imgs[i] for i in idxs]
+        key = self.sidebar._group_of_idx.get(idxs[0])
+        group = [imgs[i] for i in self.sidebar.group_indices(*key)] if key else sel
+        label = f"{key[0]} · {self.S['pe_role_subject']} {key[1]}" if key else ""
+        self.ctl.flush_time()                      # the dialog reads the files
+        dlg = BrightnessDialog(self, self.P, self.S, self.ctl.folder, sel, group, label, list(imgs))
+        if dlg.exec() == QDialog.Accepted:
+            self._after_display(dlg.applied)
+
+    def reset_display(self, idxs: list[int]) -> None:
+        from ..persistence import ReviewState
+        self.ctl.flush_time()
+        done = {}
+        for i in idxs:
+            p = self.ctl.images[i]
+            rv = ReviewState.load(self.ctl.folder, p.stem)
+            if rv.display:
+                rv.display = None
+                rv.save(self.ctl.folder, p.stem)
+            done[p] = None
+        self._after_display(done)
+
+    def _after_display(self, applied: dict) -> None:
+        """Files are written; the open image's review in memory gets the same
+        value (else the next save of it would undo the change), and the view
+        and the ☀︎ markers follow."""
+        cur = self.ctl.current_path
+        if cur in applied:
+            self.ctl.review.display = applied[cur]
+            self.canvas.set_display(applied[cur])
+        self.sidebar.refresh_all()
+        self.sidebar.set_idx(self.ctl.idx)
+        self._set_status(self.S["br_done"].format(n=len(applied)))
 
     # ── helper grid (exploratory) ──
     def set_grid(self, n: int) -> None:

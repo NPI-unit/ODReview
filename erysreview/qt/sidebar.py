@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..grouping import UNGROUPED_SUBJECT, UNGROUPED_TIMEPOINT
-from ..sidebar_model import FILTER_STALE, FILTERS, group_details, image_status, is_stale, passes_filter
+from ..sidebar_model import FILTER_STALE, FILTERS, group_details, image_status_full, is_stale, passes_filter
 from ..theme import STATUS_ICONS_3, STATUS_TO_COLOR
 from .style import _mix
 
@@ -35,8 +35,12 @@ class QtSidebar(QWidget):
     def __init__(self, P: dict, S: dict, profile, on_select: Callable[[int], None], parent=None,
                  on_subject_eval: Callable[[str, str], None] | None = None,
                  on_subject_status: Callable[[str, str, bool], None] | None = None,
-                 on_rerun: Callable[[list[Path]], None] | None = None):
+                 on_rerun: Callable[[list[Path]], None] | None = None,
+                 on_adjust: Callable[[list[int]], None] | None = None,
+                 on_reset_display: Callable[[list[int]], None] | None = None):
         super().__init__(parent)
+        self._on_adjust = on_adjust or (lambda idxs: None)
+        self._on_reset_display = on_reset_display or (lambda idxs: None)
         self._on_rerun = on_rerun or (lambda paths: None)
         self._stale: dict[tuple[str, str], list[Path]] = {}
         self._on_subject_eval = on_subject_eval or (lambda tp, sub: None)
@@ -79,7 +83,10 @@ class QtSidebar(QWidget):
         self.tree.setFocusPolicy(Qt.NoFocus)    # ←/→ belong to the image, not the tree
         self.tree.itemClicked.connect(self._on_item_clicked)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._subject_menu)
+        self.tree.customContextMenuRequested.connect(self._context_menu)
+        # several images at once (⌘/⇧-click) — for "Helligkeit & Kontrast"
+        from PySide6.QtWidgets import QAbstractItemView
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         lay.addWidget(self.tree, 1)
 
         # ── detail panel: one line, counted cells against the target ──
@@ -123,7 +130,9 @@ class QtSidebar(QWidget):
             while parent is not None:          # the current image is always visible
                 parent.setExpanded(True)
                 parent = parent.parent()
+            self.tree.clearSelection()
             self.tree.setCurrentItem(item)
+            item.setSelected(True)
             self.tree.scrollToItem(item)
         self._building = False
         self._show_details(self._group_of_idx.get(idx))
@@ -184,7 +193,7 @@ class QtSidebar(QWidget):
         counted = self._counted_stems(tp, sub)
         rows = []
         for info in infos:
-            status, has_note = image_status(self.folder, info.path)
+            status, has_note, adjusted = image_status_full(self.folder, info.path)
             stale = is_stale(self.folder, info.path, self.profile.cellpose)
             if stale:
                 stale_paths.append(info.path)
@@ -194,12 +203,13 @@ class QtSidebar(QWidget):
             idx = self._idx_by_name.get(info.path.name)
             if idx is None:
                 continue
-            rows.append((info, status, has_note, counted is None or info.path.stem in counted, idx))
+            rows.append((info, status, has_note, counted is None or info.path.stem in counted, idx, adjusted))
         # stable: counted, then not yet segmented, then ⊘ (segmented, not counted) last
         rows.sort(key=lambda r: 0 if r[3] else (1 if r[1] == "unsegmented" else 2))
-        for info, status, has_note, is_counted, idx in rows:
+        for info, status, has_note, is_counted, idx, adjusted in rows:
             off = not is_counted and status != "unsegmented"
             text = (f"{STATUS_ICONS_3[status]}  {info.path.name}" + ("  ❝" if has_note else "")
+                    + ("  ☀︎" if adjusted else "")
                     + ("   ⊘" if off else ""))
             it = QTreeWidgetItem([text])
             it.setData(0, ROLE_KIND, "img"); it.setData(0, ROLE_KEY, idx)
@@ -263,15 +273,38 @@ class QtSidebar(QWidget):
         self.det_cells.style().unpolish(self.det_cells); self.det_cells.style().polish(self.det_cells)
         self.details.show()
 
-    def _subject_menu(self, pos) -> None:
-        """Right-click on a subject row: pick counted images, or mark all done/open."""
+    def selected_indices(self) -> list[int]:
+        """Image indices selected in the list (⌘/⇧-click), in list order."""
+        chosen = {int(it.data(0, ROLE_KEY)) for it in self.tree.selectedItems() if it.data(0, ROLE_KIND) == "img"}
+        return [i for i in self.order() if i in chosen]
+
+    def group_indices(self, tp: str, sub: str) -> list[int]:
+        return [self._idx_by_name[i.path.name] for i in self.grouped.tree.get(tp, {}).get(sub, [])
+                if i.path.name in self._idx_by_name]
+
+    def _context_menu(self, pos) -> None:
+        """Right-click: on images — brightness & contrast for the selection;
+        on a subject — counted images, done/open, brightness for the group."""
         item = self.tree.itemAt(pos)
-        if item is None or item.data(0, ROLE_KIND) != "sub":
+        if item is None:
             return
-        _, tp, sub = item.data(0, ROLE_KEY).split("::", 2)
         from PySide6.QtWidgets import QMenu
         m = QMenu(self)
+        kind = item.data(0, ROLE_KIND)
+        if kind == "img":
+            if not item.isSelected():
+                self.tree.clearSelection(); item.setSelected(True)
+            idxs = self.selected_indices()
+            head = m.addAction(self.S["br_n_selected"].format(n=len(idxs))); head.setEnabled(False)
+            m.addAction("☀︎  " + self.S["br_menu"], lambda: self._on_adjust(idxs))
+            m.addAction(self.S["br_reset"], lambda: self._on_reset_display(idxs))
+            m.exec(self.tree.viewport().mapToGlobal(pos))
+            return
+        if kind != "sub":
+            return
+        _, tp, sub = item.data(0, ROLE_KEY).split("::", 2)
         m.addAction(self.S["qt_sub_eval"], lambda: self._on_subject_eval(tp, sub))
+        m.addAction("☀︎  " + self.S["br_menu"], lambda: self._on_adjust(self.group_indices(tp, sub)))
         m.addSeparator()
         m.addAction(self.S["status_mark_all_done"], lambda: self._on_subject_status(tp, sub, True))
         m.addAction(self.S["status_mark_all_open"], lambda: self._on_subject_status(tp, sub, False))
@@ -311,6 +344,9 @@ class QtSidebar(QWidget):
         if self._building:
             return
         if item.data(0, ROLE_KIND) == "img":
+            from PySide6.QtWidgets import QApplication
+            if QApplication.keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier | Qt.MetaModifier):
+                return                  # ⌘/⇧-click only extends the selection
             self._on_select(int(item.data(0, ROLE_KEY)))
         else:
             item.setExpanded(not item.isExpanded())

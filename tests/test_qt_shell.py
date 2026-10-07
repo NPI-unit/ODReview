@@ -156,16 +156,18 @@ def main() -> int:
     ev = lambda kind, x, y: SimpleNamespace(button=3, inaxes=ax, x=x, y=y,
                                             xdata=ax.transData.inverted().transform((x, y))[0],
                                             ydata=ax.transData.inverted().transform((x, y))[1])
-    notes = []
+    notes, menus = [], []
     cv.note_callback = notes.append
+    cv.context_callback = lambda: menus.append(1)        # the image menu (brightness) — not opened here
     before = ax.get_xlim()
     cv._on_button_press(ev("press", px, py))
     cv._on_motion(ev("move", px - 40, py))
     cv._on_button_release(ev("release", px - 40, py))
     check(ax.get_xlim() != before and not notes and not win.notebox.visible,
           "right-drag moves the image; no remark opens")
+    check(not menus, "…and a drag opens no menu")
     cv._on_button_press(ev("press", px, py)); cv._on_button_release(ev("release", px, py))
-    check(not notes, "a plain right click does nothing")
+    check(not notes and menus == [1], "a plain right click opens the image menu, never a remark")
     cv.reset_zoom()
 
     # helper grid (exploratory): G cycles, choice is kept per computer
