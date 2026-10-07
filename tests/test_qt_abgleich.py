@@ -288,7 +288,20 @@ def main() -> int:
           "loading the backup brings A's original rating back")
     check(any(b.kind == "auto" for b in backups.list_backups(folder)), "…after saving the state before as an automatic backup")
     bd.close()
+    from matplotlib.patches import Rectangle as _Rect
+    frames = lambda c: [p for p in c.ax.patches if isinstance(p, _Rect)]
+    win.show_image(0); QTest.qWait(30)
+    n0 = len(sp.diffs)
+    check(len(frames(win.canvas)) == n0 and len(frames(win.canvas_b)) == n0,
+          f"one frame per difference on A and B ({n0})")
+    win.show_image(1); QTest.qWait(30)
+    check(len(frames(win.canvas)) == len(sp.diffs) and len(frames(win.canvas_b)) == len(sp.diffs),
+          f"next image: only its own frames, none left from the previous one ({len(frames(win.canvas))} / {len(sp.diffs)})")
+    win.show_image(0); QTest.qWait(30)
     sp.deactivate()
+    check(not frames(win.canvas), "after the comparison no frame is left in the normal view")
+    win.show_image(1); win.show_image(0); QTest.qWait(30)
+    check(not frames(win.canvas), "…also not after changing images")
     check(not win.canvas_b.isVisible() and win.canvas.only_ids is None, "'⇆ Abgleich' off: back to the single view")
     check(win.sidebar._filter == "all" and win.sidebar.filter_combo.findData("cmp_common") < 0
           and win.sidebar.calc_line.isHidden(), "…and the list is back on its filter, without ticks")

@@ -240,8 +240,10 @@ class CanvasCore:
         self._refresh_outlines()
         self._refresh_notes()
         self._refresh_grid()
-        self._marker_artists = []
+        # the comparison's frames belong to the previous image: remove them
+        # (an image of the same size keeps the axes, so they would stay)
         self._markers = []
+        self._draw_markers()
         self._full_redraw()
 
     # ── helper grid ──
