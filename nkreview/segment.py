@@ -41,6 +41,10 @@ class CellposeParams:
     roi_dab_threshold: float = 0.04
     roi_min_area: int = 150
     roi_pad: int = 48
+    # What Cellpose looks at: "rgb" (whole cells, NK) or "dab" — the DAB OD
+    # as a grey image (nuclei: pale Ki67 nuclei that Cellpose misses on RGB
+    # stand out clearly; C2C12 test image 27 instead of 8 objects).
+    input: str = "rgb"
 
 
 # ─────────────────────────────────────────────
@@ -137,15 +141,36 @@ def dab_regions(img: np.ndarray, p: CellposeParams,
     return [(slice(y0, y1), slice(x0, x1)) for y0, y1, x0, x1 in boxes], bg
 
 
+DAB_INPUT_MAX = 0.2        # DAB OD shown as black in the "dab" input image
+FULL_IMAGE_SHARE = 0.4      # boxes covering more than this → one full-image run
+
+
+def dab_input_image(img: np.ndarray, stain_vectors: list | None = None) -> np.ndarray:
+    """DAB OD as an RGB grey image, white = no DAB (what Cellpose sees for "dab")."""
+    from . import od as odm
+    vectors = stain_vectors or odm.STAIN_PRESETS[odm.DEFAULT_PRESET]
+    bg = odm.estimate_background(img, None)
+    dab = odm.deconvolve(odm.od_rgb(img, bg.i0), vectors)[..., odm.DAB]
+    v = np.clip(ndi.gaussian_filter(dab, 1) / DAB_INPUT_MAX, 0, 1)
+    g = (255 * (1 - v)).astype(np.uint8)
+    return np.stack([g, g, g], axis=-1)
+
+
 def run_cellpose(img: np.ndarray, p: CellposeParams,
                  stain_vectors: list | None = None) -> np.ndarray:
+    src = dab_input_image(img, stain_vectors) if p.input == "dab" else img
     if p.roi_mode != "dab":
-        return _eval(img, p)
+        return _eval(src, p)
     out = np.zeros(img.shape[:2], dtype=np.int32)
     next_id = 1
     boxes, bg = dab_regions(img, p, stain_vectors)
+    covered = sum((sl[0].stop - sl[0].start) * (sl[1].stop - sl[1].start) for sl in boxes)
+    if covered > FULL_IMAGE_SHARE * img.shape[0] * img.shape[1]:
+        # Dense image: the merged boxes are nearly the whole image anyway.
+        return _eval(src, p)
+    fill = (255, 255, 255) if p.input == "dab" else bg.i0
     for sl in boxes:
-        crop = _eval_padded(img[sl], p, bg.i0)
+        crop = _eval_padded(src[sl], p, fill)
         tgt = out[sl]
         for cid in np.unique(crop[crop > 0]):
             m = (crop == cid) & (tgt == 0)     # merged boxes never overlap; belt and braces

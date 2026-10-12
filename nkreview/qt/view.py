@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem, QGraphicsView,
 )
 
-TOOL_SELECT, TOOL_DRAW, TOOL_ROI = "select", "draw", "roi"
+TOOL_SELECT, TOOL_DRAW, TOOL_ROI, TOOL_I0 = "select", "draw", "roi", "i0"
 
 
 def to_qimage(rgb: np.ndarray) -> QImage:
@@ -39,6 +39,7 @@ class ImageView(QGraphicsView):
     cellClicked = Signal(int)                 # 0 = background
     polygonDrawn = Signal(list)               # [[x, y], ...] image px
     roiDrawn = Signal(list)                   # [x0, y0, x1, y1]
+    i0Clicked = Signal(float, float)          # image px, tool "I₀-Feld setzen"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,6 +54,8 @@ class ImageView(QGraphicsView):
         self._labels: np.ndarray | None = None
         self._cell_items: dict[int, tuple[QGraphicsPathItem, QGraphicsSimpleTextItem]] = {}
         self._roi_item: QGraphicsRectItem | None = None
+        self._field_items: list = []
+        self.fields_visible = True
         self._tool = TOOL_SELECT
         self._drag_start: QPointF | None = None
         self._draw_pts: list[QPointF] = []
@@ -61,7 +64,7 @@ class ImageView(QGraphicsView):
         self._press_pos = None
         self.contours_visible = True
         self.colors = {"keep": "#1B7A4D", "gone": "#8A8F99", "sel": "#2161D9",
-                       "warn": "#975E0C", "roi": "#2161D9"}
+                       "warn": "#C77A12", "roi": "#2161D9"}
 
     # ── content ─────────────────────────────────────────────
     def set_pixmap(self, rgb: np.ndarray, fit: bool = False) -> None:
@@ -103,8 +106,9 @@ class ImageView(QGraphicsView):
 
     @staticmethod
     def _caption(r: dict) -> str:
-        warn = " ⚠" if r["ring_warnung"] or r["randzelle"] else ""
-        return f'#{r["zelle"]}  {r["dab_od_mean"]:.3f}{warn}'
+        od = "–" if r["od_fiji"] is None else f'{r["od_fiji"]:.3f}'
+        warn = " ⚠" if r["status"] == "ausgeschlossen" or r["debris_verdacht"] or r["randzelle"] else ""
+        return f'#{r["zelle"]}  {od}{warn}'
 
     def restyle(self, rows: list[dict], selected: int) -> None:
         for r in rows:
@@ -114,15 +118,17 @@ class ImageView(QGraphicsView):
             p, t = items
             if r["zelle"] == selected:
                 col, width, style = self.colors["sel"], 2.5, Qt.SolidLine
-            elif r["verworfen"]:
+            elif r["status"] == "verworfen":
                 col, width, style = self.colors["gone"], 1.5, Qt.DashLine
+            elif r["status"] == "ausgeschlossen":
+                col, width, style = self.colors["warn"], 1.5, Qt.DashLine
             else:
                 col, width, style = self.colors["keep"], 2.0, Qt.SolidLine
             pen = QPen(QColor(col), width, style)
             pen.setCosmetic(True)
             p.setPen(pen)
             t.setBrush(QBrush(QColor(col)))
-            t.setText(self._caption(r) + ("  (verworfen)" if r["verworfen"] else ""))
+            t.setText(self._caption(r))
             p.setVisible(self.contours_visible)
             t.setVisible(self.contours_visible)
 
@@ -135,6 +141,27 @@ class ImageView(QGraphicsView):
             pen = QPen(QColor(self.colors["roi"]), 2, Qt.DashDotLine); pen.setCosmetic(True)
             self._roi_item = self.scene().addRect(QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized(), pen)
             self._roi_item.setZValue(4)
+
+    def set_fields(self, fields: dict, size: int, selected: int = 0) -> None:
+        """I₀ background fields: {cid: [[x, y], …]}; the selected cell's stronger."""
+        for it in self._field_items:
+            self.scene().removeItem(it)
+        self._field_items = []
+        half = size / 2
+        for cid, pts in fields.items():
+            sel = cid == selected
+            pen = QPen(QColor(self.colors["warn"]), 2.0 if sel else 1.0)
+            pen.setCosmetic(True)
+            for x, y in pts:
+                it = self.scene().addRect(QRectF(x - half, y - half, size, size), pen)
+                it.setZValue(4 if sel else 3)
+                it.setVisible(self.fields_visible)
+                self._field_items.append(it)
+
+    def set_fields_visible(self, on: bool) -> None:
+        self.fields_visible = on
+        for it in self._field_items:
+            it.setVisible(on)
 
     def set_contours_visible(self, on: bool) -> None:
         self.contours_visible = on
@@ -158,6 +185,9 @@ class ImageView(QGraphicsView):
             pen = QPen(QColor(self.colors["warn"]), 2); pen.setCosmetic(True)
             self._draw_item = self.scene().addPath(QPainterPath(pos), pen)
             self._draw_item.setZValue(5)
+            return
+        if e.button() == Qt.LeftButton and self._tool == TOOL_I0:
+            self.i0Clicked.emit(pos.x(), pos.y())
             return
         if e.button() == Qt.LeftButton and self._tool == TOOL_ROI:
             self._drag_start = pos

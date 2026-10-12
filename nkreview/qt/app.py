@@ -1,8 +1,8 @@
-"""Main window: image list · image view · cells and settings.
+"""Main window: images of a study · image view · cell panel.
 
-Flow: open a folder → Cellpose runs in the background (DAB-ROI crops, the
-image on screen first) → go through the images with ←/→, discard or draw
-cells, adjust the threshold → Export writes outputs/.
+Flow: pick or create a study → Cellpose runs in the background (the image on
+screen first) → go through the images with ←/→, check each cell's contour and
+I₀ fields, discard or draw cells → Export writes the study's tables.
 """
 
 from __future__ import annotations
@@ -16,46 +16,67 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QProgressDialog, QPushButton, QSplitter,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
+    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
+    QProgressDialog, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
-from ..analysis import ImageResult, analyze
-from ..segment import (
-    METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, has_cellpose_cache,
-)
-from ..state import MANUAL_ID_BASE, Review, Settings, app_support_dir, list_images, load_image
+from ..analysis import STATUS_KEPT, ImageResult, analyze
+from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, has_cellpose_cache
+from ..state import MANUAL_ID_BASE, Review, app_support_dir, load_image
+from ..study import ImageInfo, Study, list_studies, proband_progress
+from .cellpanel import CellPanel
 from .style import apply_look
-from .view import TOOL_DRAW, TOOL_ROI, TOOL_SELECT, ImageView
+from .studies import StudyPicker, _clear_layout
+from .view import TOOL_DRAW, TOOL_I0, TOOL_SELECT, ImageView
 from .worker import CellposeWorker
 
 METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD-Rand)",
                  METHOD_CELLPOSE: "Nur Cellpose",
                  METHOD_THRESHOLD: "Nur OD-Schwelle (Backup)"}
-VIEWS = (("rgb", "Original"), ("dab", "DAB-Kanal"), ("od", "Gesamt-OD"))
-OD_DISPLAY_MAX = 0.6          # fixed scale so images stay comparable
+VIEWS = (("rgb", "Original"), ("gray", "Grau-OD"), ("dab", "DAB-Kanal"))
+OD_DISPLAY_MAX = 0.4          # fixed scale so images stay comparable
 
-COLUMNS = [("zelle", "#"), ("flaeche_px", "Fläche px"), ("dab_od_mean", "DAB mean"),
-           ("dab_iod", "DAB IOD"), ("gesamt_od_mean", "Gesamt mean"), ("hinweis", "")]
+COLUMNS = [("zelle", "#"), ("status", "Status"), ("od_fiji", "OD"), ("i0", "I₀"),
+           ("flaeche_px", "Fläche"), ("hinweis", "")]
 
 ST_WAIT, ST_RUN, ST_SEG, ST_DONE, ST_ERR = "○", "◐", "●", "✔", "✕"
+ALL_MARKERS = ""
 
 
-def _last_folder_file() -> Path:
+def _app_file() -> Path:
     return app_support_dir() / "app.json"
 
 
+def _remember(**kw) -> None:
+    try:
+        d = json.loads(_app_file().read_text("utf-8"))
+    except (OSError, ValueError):
+        d = {}
+    d.update(kw)
+    try:
+        _app_file().write_text(json.dumps(d), "utf-8")
+    except OSError:
+        pass
+
+
+def _recall(key: str):
+    try:
+        return json.loads(_app_file().read_text("utf-8")).get(key)
+    except (OSError, ValueError):
+        return None
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, folder: Path | None = None):
+    def __init__(self, study: Study | None = None):
         super().__init__()
-        self.setWindowTitle(f"NKReview {__version__}")
-        self.resize(1500, 900)
-        self.folder: Path | None = None
-        self.settings = Settings()
-        self.images: list[Path] = []
+        self.resize(1500, 920)
+        self.study: Study | None = None
+        self.images: list[ImageInfo] = []
+        self.visible: list[int] = []            # indices into images, in tree order
+        self.marker = ALL_MARKERS
         self.idx = -1
         self.img: np.ndarray | None = None
         self.review = Review()
@@ -65,6 +86,7 @@ class MainWindow(QMainWindow):
         self.undo_stack: list[Review] = []
         self.running: set[str] = set()
         self.failed: dict[str, str] = {}
+        self._items: dict[int, QTreeWidgetItem] = {}
 
         self.worker = CellposeWorker()
         self.worker.started.connect(self._cp_started)
@@ -74,34 +96,37 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_shortcuts()
-        if folder is None:
-            try:
-                last = json.loads(_last_folder_file().read_text("utf-8")).get("folder")
-                folder = Path(last) if last and Path(last).is_dir() else None
-            except (OSError, ValueError):
-                folder = None
-        if folder is not None:
-            QTimer.singleShot(0, lambda: self.open_folder(folder))
+        QTimer.singleShot(0, lambda: self._startup(study))
+
+    def _startup(self, study: Study | None) -> None:
+        if study is None:
+            last = _recall("study")
+            study = next((s for s in list_studies() if s.file == last), None)
+        if study is None:
+            self.choose_study()
+        else:
+            self.open_study(study)
 
     # ── UI ──────────────────────────────────────────────────
     def _build_ui(self) -> None:
         tb = QFrame(objectName="toolbar")
         tl = QHBoxLayout(tb); tl.setContentsMargins(10, 6, 10, 6)
-        b_open = QPushButton("📂 Ordner öffnen"); b_open.clicked.connect(self.choose_folder)
-        tl.addWidget(b_open)
+        self.b_study = QPushButton("Studie wählen"); self.b_study.setObjectName("study")
+        self.b_study.clicked.connect(self.choose_study)
+        tl.addWidget(self.b_study)
         seg = QFrame(objectName="segment"); sl = QHBoxLayout(seg)
         sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
         self.tool_group = QButtonGroup(self)
-        for i, (tool, text) in enumerate(((TOOL_SELECT, "1  Auswählen"), (TOOL_DRAW, "2  Zelle zeichnen"),
-                                          (TOOL_ROI, "3  Hintergrund-ROI"))):
+        for i, (tool, text) in enumerate(((TOOL_SELECT, "1  Auswählen"), (TOOL_DRAW, "2  Kontur zeichnen"),
+                                          (TOOL_I0, "3  I₀-Feld setzen"))):
             b = QPushButton(text); b.setCheckable(True)
             b.setProperty("first", i == 0); b.setProperty("last", i == 2)
+            b.setProperty("tool", tool)
             b.clicked.connect(lambda _=False, t=tool: self.set_tool(t))
             self.tool_group.addButton(b); sl.addWidget(b)
-            b.setProperty("tool", tool)
         self.tool_group.buttons()[0].setChecked(True)
         tl.addWidget(seg)
-        tl.addSpacing(12)
+        tl.addSpacing(10)
         self.view_combo = QComboBox()
         for key, text in VIEWS:
             self.view_combo.addItem(text, key)
@@ -109,29 +134,42 @@ class MainWindow(QMainWindow):
         tl.addWidget(QLabel("Ansicht (D):")); tl.addWidget(self.view_combo)
         self.cb_contours = QCheckBox("Konturen (O)"); self.cb_contours.setChecked(True)
         self.cb_contours.toggled.connect(lambda on: self.view.set_contours_visible(on))
-        tl.addWidget(self.cb_contours)
+        self.cb_fields = QCheckBox("I₀-Felder (I)"); self.cb_fields.setChecked(True)
+        self.cb_fields.toggled.connect(lambda on: self.view.set_fields_visible(on))
+        tl.addWidget(self.cb_contours); tl.addWidget(self.cb_fields)
         tl.addStretch(1)
         self.status = QLabel(""); self.status.setObjectName("caption")
         tl.addWidget(self.status)
         b_exp = QPushButton("⤓ Export", objectName="export"); b_exp.clicked.connect(self.export)
         tl.addWidget(b_exp)
 
-        # left: images
-        self.list = QListWidget(objectName="sidebar")
-        self.list.currentRowChanged.connect(self._list_row)
-        self.list.setFocusPolicy(Qt.NoFocus)
+        # left: marker filter + image tree
+        left = QWidget(objectName="sidebar"); ll = QVBoxLayout(left); ll.setContentsMargins(8, 8, 8, 8)
+        self.chip_row = QHBoxLayout(); self.chip_row.setSpacing(6)
+        chips = QWidget(); chips.setLayout(self.chip_row)
+        ll.addWidget(chips)
+        self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.setColumnCount(2)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tree.setFocusPolicy(Qt.NoFocus)
+        self.tree.currentItemChanged.connect(self._tree_changed)
+        ll.addWidget(self.tree, 1)
+        legend = QLabel("○ wartet · ◐ Cellpose · ● segmentiert · ✔ geprüft", objectName="caption")
+        ll.addWidget(legend)
 
         # centre
         self.view = ImageView()
         self.view.cellClicked.connect(self.select_cell)
         self.view.polygonDrawn.connect(self.add_manual)
-        self.view.roiDrawn.connect(self.set_roi)
+        self.view.i0Clicked.connect(self.place_i0_field)
         self.banner = QLabel("", objectName="banner"); self.banner.setWordWrap(True)
+        self.footer = QLabel("", objectName="caption")
         centre = QWidget(); cl = QVBoxLayout(centre); cl.setContentsMargins(0, 0, 0, 0)
-        cl.addWidget(self.view, 1); cl.addWidget(self.banner)
+        cl.addWidget(self.view, 1); cl.addWidget(self.banner); cl.addWidget(self.footer)
 
-        # right: image settings + cells
-        right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(8, 8, 8, 8)
+        # right: contour settings, cells, cell panel
+        right_inner = QWidget(); rl = QVBoxLayout(right_inner); rl.setContentsMargins(10, 8, 10, 8); rl.setSpacing(8)
         form = QFormLayout()
         self.method_combo = QComboBox()
         for k, v in METHOD_LABELS.items():
@@ -142,18 +180,11 @@ class MainWindow(QMainWindow):
         self.thr_spin.setKeyboardTracking(False)
         self.thr_spin.valueChanged.connect(lambda _: self._threshold_changed())
         self.cb_only_this = QCheckBox("nur für dieses Bild")
-        self.cb_only_this.setToolTip("Aus: Methode und Schwelle gelten für den ganzen Ordner.")
+        self.cb_only_this.setToolTip("Aus: Methode und Schwelle gelten für die ganze Studie.")
+        thr_row = QHBoxLayout(); thr_row.addWidget(self.thr_spin); thr_row.addWidget(self.cb_only_this)
         form.addRow("Kontur:", self.method_combo)
-        form.addRow("OD-Schwelle:", self.thr_spin)
-        form.addRow("", self.cb_only_this)
-        self.i0_label = QLabel("–"); form.addRow("Hintergrund I₀:", self.i0_label)
+        form.addRow("OD-Schwelle:", thr_row)
         rl.addLayout(form)
-        row = QHBoxLayout()
-        self.b_roi_reset = QPushButton("ROI entfernen"); self.b_roi_reset.clicked.connect(lambda: self.set_roi(None))
-        self.b_rerun = QPushButton("Cellpose neu"); self.b_rerun.clicked.connect(self.rerun_cellpose)
-        row.addWidget(self.b_roi_reset); row.addWidget(self.b_rerun)
-        rl.addLayout(row)
-
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels([c[1] for c in COLUMNS])
         self.table.verticalHeader().setVisible(False)
@@ -163,162 +194,243 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.setMaximumHeight(170)
         self.table.itemSelectionChanged.connect(self._table_selection)
-        rl.addWidget(QLabel("Zellen in diesem Bild:"))
-        rl.addWidget(self.table, 1)
-        self.detail = QLabel(""); self.detail.setWordWrap(True)
-        self.detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        rl.addWidget(self.detail)
+        rl.addWidget(self.table)
+        self.panel = CellPanel(); rl.addWidget(self.panel)
         row2 = QHBoxLayout()
         self.b_discard = QPushButton("Verwerfen (X)"); self.b_discard.clicked.connect(self.toggle_discard)
+        self.b_redraw = QPushButton("I₀-Felder neu losen (R)"); self.b_redraw.clicked.connect(self.redraw_fields)
         self.b_delete = QPushButton("Gezeichnete löschen"); self.b_delete.clicked.connect(self.delete_manual)
-        row2.addWidget(self.b_discard); row2.addWidget(self.b_delete)
+        row2.addWidget(self.b_discard); row2.addWidget(self.b_redraw); row2.addWidget(self.b_delete)
         rl.addLayout(row2)
+        row3 = QHBoxLayout()
+        self.b_rerun = QPushButton("Cellpose neu"); self.b_rerun.clicked.connect(self.rerun_cellpose)
         self.b_done = QPushButton("✔ Bild geprüft (Enter)"); self.b_done.setProperty("class", "primary")
         self.b_done.clicked.connect(self.toggle_reviewed)
-        rl.addWidget(self.b_done)
+        row3.addWidget(self.b_rerun); row3.addWidget(self.b_done, 1)
+        rl.addLayout(row3)
+        rl.addStretch(1)
+        right = QScrollArea(); right.setWidgetResizable(True); right.setWidget(right_inner)
+        right.setFrameShape(QFrame.NoFrame); right.setMinimumWidth(430)
 
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(self.list); split.addWidget(centre); split.addWidget(right)
-        split.setSizes([260, 900, 380])
+        split.addWidget(left); split.addWidget(centre); split.addWidget(right)
+        split.setSizes([290, 800, 450])
         split.setStretchFactor(1, 1)
         body = QWidget(); bl = QVBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
         bl.addWidget(tb); bl.addWidget(split, 1)
         self.setCentralWidget(body)
         self._set_enabled(False)
+        self.panel.show_cell(None)
 
     def _build_shortcuts(self) -> None:
         keys = {
             Qt.Key_Right: lambda: self.go(+1), Qt.Key_Left: lambda: self.go(-1),
             Qt.Key_1: lambda: self.set_tool(TOOL_SELECT), Qt.Key_2: lambda: self.set_tool(TOOL_DRAW),
-            Qt.Key_3: lambda: self.set_tool(TOOL_ROI),
+            Qt.Key_3: lambda: self.set_tool(TOOL_I0),
             Qt.Key_X: self.toggle_discard, Qt.Key_Delete: self.toggle_discard,
-            Qt.Key_Backspace: self.toggle_discard,
+            Qt.Key_Backspace: self.toggle_discard, Qt.Key_R: self.redraw_fields,
             Qt.Key_D: self.cycle_view, Qt.Key_O: lambda: self.cb_contours.toggle(),
+            Qt.Key_I: lambda: self.cb_fields.toggle(),
             Qt.Key_Return: self.toggle_reviewed, Qt.Key_Enter: self.toggle_reviewed,
             Qt.Key_F: lambda: self.view.fit(), Qt.Key_Escape: lambda: self.select_cell(0),
         }
         for key, fn in keys.items():
             QShortcut(QKeySequence(key), self, activated=fn)
         QShortcut(QKeySequence.Undo, self, activated=self.undo)
-        QShortcut(QKeySequence.Open, self, activated=self.choose_folder)
 
     def _set_enabled(self, on: bool) -> None:
-        for w in (self.method_combo, self.thr_spin, self.cb_only_this, self.b_roi_reset,
-                  self.b_rerun, self.b_discard, self.b_delete, self.b_done):
+        for w in (self.method_combo, self.thr_spin, self.cb_only_this, self.b_rerun,
+                  self.b_discard, self.b_redraw, self.b_delete, self.b_done):
             w.setEnabled(on)
 
-    # ── folder / images ─────────────────────────────────────
-    def choose_folder(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Bildordner öffnen",
-                                             str(self.folder or Path.home()))
-        if d:
-            self.open_folder(Path(d))
+    # ── study ───────────────────────────────────────────────
+    def choose_study(self) -> None:
+        dlg = StudyPicker(self, self.study)
+        if dlg.exec() == QDialog.Accepted and dlg.chosen is not None:
+            self.open_study(dlg.chosen)
+        elif self.study is not None:
+            # settings may have been edited in the picker
+            fresh = next((s for s in list_studies() if s.file == self.study.file), None)
+            if fresh is not None and fresh.to_dict() != self.study.to_dict():
+                self.open_study(fresh)
 
-    def open_folder(self, folder: Path) -> None:
-        folder = Path(folder).resolve()
-        images = list_images(folder)
-        if not images:
-            QMessageBox.information(self, "NKReview", f"Keine Bilder in\n{folder}")
-            return
-        self.folder, self.images = folder, images
-        self.settings = Settings.load(folder)
-        self.settings.save(folder)            # the folder always documents what was used
+    def open_study(self, study: Study) -> None:
+        self.study = study
+        self.images = study.images()
         self.failed.clear(); self.running.clear()
-        try:
-            _last_folder_file().write_text(json.dumps({"folder": str(folder)}), "utf-8")
-        except OSError:
-            pass
-        self.setWindowTitle(f"NKReview {__version__} — {folder.name}")
-        self.list.blockSignals(True)
-        self.list.clear()
-        for p in images:
-            self.list.addItem(QListWidgetItem(p.relative_to(folder).as_posix()))
-        self.list.blockSignals(False)
-        for i in range(len(images)):
-            self._refresh_list_item(i)
-        self.worker.stain_vectors = self.settings.stain_vectors
-        self.worker.set_queue(folder, images, self.settings.cellpose)
-        self.list.setCurrentRow(0)
+        self.idx = -1
+        _remember(study=study.file)
+        self.setWindowTitle(f"NKReview {__version__} — {study.name}")
+        self._build_chips()
+        self._build_tree()
+        self.worker.stain_vectors = study.settings.stain_vectors
+        self.worker.set_queue([(i.folder, i.path) for i in self.images], study.settings.cellpose)
+        self._update_study_button()
+        if self.visible:
+            self.go_to(self.visible[0])
+        else:
+            self.img = None; self.result = None
+            self._set_enabled(False)
+            self.banner.setText("Diese Studie hat keine Bilder – Ordner in den Einstellungen prüfen.")
+
+    def _update_study_button(self) -> None:
+        done, n = proband_progress(self.images)
+        markers = ", ".join(self.study.markers(self.images)) or "–"
+        self.b_study.setText(f"{self.study.name}   ·   {markers}   ·   {done}/{n} Probanden")
+
+    def _build_chips(self) -> None:
+        _clear_layout(self.chip_row)
+        markers = self.study.markers(self.images)
+        if self.marker not in markers:
+            self.marker = ALL_MARKERS
+        for m in markers + [ALL_MARKERS]:
+            b = QPushButton(m or "alle"); b.setCheckable(True); b.setProperty("class", "chip")
+            b.setChecked(m == self.marker)
+            b.clicked.connect(lambda _=False, mk=m: self._set_marker(mk))
+            self.chip_row.addWidget(b)
+        self.chip_row.addStretch(1)
+
+    def _set_marker(self, m: str) -> None:
+        self.marker = m
+        self._build_chips()
+        self._build_tree()
+        if self.visible and self.idx not in self.visible:
+            self.go_to(self.visible[0])
+
+    def _build_tree(self) -> None:
+        self.tree.blockSignals(True)
+        self.tree.clear(); self._items.clear(); self.visible = []
+        groups: dict = {}
+        for i, info in enumerate(self.images):
+            if self.marker and info.marker != self.marker:
+                continue
+            groups.setdefault((info.timepoint, info.proband), []).append(i)
+        for (tp, prob), idxs in sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower())):
+            grp = self.images[idxs[0]].meta.get("gruppe", "")
+            head = QTreeWidgetItem([f"{tp}  ·  Proband {prob}" + (f"  ·  {grp}" if grp else ""), ""])
+            f = head.font(0); f.setBold(True); head.setFont(0, f)
+            head.setFlags(head.flags() & ~Qt.ItemIsSelectable)
+            self.tree.addTopLevelItem(head)
+            for i in sorted(idxs, key=lambda k: (self.images[k].marker, self.images[k].path.name)):
+                it = QTreeWidgetItem(["", ""])
+                it.setData(0, Qt.UserRole, i)
+                head.addChild(it)
+                self._items[i] = it
+                self.visible.append(i)
+                self._refresh_item(i)
+            head.setExpanded(True)
+        self.tree.blockSignals(False)
+        if self.idx in self._items:
+            self.tree.setCurrentItem(self._items[self.idx])
 
     def _status_of(self, i: int) -> str:
-        p = self.images[i]
-        if str(p) in self.failed:
+        info = self.images[i]
+        if str(info.path) in self.failed:
             return ST_ERR
-        if str(p) in self.running:
+        if str(info.path) in self.running:
             return ST_RUN
-        if Review.load(self.folder, p).reviewed:
+        if Review.load(info.folder, info.path).reviewed:
             return ST_DONE
-        return ST_SEG if has_cellpose_cache(self.folder, p, self.settings.cellpose) else ST_WAIT
+        return ST_SEG if has_cellpose_cache(info.folder, info.path, self.study.settings.cellpose) else ST_WAIT
 
-    def _refresh_list_item(self, i: int) -> None:
-        it = self.list.item(i)
+    def _refresh_item(self, i: int) -> None:
+        it = self._items.get(i)
+        if it is None:
+            return
+        info = self.images[i]
         st = self._status_of(i)
-        it.setText(f"{st}  {self.images[i].relative_to(self.folder).as_posix()}")
-        if st == ST_ERR:
-            it.setToolTip(self.failed[str(self.images[i])])
+        it.setText(0, f"{st}  {info.path.name}")
+        it.setToolTip(0, self.failed.get(str(info.path), str(info.path)))
+        it.setText(1, info.marker)
 
-    def _list_row(self, row: int) -> None:
-        if 0 <= row < len(self.images) and row != self.idx:
-            self.load(row)
+    def _tree_changed(self, cur, _prev) -> None:
+        if cur is None:
+            return
+        i = cur.data(0, Qt.UserRole)
+        if i is not None and i != self.idx:
+            self.load(int(i))
 
     def go(self, step: int) -> None:
-        if self.images:
-            self.list.setCurrentRow(max(0, min(len(self.images) - 1, self.idx + step)))
+        if not self.visible:
+            return
+        pos = self.visible.index(self.idx) if self.idx in self.visible else -1
+        self.go_to(self.visible[max(0, min(len(self.visible) - 1, pos + step))])
+
+    def go_to(self, i: int) -> None:
+        if i in self._items:
+            self.tree.setCurrentItem(self._items[i])
+        else:
+            self.load(i)
 
     def load(self, i: int) -> None:
         self.idx = i
-        p = self.images[i]
-        self.img = load_image(p)
-        self.review = Review.load(self.folder, p)
+        info = self.images[i]
+        self.img = load_image(info.path)
+        self.review = Review.load(info.folder, info.path)
         self.undo_stack.clear()
         self.selected = 0
-        self.worker.prioritize(p)
+        self.worker.prioritize(info.path)
         self._set_enabled(True)
+        m = info.meta
+        bits = [f"{k}: {m[k]}" for k in ("proband", "gruppe", "zeitpunkt", "zelltyp", "marker", "bildnr") if m.get(k)]
+        self.footer.setText(f"{info.path.name}   ·   " + "  ·  ".join(bits))
         self._recompute(fit=True)
 
     # ── analysis / redraw ───────────────────────────────────
     def _recompute(self, fit: bool = False) -> None:
         if self.img is None:
             return
-        p = self.images[self.idx]
+        info = self.images[self.idx]
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self.result = analyze(self.folder, p, self.img, self.settings, self.review)
+            self.result = analyze(info.folder, info.path, self.img, self.study.settings, self.review)
         finally:
             QApplication.restoreOverrideCursor()
+        if self.selected and self._row(self.selected) is None:
+            self.selected = 0
+        if not self.selected and self.result.rows:
+            self.selected = self.result.rows[0]["zelle"]
         self._render_base(fit)
-        self.view.set_roi(self.review.roi)
         self.view.set_cells(self.result.labels, self.result.rows, self.selected)
+        self._draw_fields()
         self._sync_controls()
         self._fill_table()
         self._update_detail()
         self._update_status()
 
+    def _draw_fields(self) -> None:
+        fields = {cid: cm.fields for cid, cm in self.result.cells.items()
+                  if self._row(cid) and self._row(cid)["status"] != "verworfen"}
+        self.view.set_fields(fields, self.study.settings.i0_field_size, self.selected)
+
     def _render_base(self, fit: bool = False) -> None:
         if self.view_mode == "rgb" or self.result is None:
-            rgb = self.img
+            rgb = self.img.astype(np.uint8)
         else:
-            ch = self.result.stains[..., 1] if self.view_mode == "dab" else self.result.tod
+            if self.view_mode == "dab":
+                ch = self.result.stains[..., 1]
+            else:
+                i0 = float(np.median(self.result.gray))
+                ch = -np.log10(np.clip(self.result.gray, 1, None) / i0)
             v = np.clip(ch / OD_DISPLAY_MAX, 0, 1)
+            from matplotlib import colormaps
             if self.view_mode == "dab":
                 g = (255 * (1 - v)).astype(np.uint8)
                 rgb = np.stack([g, g, g], axis=-1)
             else:
-                from matplotlib import colormaps
-                rgb = (colormaps["magma"](1 - v)[..., :3] * 255).astype(np.uint8)
+                rgb = (colormaps["magma_r"](v)[..., :3] * 255).astype(np.uint8)
         self.view.set_pixmap(rgb, fit=fit)
 
     def _sync_controls(self) -> None:
         r = self.result
         own = self.review.method is not None or self.review.threshold is not None
         for w, fn in ((self.method_combo, lambda: self.method_combo.setCurrentIndex(
-                          self.method_combo.findData(self.review.method or self.settings.method))),
+                          self.method_combo.findData(self.review.method or self.study.settings.method))),
                       (self.thr_spin, lambda: self.thr_spin.setValue(r.threshold)),
                       (self.cb_only_this, lambda: self.cb_only_this.setChecked(own))):
             w.blockSignals(True); fn(); w.blockSignals(False)
-        i0 = r.background
-        self.i0_label.setText(f"R {i0.i0[0]:.0f} · G {i0.i0[1]:.0f} · B {i0.i0[2]:.0f}  ({'ROI' if i0.source == 'roi' else 'auto'})")
         self.banner.setText(r.note)
         self.b_done.setText("↺ Prüfung zurücknehmen (Enter)" if self.review.reviewed else "✔ Bild geprüft (Enter)")
 
@@ -326,22 +438,28 @@ class MainWindow(QMainWindow):
         rows = self.result.rows
         self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
-        muted = QColor("#8A8F99")
+        colors = {"verworfen": QColor("#8A8F99"), "ausgeschlossen": QColor("#975E0C")}
         for i, r in enumerate(rows):
             hint = []
             if r["manuell"]: hint.append("gezeichnet")
             if r["randzelle"]: hint.append("Bildrand")
-            if r["ring_warnung"]: hint.append(f"I₀ lokal {r['ring_i0_abweichung_pct']:.1f}%")
-            if r["verworfen"]: hint.append("verworfen")
+            if r["debris_verdacht"]: hint.append("Debris?")
+            if r["grund"] and r["status"] == "ausgeschlossen": hint.append(r["grund"])
             vals = {**r, "hinweis": ", ".join(hint)}
             for c, (key, _) in enumerate(COLUMNS):
                 v = vals[key]
-                text = f"{v:.4f}" if key.endswith("mean") else f"{v:.1f}" if key.endswith("iod") else str(v)
+                if v is None:
+                    text = "–"
+                elif key == "od_fiji":
+                    text = f"{v:.4f}"
+                elif key == "i0":
+                    text = f"{v:.1f}"
+                else:
+                    text = str(v)
                 it = QTableWidgetItem(text)
                 it.setData(Qt.UserRole, r["zelle"])
-                if r["verworfen"]:
-                    it.setForeground(muted)
-                    f = it.font(); f.setStrikeOut(c < len(COLUMNS) - 1); it.setFont(f)
+                if r["status"] in colors:
+                    it.setForeground(colors[r["status"]])
                 self.table.setItem(i, c, it)
             if r["zelle"] == self.selected:
                 self.table.selectRow(i)
@@ -355,49 +473,47 @@ class MainWindow(QMainWindow):
     def _update_detail(self) -> None:
         r = self._row(self.selected)
         self.b_discard.setEnabled(r is not None)
+        self.b_redraw.setEnabled(r is not None)
         self.b_delete.setEnabled(bool(r and r["manuell"]))
         if r is None:
-            n = sum(not x["verworfen"] for x in self.result.rows) if self.result else 0
-            self.detail.setText(f"{n} Zelle(n) werden gezählt. Klick auf eine Zelle für Details.")
+            self.panel.show_cell(None)
             return
-        self.b_discard.setText("Zurückholen (X)" if r["verworfen"] else "Verwerfen (X)")
-        ring = "–" if r["ring_i0_abweichung_pct"] is None else f"{r['ring_i0_abweichung_pct']:.1f} %"
-        self.detail.setText(
-            f"<b>Zelle #{r['zelle']}</b> · {r['kontur']} · {r['flaeche_px']} px<br>"
-            f"DAB-OD mean <b>{r['dab_od_mean']:.4f}</b> ± {r['dab_od_sd']:.4f} (SD) · "
-            f"median {r['dab_od_median']:.4f} · p95 {r['dab_od_p95']:.4f} · max {r['dab_od_max']:.4f}<br>"
-            f"DAB-IOD {r['dab_iod']:.1f} · Gesamt-OD mean {r['gesamt_od_mean']:.4f} · "
-            f"H-Kanal {r['kanal_h_od_mean']:.4f}<br>"
-            f"Ring-I₀ weicht {ring} vom Bild-I₀ ab")
+        self.b_discard.setText("Zurückholen (X)" if r["status"] == "verworfen" else "Verwerfen (X)")
+        self.panel.show_cell(r, self.result.cells.get(r["zelle"]), self.result.gray,
+                             self.result.labels, self.study.settings)
 
     def _update_status(self) -> None:
         if not self.images:
-            self.status.setText("Ordner öffnen, um zu beginnen (⌘O)")
+            self.status.setText("")
             return
-        done = sum(Review.load(self.folder, p).reviewed for p in self.images)
         pend = self.worker.pending() + len(self.running)
         cp = f"Cellpose: {pend} offen" if pend else "Cellpose: fertig"
-        self.status.setText(f"Bild {self.idx + 1}/{len(self.images)} · {done} geprüft · {cp}")
+        pos = self.visible.index(self.idx) + 1 if self.idx in self.visible else 0
+        kept = sum(r["status"] == STATUS_KEPT for r in self.result.rows) if self.result else 0
+        self.status.setText(f"Bild {pos}/{len(self.visible)} · {kept} Zelle(n) gewertet · {cp}")
 
     # ── review edits ────────────────────────────────────────
     def _edit(self, fn) -> None:
+        info = self.images[self.idx]
         self.undo_stack.append(copy.deepcopy(self.review))
         fn(self.review)
-        self.review.save(self.folder, self.images[self.idx])
+        self.review.save(info.folder, info.path)
         self._recompute()
-        self._refresh_list_item(self.idx)
+        self._refresh_item(self.idx)
 
     def undo(self) -> None:
         if self.undo_stack:
+            info = self.images[self.idx]
             self.review = self.undo_stack.pop()
-            self.review.save(self.folder, self.images[self.idx])
+            self.review.save(info.folder, info.path)
             self._recompute()
-            self._refresh_list_item(self.idx)
+            self._refresh_item(self.idx)
 
     def select_cell(self, cid: int) -> None:
         self.selected = cid
         if self.result:
             self.view.restyle(self.result.rows, cid)
+            self._draw_fields()
             self._fill_table()
             self._update_detail()
 
@@ -421,42 +537,77 @@ class MainWindow(QMainWindow):
                 rv.discarded.append(r["zelle"])
         self._edit(fn)
 
+    def redraw_fields(self) -> None:
+        r = self._row(self.selected)
+        if not r:
+            return
+        key = str(r["zelle"])
+        def fn(rv: Review):
+            rv.i0_fields.pop(key, None)
+            rv.i0_seed[key] = int(rv.i0_seed.get(key, 0)) + 1
+        self._edit(fn)
+
+    def place_i0_field(self, x: float, y: float) -> None:
+        """Tool 3: move the selected cell's nearest I₀ field to the click."""
+        r = self._row(self.selected)
+        if not r:
+            QMessageBox.information(self, "I₀-Feld", "Erst eine Zelle auswählen (Werkzeug 1), dann ihre Felder setzen.")
+            return
+        cm = self.result.cells.get(r["zelle"])
+        fields = [list(p) for p in (cm.fields if cm else [])]
+        n = self.study.settings.i0_fields
+        if len(fields) < n:
+            fields.append([round(x, 1), round(y, 1)])
+        else:
+            k = min(range(len(fields)), key=lambda j: (fields[j][0] - x) ** 2 + (fields[j][1] - y) ** 2)
+            fields[k] = [round(x, 1), round(y, 1)]
+        key = str(r["zelle"])
+        self._edit(lambda rv: rv.i0_fields.__setitem__(key, fields))
+
     def add_manual(self, pts: list) -> None:
         def fn(rv: Review):
             rv.manual.append([[round(x, 1), round(y, 1)] for x, y in pts])
+        self.selected = MANUAL_ID_BASE + len(self.review.manual)
         self._edit(fn)
-        self.select_cell(MANUAL_ID_BASE + len(self.review.manual) - 1)
+        self.set_tool(TOOL_SELECT)
 
     def delete_manual(self) -> None:
         r = self._row(self.selected)
         if not (r and r["manuell"]):
             return
         k = r["zelle"] - MANUAL_ID_BASE
+        cid = r["zelle"]
         def fn(rv: Review):
             rv.manual.pop(k)
             # later drawn cells shift down one id
-            rv.discarded = [d if d < r["zelle"] else d - 1 for d in rv.discarded
-                            if d != r["zelle"]]
+            rv.discarded = [d if d < cid else d - 1 for d in rv.discarded if d != cid]
+            for store in (rv.i0_fields, rv.i0_seed):
+                moved = {}
+                for key, v in store.items():
+                    c = int(key)
+                    if c == cid:
+                        continue
+                    moved[str(c - 1 if c > cid else c)] = v
+                store.clear(); store.update(moved)
         self.selected = 0
         self._edit(fn)
-
-    def set_roi(self, roi) -> None:
-        self._edit(lambda rv: setattr(rv, "roi", [round(v) for v in roi] if roi else None))
-        self.set_tool(TOOL_SELECT)
 
     def toggle_reviewed(self) -> None:
         if self.result is None:
             return
         self._edit(lambda rv: setattr(rv, "reviewed", not rv.reviewed))
-        self._update_status()
+        self._update_study_button()
+
+    def _save_study(self) -> None:
+        self.study.save()
 
     def _method_changed(self) -> None:
         m = self.method_combo.currentData()
         if self.cb_only_this.isChecked():
             self._edit(lambda rv: setattr(rv, "method", m))
         else:
-            self.settings.method = m
-            self.settings.save(self.folder)
+            self.study.settings.method = m
+            self._save_study()
             self._recompute()
 
     def _threshold_changed(self) -> None:
@@ -464,13 +615,13 @@ class MainWindow(QMainWindow):
         if self.cb_only_this.isChecked():
             self._edit(lambda rv: setattr(rv, "threshold", t))
         else:
-            self.settings.threshold = t
-            self.settings.save(self.folder)
+            self.study.settings.threshold = t
+            self._save_study()
             self._recompute()
 
     def rerun_cellpose(self) -> None:
-        p = self.images[self.idx]
-        self.worker.force(self.folder, p, self.settings.cellpose)
+        info = self.images[self.idx]
+        self.worker.force(info.folder, info.path, self.study.settings.cellpose)
 
     # ── tools / view ────────────────────────────────────────
     def set_tool(self, tool: str) -> None:
@@ -489,16 +640,14 @@ class MainWindow(QMainWindow):
 
     # ── worker callbacks ────────────────────────────────────
     def _index_of(self, path: str) -> int:
-        try:
-            return [str(p) for p in self.images].index(path)
-        except ValueError:
-            return -1
+        for i, info in enumerate(self.images):
+            if str(info.path) == path:
+                return i
+        return -1
 
     def _cp_started(self, path: str) -> None:
         self.running.add(path)
-        i = self._index_of(path)
-        if i >= 0:
-            self._refresh_list_item(i)
+        self._refresh_item(self._index_of(path))
         self._update_status()
 
     def _cp_finished(self, path: str) -> None:
@@ -506,7 +655,7 @@ class MainWindow(QMainWindow):
         self.failed.pop(path, None)
         i = self._index_of(path)
         if i >= 0:
-            self._refresh_list_item(i)
+            self._refresh_item(i)
             if i == self.idx:
                 self._recompute()
         self._update_status()
@@ -514,47 +663,76 @@ class MainWindow(QMainWindow):
     def _cp_failed(self, path: str, msg: str) -> None:
         self.running.discard(path)
         self.failed[path] = msg
-        i = self._index_of(path)
-        if i >= 0:
-            self._refresh_list_item(i)
+        self._refresh_item(self._index_of(path))
         self._update_status()
 
     # ── export ──────────────────────────────────────────────
     def export(self) -> None:
-        if not self.folder:
+        if not self.study:
             return
-        missing = [p for p in self.images if not has_cellpose_cache(self.folder, p, self.settings.cellpose)]
-        if missing:
-            ans = QMessageBox.question(
-                self, "Export",
-                f"{len(missing)} Bild(er) sind noch nicht durch Cellpose gelaufen.\n"
-                "Trotzdem exportieren? Diese Bilder werden dann nur mit der OD-Schwelle "
-                "gemessen (Spalte „kontur“ = threshold).")
-            if ans != QMessageBox.Yes:
-                return
-        from ..export import export_folder
-        dlg = QProgressDialog("Exportiere …", None, 0, len(self.images), self)
-        dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
+        dlg = ExportDialog(self, self.study, self.images)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        from ..export import export_study
+        prog = QProgressDialog("Exportiere …", None, 0, len(self.images), self)
+        prog.setWindowModality(Qt.WindowModal); prog.setMinimumDuration(0)
 
-        def prog(i, n, name):
-            dlg.setValue(i); dlg.setLabelText(f"Exportiere {name} ({i + 1}/{n})")
+        def step(i, n, name):
+            prog.setValue(i); prog.setLabelText(f"Exportiere {name} ({min(i + 1, n)}/{n})")
             QApplication.processEvents()
         try:
-            info = export_folder(self.folder, prog)
+            info = export_study(self.study, dlg.only_reviewed.isChecked(), dlg.with_excluded.isChecked(),
+                                step, self.images)
         except Exception as e:  # noqa: BLE001
-            dlg.close()
+            prog.close()
             QMessageBox.critical(self, "Export fehlgeschlagen", f"{type(e).__name__}: {e}")
             return
-        dlg.setValue(len(self.images))
+        prog.setValue(len(self.images))
         notes = "\n".join(info["notes"][:15])
         QMessageBox.information(
             self, "Export fertig",
-            f"{info['n_cells']} Zellen aus {info['n_images']} Bildern.\n\n{info['csv']}"
-            + (f"\n\nHinweise:\n{notes}" if notes else ""))
+            f"{info['n_cells']} gewertete Zellen aus {info['n_images']} Bildern"
+            + (f" ({info['skipped']} ungeprüfte übersprungen)" if info["skipped"] else "")
+            + f".\n\n{info['folder']}" + (f"\n\nHinweise:\n{notes}" if notes else ""))
 
     def closeEvent(self, e):
         self.worker.shutdown()
         super().closeEvent(e)
+
+
+class ExportDialog(QDialog):
+    """What goes into the export, plus what is still open (mockup screen 4)."""
+
+    def __init__(self, parent, study: Study, images: list[ImageInfo]):
+        super().__init__(parent)
+        self.setWindowTitle("Export")
+        self.resize(640, 360)
+        l = QVBoxLayout(self); l.setSpacing(10)
+        head = QLabel(f"<b>{study.name}</b> – nach <code>outputs/nkreview_&lt;Zeit&gt;/</code> im ersten Ordner der Studie")
+        head.setWordWrap(True); l.addWidget(head)
+        l.addWidget(QLabel("• zellen.csv – 1 Zeile pro Zelle (Long-Format für R)\n"
+                           "• zusammenfassung.csv – Proband × Zeitpunkt × Marker\n"
+                           "• einstellungen.json – Studie mit allen Parametern\n"
+                           "• overlays/ – PNG je Bild · nk_export.xlsx – beide Tabellen"))
+        self.only_reviewed = QCheckBox("nur geprüfte Bilder"); self.only_reviewed.setChecked(True)
+        self.with_excluded = QCheckBox("verworfene und ausgeschlossene Zellen mitschreiben (markiert)")
+        l.addWidget(self.only_reviewed); l.addWidget(self.with_excluded)
+        no_cp = sum(not has_cellpose_cache(i.folder, i.path, study.settings.cellpose) for i in images)
+        not_rev = sum(not Review.load(i.folder, i.path).reviewed for i in images)
+        warn = []
+        if no_cp:
+            warn.append(f"{no_cp} Bild(er) ohne Cellpose (würden nur mit der OD-Schwelle gemessen)")
+        if not_rev:
+            warn.append(f"{not_rev} Bild(er) noch nicht geprüft")
+        if warn:
+            w = QLabel("Vor dem Export:  " + " · ".join(warn), objectName="banner"); w.setWordWrap(True)
+            l.addWidget(w)
+        l.addStretch(1)
+        row = QHBoxLayout(); row.addStretch(1)
+        b_c = QPushButton("Abbrechen"); b_c.clicked.connect(self.reject)
+        b_ok = QPushButton("Exportieren", objectName="export"); b_ok.clicked.connect(self.accept)
+        row.addWidget(b_c); row.addWidget(b_ok)
+        l.addLayout(row)
 
 
 def unhide_qt_plugins() -> int:
@@ -588,7 +766,6 @@ def make_app(argv=None) -> QApplication:
 
 def main() -> int:
     app = make_app()
-    folder = Path(sys.argv[1]) if len(sys.argv) > 1 and Path(sys.argv[1]).is_dir() else None
-    win = MainWindow(folder)
+    win = MainWindow()
     win.show()
     return app.exec()

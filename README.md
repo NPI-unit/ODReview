@@ -5,54 +5,56 @@ Abgeleitet von ErysReview @ 3cacb26 (Qt-Oberfläche, Look, Installer) – die Me
 
 ## Ablauf
 
-1. **Ordner öffnen** – alle Bilder (auch in Unterordnern) erscheinen links.
-2. **Cellpose läuft im Hintergrund**, das angezeigte Bild zuerst. Status: ○ wartet · ◐ läuft · ● segmentiert · ✔ geprüft · ✕ Fehler.
-3. **Durchsehen** mit ← / →: Konturen prüfen, Zellen verwerfen oder von Hand zeichnen, ggf. Schwelle oder Hintergrund-ROI anpassen, mit Enter als geprüft markieren.
-4. **Export** → `outputs/nk_messungen_<Zeit>.csv` + `.xlsx`, `nk_einstellungen_<Zeit>.json`, `overlays/*.png`.
+1. **Studie wählen oder anlegen.** Der Assistent „Neue Studie“ hat vier Schritte:
+   - **Ordner und Ziel:** Name, ein oder mehrere Bildordner, Ziel *ganze Zelle* (NK) oder *Zellkern* (z. B. C2C12 Ki67).
+   - **Dateinamen:** Trennzeichen und eine Rolle pro Namensteil (Proband, Gruppe, Zeitpunkt, Zelltyp, Marker, Bildnummer, ignorieren), mit Live-Vorschau; Dateien mit abweichender Teilezahl stehen oben in Rot.
+   - **Messung:** I₀-Regel, Grauwert, Kontur und Gruppen je Proband.
+   - **Fertig.**
+2. **Cellpose läuft im Hintergrund**, das angezeigte Bild zuerst.
+3. **Durchsehen:** Bildbaum nach Zeitpunkt · Proband, Filter nach Marker. Pro Zelle siehst du OD, I₀-Felder, OD-Karte, radiales Profil und die Verteilung der Pixel-OD. Du kannst Zellen verwerfen, Konturen zeichnen und I₀-Felder versetzen oder neu losen; Enter markiert ein Bild als geprüft.
+4. **Export:** `outputs/nkreview_<Zeit>/` im ersten Ordner der Studie.
 
-## Messprinzip
+## Messprinzip (wie im Methodenteil)
 
 | Schritt | Verfahren |
 |---|---|
-| Vorfilter | Cellpose läuft nur auf Ausschnitten um DAB-positive Bereiche (geglättete DAB-OD > 0,04, ≥ 150 px, +48 px Rand, mind. 256 px, auf Vielfache von 32 mit Hintergrundfarbe aufgefüllt). Farbloser Debris erreicht Cellpose gar nicht; ein dünn besiedeltes Bild dauert Sekunden statt einer Minute. |
-| Kontur (Standard: Hybrid) | Cellpose (cpsam, Standard-Durchmesser) findet die Zelle; der Rand wird aus der Gesamt-OD neu gezogen: alle Pixel > Schwelle (0,05), die mit der Zelle zusammenhängen, höchstens 10 px außerhalb, Löcher gefüllt. Ist die Zelle zu blass dafür, bleibt die Cellpose-Kontur. Alternativen: nur Cellpose · nur OD-Schwelle (Backup ohne Cellpose). |
-| Hintergrund I₀ | pro Bild und Kanal: Median aller Pixel ≥ 15 px von jeder Zelle entfernt; optional per Rechteck-ROI. |
-| OD | Beer–Lambert, dekadisch: OD = −log₁₀(I / I₀) pro RGB-Kanal, nicht bei 0 abgeschnitten (Rauschen mittelt sich heraus). |
-| DAB | Ruifrok–Johnston-Deconvolution mit dem Fiji-Preset „H DAB“, gerechnet auf der OD (ohne Fijis 8-bit-Rundung). |
+| Grauwert | ImageJ-Standard (R+G+B)/3, gerundet (alternativ gewichtet 0,299/0,587/0,114) |
+| I₀ je Zelle | Mittel von 3 Feldern à 9×9 = 81 px, zufällig 14–40 px neben der Kontur, nicht auf Zellen oder gefärbtem Debris. Reproduzierbar geseedet; per Werkzeug 3 versetzbar, mit R neu losbar. |
+| Gültigkeit | I₀ außerhalb 210–220 (pro Studie einstellbar) → Zelle **ausgeschlossen**, nicht gelöscht |
+| OD | −log₁₀(Ī / I₀), Ī = mittlerer Grauwert in der Kontur (OD des Mittelwerts, wie Fiji) |
+| Verteilung | Pixel-OD mean/SD/median/p5/p95, Anteil > 0,3, radiales Profil in 5 Ringen vom Zentrum zur Membran |
+| Kontur | Ganze Zelle: Hybrid (Cellpose auf RGB, Rand aus Gesamt-OD > 0,05). Zellkern: Cellpose auf der DAB-Karte. Backup: reine OD-Schwelle; manuell zeichnen jederzeit |
+| Vorfilter | Cellpose nur auf Ausschnitten um DAB-positive Bereiche (bei dichten Bildern automatisch ganzes Bild) |
+| Zusatz | DAB-OD (Ruifrok–Johnston „H DAB“), Gesamt-OD aus RGB, Ring-I₀-Kontrolle, Debris-Verdacht (H-Kanal ≥ 0,04, nur Kern-Studien) |
 
-Keine Step-Tablet-Kalibrierung: I₀ aus dem Bild macht den Wert bereits zu einer echten Transmissions-OD.
+Offen: das Makro aus Appendix E. Bis dahin gelten ImageJs Standard-Graukonversion und „80 pixels“ als Fläche 9×9.
 
-### CSV-Spalten (eine Zeile pro Zelle)
+### Export
 
-`bild, geprueft, zelle, verworfen, manuell, kontur, flaeche_px, x, y, randzelle,`
-`dab_od_mean, dab_od_sd, dab_od_median, dab_od_p95, dab_od_max, dab_iod,`
-`gesamt_od_mean, gesamt_iod, kanal_h_od_mean, kanal_rest_od_mean,`
-`i0_r, i0_g, i0_b, i0_quelle, ring_i0_abweichung_pct, ring_warnung, schwelle_od`
-
-- **IOD** = Summe der OD über alle Pixel der Zelle (OD · px).
-- **kanal_h** ist der zweite Deconvolution-Kanal. Ohne Hämatoxylin-Gegenfärbung ist er Übersprechen bzw. Kontrolle, kein Hämatoxylin.
-- **ring_i0_abweichung_pct**: Der lokale Hintergrund (Ring 15–60 px um die Zelle) weicht so weit vom Bild-I₀ ab. Über 5 % wird `ring_warnung` gesetzt (ungleichmäßige Ausleuchtung, Debris in der Nähe).
-- Verworfene Zellen stehen mit `verworfen = True` in der Tabelle, damit nichts stillschweigend verschwindet. Für die Auswertung bitte filtern.
+| Datei | Inhalt |
+|---|---|
+| `zellen.csv` | 1 Zeile pro Zelle (Long-Format für R): Rollen aus dem Dateinamen, `status` (gewertet / verworfen / ausgeschlossen) + `grund`, `od_fiji`, `i0`, `i0_feld1…3`, `i0_ok`, Pixel-OD-Statistik, `profil_r1…r5`, `dab_od_mean`, `gesamt_od_mean`, `debris_verdacht`, `kontur` |
+| `zusammenfassung.csv` | Proband × Gruppe × Zeitpunkt × Zelltyp × Marker: n Bilder, n Zellen, `od_fiji` mean/SD/median (nur gewertete Zellen) |
+| `einstellungen.json` | die Studie mit allen Parametern, App-Version, Export-Optionen |
+| `overlays/` | PNG je Bild: Konturen nach Status, I₀-Felder, OD |
+| `nk_export.xlsx` | beide Tabellen als Blätter |
 
 ## Bedienung
 
 | Taste | Aktion |
 |---|---|
 | ← / → | vorheriges / nächstes Bild |
-| 1 / 2 / 3 | Auswählen (Ziehen = verschieben) · Zelle zeichnen (freihand) · Hintergrund-ROI ziehen |
-| X / Entf | ausgewählte Zelle verwerfen / zurückholen |
+| 1 / 2 / 3 | Auswählen · Kontur zeichnen (freihand) · I₀-Feld setzen (verschiebt das nächste Feld der gewählten Zelle) |
+| X / Entf | Zelle verwerfen / zurückholen |
+| R | I₀-Felder der Zelle neu losen |
 | Enter | Bild als geprüft markieren |
-| D | Ansicht: Original → DAB-Kanal → Gesamt-OD (feste Skala 0–0,6) |
-| O | Konturen an/aus |
-| F | ganzes Bild einpassen |
-| ⌘Z | rückgängig |
-| Mausrad | Zoom |
-
-Methode und Schwelle gelten für den ganzen Ordner, außer „nur für dieses Bild“ ist angehakt.
+| D | Ansicht: Original → Grau-OD → DAB-Kanal |
+| O / I | Konturen / I₀-Felder an/aus |
+| F | einpassen · ⌘Z rückgängig · Mausrad Zoom |
 
 ## Daten
 
-Alles, was die App sich merkt, liegt im Bildordner unter `.nk_cache/`: `settings.json` (Ordner-Einstellungen), `<bild>_cellpose.npz/.json` (Masken + Parameter) und `<bild>_review.json` (verworfen, gezeichnet, ROI, geprüft). Ändert sich ein Cellpose-Parameter, wird neu gerechnet.
+Studien liegen als JSON unter `~/Library/Application Support/NKReview/studien/`. Pro Bildordner speichert `.nk_cache/` die Cellpose-Masken (mit den Parametern, die sie erzeugt haben; geänderte Parameter → neu rechnen) und `<bild>_review.json` (verworfen, gezeichnet, I₀-Felder, geprüft).
 
 ## Installation / Start
 

@@ -1,4 +1,5 @@
-"""Folder settings and per-image review state, as JSON in <folder>/.nk_cache/."""
+"""Measurement settings (part of a study) and per-image review state, the
+latter as JSON in <folder>/.nk_cache/."""
 
 from __future__ import annotations
 
@@ -21,9 +22,25 @@ def _write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+GRAY_MEAN = "mean"              # ImageJ default: (R+G+B)/3
+GRAY_WEIGHTED = "weighted"      # ImageJ "Weighted RGB conversions": 0.299/0.587/0.114
+
+
 @dataclass
 class Settings:
-    """Per folder (= per experiment), so a CSV is always reproducible from it."""
+    """Everything a measurement depends on. Stored inside the study, so an
+    export is always reproducible from its einstellungen.json."""
+    # Fiji-conform measurement (the method section): grey value, I₀ per cell
+    # from random background fields next to it, OD of the mean.
+    gray_mode: str = GRAY_MEAN
+    i0_fields: int = 3              # background fields per cell …
+    i0_field_size: int = 9          # … of size × size px (9×9 = 81 ≈ "80 pixels")
+    i0_ring_inner: int = 14         # fields lie this far from the contour …
+    i0_ring_outer: int = 40         # … and no further
+    i0_min: float = 210.0           # I₀ outside [min, max] → cell excluded
+    i0_max: float = 220.0
+    od_high: float = 0.3            # report the share of pixels above this OD
+    debris_h: float = 0.0           # flag "Debris?" if H-channel OD ≥ this (0 = off)
     method: str = METHOD_HYBRID
     threshold: float = 0.05         # total OD above I₀ for the contour
     grow: int = 10                  # hybrid: px the edge may move out of Cellpose
@@ -36,16 +53,19 @@ class Settings:
     cellpose: CellposeParams = field(default_factory=CellposeParams)
 
     @classmethod
-    def load(cls, folder: Path) -> "Settings":
-        p = cache_dir(folder) / "settings.json"
-        try:
-            d = json.loads(p.read_text("utf-8"))
-        except (OSError, ValueError):
-            return cls()
-        cp = CellposeParams(**{k: v for k, v in d.pop("cellpose", {}).items()
+    def from_dict(cls, d: dict) -> "Settings":
+        d = dict(d or {})
+        cp = CellposeParams(**{k: v for k, v in (d.pop("cellpose", None) or {}).items()
                                if k in CellposeParams.__dataclass_fields__})
         known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
         return cls(**known, cellpose=cp)
+
+    @classmethod
+    def load(cls, folder: Path) -> "Settings":
+        try:
+            return cls.from_dict(json.loads((cache_dir(folder) / "settings.json").read_text("utf-8")))
+        except (OSError, ValueError):
+            return cls()
 
     def save(self, folder: Path) -> None:
         _write_json(cache_dir(folder) / "settings.json", asdict(self))
@@ -60,6 +80,8 @@ class Review:
     threshold: float | None = None
     roi: list | None = None                             # background [x0,y0,x1,y1]
     reviewed: bool = False
+    i0_fields: dict = field(default_factory=dict)       # "cid" -> [[x, y], …] set by hand
+    i0_seed: dict = field(default_factory=dict)         # "cid" -> n (re-drawn n times)
 
     @staticmethod
     def path(folder: Path, image: Path) -> Path:

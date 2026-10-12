@@ -144,6 +144,105 @@ def test_state_roundtrip():
         assert r.discarded == [3] and r.roi == [1, 2, 30, 40] and r.reviewed
 
 
+# ── Fiji-conform measurement ─────────────────────────────
+def _gray_scene(bg=216, cell_gray=150, h=300, w=400, cy=150, cx=200, r=40):
+    img = np.full((h, w, 3), bg, np.float32)
+    yy, xx = np.mgrid[:h, :w]
+    img[(yy - cy) ** 2 + (xx - cx) ** 2 <= r * r] = cell_gray
+    return img
+
+
+def test_fiji_od_is_od_of_the_mean_with_field_i0():
+    img = _gray_scene()
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        s = Settings(method="threshold")
+        res = analyze(folder, image, img, s, Review())
+        [row] = res.rows
+        assert row["status"] == "gewertet" and row["i0"] == 216.0
+        mean_i = res.gray[res.labels == row["zelle"]].mean()          # Ī over the contour
+        assert abs(row["od_fiji"] - (-np.log10(mean_i / 216))) < 1e-4
+        cm = res.cells[row["zelle"]]
+        assert len(cm.fields) == 3
+        dist = ndi_distance_to(res.labels > 0)
+        for x, y in cm.fields:                       # in the ring, off the cell
+            assert s.i0_ring_inner <= dist[int(y), int(x)] <= s.i0_ring_outer + 1
+        assert len(row["i0_feld1"].__str__()) and row["profil_r1"] is not None
+
+
+def ndi_distance_to(mask):
+    from scipy import ndimage as ndi
+    return ndi.distance_transform_edt(~mask)
+
+
+def test_i0_out_of_range_excludes_but_keeps_the_cell():
+    img = _gray_scene(bg=205, cell_gray=140)
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        res = analyze(folder, image, img, Settings(method="threshold"), Review())
+        [row] = res.rows
+        assert row["status"] == "ausgeschlossen" and not row["i0_ok"] and row["od_fiji"] is not None
+
+
+def test_i0_fields_reproducible_redraw_and_manual():
+    img = _gray_scene()
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        s = Settings(method="threshold")
+        a = analyze(folder, image, img, s, Review()).cells[1].fields
+        b = analyze(folder, image, img, s, Review()).cells[1].fields
+        c = analyze(folder, image, img, s, Review(i0_seed={"1": 1})).cells[1].fields
+        assert a == b and a != c
+        img2 = img.copy(); img2[10:30, 10:30] = 212           # a darker background spot
+        res = analyze(folder, image, img2, s, Review(i0_fields={"1": [[20, 20]]}))
+        assert res.rows[0]["i0"] == 212.0
+
+
+def test_weighted_gray():
+    from nkreview.measure import gray_image
+    img = np.zeros((1, 1, 3), np.float32); img[0, 0] = (100, 200, 50)
+    assert gray_image(img, "mean")[0, 0] == round(350 / 3)
+    assert gray_image(img, "weighted")[0, 0] == round(100 * 0.299 + 200 * 0.587 + 50 * 0.114)
+
+
+# ── study ────────────────────────────────────────────────
+def test_name_roles():
+    from nkreview.study import detect_delimiters, guess_roles, parse_name
+    names = ["TEST A NK 5hmc 10.02.2026_002.tif", "TEST B NK 5mc 10.02.2026_001.tif"]
+    d = detect_delimiters(names)
+    roles = guess_roles(names, d)
+    assert roles == ["ignorieren", "proband", "zelltyp", "marker", "ignorieren", "bildnr"]
+    m = parse_name(names[1], d, roles)
+    assert (m["proband"], m["zelltyp"], m["marker"], m["bildnr"]) == ("B", "NK", "5mc", "001")
+    t = guess_roles(["TRIBAL_195_Prä_19.11.25_021.tif", "TRIBAL_196_Post_19.11.25_003.tif"], ["_"])
+    assert t == ["ignorieren", "proband", "zeitpunkt", "ignorieren", "bildnr"]
+
+
+def test_study_images_groups_and_summary():
+    from nkreview.export import export_study, summarize
+    from nkreview.study import Study
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d)
+        import tifffile
+        for name, g in (("X A NK 5hmc_001.tif", 150), ("X A NK 5hmc_002.tif", 160), ("X B NK 5hmc_001.tif", 170)):
+            tifffile.imwrite(folder / name, _gray_scene(cell_gray=g).astype(np.uint8))
+        st = Study(name="t", folders=[str(folder)], delimiters=[" ", "_"],
+                   roles=["ignorieren", "proband", "zelltyp", "marker", "bildnr"], groups={"A": "Intervention"})
+        st.settings.method = "threshold"
+        imgs = st.images()
+        assert {i.meta["gruppe"] for i in imgs if i.proband == "A"} == {"Intervention"}
+        for i in imgs:
+            Review(reviewed=True).save(i.folder, i.path)
+        info = export_study(st, images=imgs)
+        assert info["n_cells"] == 3 and (info["folder"] / "zellen.csv").exists()
+        import pandas as pd
+        summ = pd.read_csv(info["folder"] / "zusammenfassung.csv")
+        cells = pd.read_csv(info["folder"] / "zellen.csv")
+        a = summ[summ.proband == "A"].iloc[0]
+        expect = cells[cells.proband == "A"].od_fiji.mean()
+        assert a.n_zellen == 2 and abs(a.od_fiji_mean - expect) < 1e-3 and a.gruppe == "Intervention"
+
+
 def test_polygon_mask():
     m = polygon_mask((50, 50), [[10, 10], [40, 10], [40, 40], [10, 40]])
     assert 800 < m.sum() < 1000

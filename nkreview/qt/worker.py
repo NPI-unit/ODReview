@@ -32,9 +32,10 @@ class CellposeWorker(QObject):
         self._thread.start()
 
     # Called from the GUI thread ─────────────────────────────
-    def set_queue(self, folder: Path, images: list[Path], params: CellposeParams) -> None:
+    def set_queue(self, items: list[tuple[Path, Path]], params: CellposeParams) -> None:
+        """items: (folder, image) — a study's images span several folders."""
         with self._lock:
-            self._queue = [(folder, p, params, False) for p in images]
+            self._queue = [(folder, p, params, False) for folder, p in items]
         self._wake.set()
 
     def prioritize(self, image: Path) -> None:
