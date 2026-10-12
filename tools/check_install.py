@@ -1,4 +1,4 @@
-"""Self-test after installing: does everything ErysReview needs work here?
+"""Self-test after installing: does everything NKReview needs work here?
 
     ./.venv/bin/python tools/check_install.py
 
@@ -65,7 +65,7 @@ def check_qt() -> None:
     """Can Qt start (platform plugin found)? Runs offscreen; also clears the
     macOS 'hidden' flag on the plugins first, as the app does at start."""
     try:
-        from erysreview.qt.app import unhide_qt_plugins
+        from nkreview.qt.app import unhide_qt_plugins
         n = unhide_qt_plugins()
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication, QWidget
@@ -79,7 +79,7 @@ def check_qt() -> None:
 
 def check_gpu() -> None:
     try:
-        from erysreview.cellpose_runner import detect_gpu_backend
+        from nkreview.segment import detect_gpu_backend
         b = detect_gpu_backend()
         if b == "cpu":
             report("warn", "gpu", "none — Cellpose runs on the CPU (slower)")
@@ -99,9 +99,9 @@ def check_model() -> None:
 
 def check_app() -> None:
     try:
-        import erysreview
-        importlib.import_module("erysreview.qt.app")
-        report("ok", "app", f"ErysReview {erysreview.__version__}")
+        import nkreview
+        importlib.import_module("nkreview.qt.app")
+        report("ok", "app", f"NKReview {nkreview.__version__}")
     except Exception as e:  # noqa: BLE001
         report("fail", "app", f"{type(e).__name__}: {e}")
 

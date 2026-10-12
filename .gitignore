@@ -28,9 +28,9 @@ env/
 *.swp
 *~
 
-# ─── Erys runtime data ────────────────────────────
+# ─── NKReview runtime data ────────────────────────
 # Cellpose mask cache + per-image review state
-.erys_cache/
+.nk_cache/
 # Exported reports / per-image stats
 outputs/
 

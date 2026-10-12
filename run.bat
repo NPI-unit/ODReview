@@ -1,5 +1,5 @@
 @echo off
-REM ErysReview - Windows launcher.
+REM NKReview - Windows launcher.
 REM Double-click to start the app. Use install.bat first to set things up.
 REM Keep this file CRLF + pure ASCII, same as install.bat.
 setlocal
@@ -31,19 +31,19 @@ if "%CONDA_EXE%"=="" (
 )
 
 for %%I in ("%CONDA_EXE%") do set "CONDA_DIR=%%~dpI..\"
-call "%CONDA_DIR%Scripts\activate.bat" erys
+call "%CONDA_DIR%Scripts\activate.bat" nkreview
 if errorlevel 1 (
-    echo [!] Could not activate the erys env. Run install.bat first.
+    echo [!] Could not activate the nkreview env. Run install.bat first.
     pause
     exit /b 1
 )
 
 REM conda activate succeeds even when the env is a half-deleted leftover
 REM directory, so confirm the interpreter we are about to use is really the
-REM one from the erys env before blaming the app for the import errors.
-python -c "import sys, os; sys.exit(0 if os.path.basename(os.path.dirname(sys.executable)).lower()=='erys' else 1)" >nul 2>&1
+REM one from the nkreview env before blaming the app for the import errors.
+python -c "import sys, os; sys.exit(0 if os.path.basename(os.path.dirname(sys.executable)).lower()=='nkreview' else 1)" >nul 2>&1
 if errorlevel 1 (
-    echo [!] The erys env looks incomplete. Run install.bat again.
+    echo [!] The nkreview env looks incomplete. Run install.bat again.
     pause
     exit /b 1
 )
@@ -51,7 +51,7 @@ if errorlevel 1 (
 REM -u = unbuffered output so the user sees the loading progress live
 REM     instead of a frozen blinking cursor while imports run (10-20 s
 REM     the first time on Windows).
-python -u -m erysreview
+python -u -m nkreview
 if errorlevel 1 (
     echo.
     echo App exited with an error. Press any key to close.

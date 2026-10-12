@@ -1,4 +1,4 @@
-# ErysReview runtime dependencies — macOS / pip path (install.command uses this).
+# NKReview runtime dependencies — macOS / pip path (install.command uses this).
 #
 #   WINDOWS USERS: do NOT pip install this file. Run install.bat instead — it
 #   builds a conda-forge env. Pip-installing torch alongside conda's MKL numpy

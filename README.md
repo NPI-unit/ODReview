@@ -1,348 +1,68 @@
-# ErysReview
+# NKReview
 
-A desktop reviewer for **automated erythrocyte (red-blood-cell) segmentation** of light-microscopy images, built on top of [Cellpose](https://github.com/MouseLand/cellpose). Loads a folder of TIFs, runs Cellpose lazily per image, lets you visually correct each segmentation (add / remove / re-classify cells), and exports a clean, lab-friendly summary CSV per subject and timepoint.
+Desktop-Tool zur **optischen Dichte (DAB) von NK-Zellen** in RGB-Hellfeld-Bildern.
+Abgeleitet von ErysReview @ 3cacb26 (Qt-Oberfläche, Look, Installer) – die Mess-Schicht ist neu.
 
-Designed for hematology / parasitology studies where you need to classify erythrocytes across many images.
+## Ablauf
 
----
+1. **Ordner öffnen** – alle Bilder (auch in Unterordnern) erscheinen links.
+2. **Cellpose läuft im Hintergrund**, das angezeigte Bild zuerst. Status: ○ wartet · ◐ läuft · ● segmentiert · ✔ geprüft · ✕ Fehler.
+3. **Durchsehen** mit ← / →: Konturen prüfen, Zellen verwerfen oder von Hand zeichnen, ggf. Schwelle oder Hintergrund-ROI anpassen, mit Enter als geprüft markieren.
+4. **Export** → `outputs/nk_messungen_<Zeit>.csv` + `.xlsx`, `nk_einstellungen_<Zeit>.json`, `overlays/*.png`.
 
-## Easiest install (double-click)
+## Messprinzip
 
-If you don't want to touch a terminal:
-
-1. One-time prerequisites:
-   - **Windows**: nothing to install first — `install.bat` will offer to download and install **Miniforge** for you, then build the environment from conda-forge.
-   - **macOS**: Python 3.12 — either the macOS installer from <https://www.python.org/downloads/> or `brew install python@3.12` (<https://brew.sh>). Nothing else.
-2. **Download or clone** this repo to a folder of your choice (e.g. your Desktop).
-3. Double-click the installer for your OS:
-   - **macOS**: **`ErysReview installieren.app`** (an installer window; `install.command` does the same in Terminal)
-   - **Windows**: `install.bat`
-
-   > **macOS warns “developer cannot be verified”?** The installer is not signed. In Finder **right-click › Open**, then **Open** again. The installer then removes the warning from the whole folder (incl. the ErysReview app it creates).
-4. Wait until you see `Fertig. ErysReview … ist installiert.` / `Done. ErysReview is installed.` (~5–10 min on first run).
-
-**macOS, offline / several lab Macs:** `install.command` keeps every package in `vendor/wheels/` and the Cellpose model in `vendor/models/` inside the folder (~2 GB, not in git). Copy the whole folder — `vendor/` included — to the next Mac (e.g. on a stick) and run `install.command` there: it installs without internet. It always installs the exact tested versions from `requirements-lock-macos.txt` and ends with a self-test (`tools/check_install.py`).
-5. Launch from the new **ErysReview** on your Desktop — a real `.app` bundle on macOS and a shortcut on Windows, both showing the proper icon and name in the Dock / taskbar. Or double-click `run.command` / `run.bat` inside the repo folder.
-
-If anything in those steps fails, scroll down to **Manual install** for the explicit conda commands.
-
-> **NVIDIA GPU users (Windows):** `install.bat` now detects an NVIDIA GPU and automatically installs the CUDA build of PyTorch (a one-time ~2.5 GB download), so Cellpose runs on the GPU — seconds per image instead of minutes on the CPU. No manual step needed.
-
-> Note: this project is unaffiliated with the Cellpose authors. It is a UI wrapper that calls the Cellpose Python package locally on your machine. All segmentation credit goes to the Cellpose project.
-
----
-
-## Why this exists
-
-Cellpose 4 segments erythrocytes reliably, but a real lab workflow needs more:
-
-- **Curate** every cell as active / not-counted / typed
-- **Aggregate** counts across many images into one summary per subject-timepoint
-- **Track progress** toward a fixed target (e.g. 2000 cells)
-- **Persist** every click, so you can leave and come back days later
-- **Configure** all of this per study without touching code
-
-ErysReview gives you exactly that, in a single window (Qt / PySide6).
-
----
-
-## Highlights
-
-- **Profiles per study** — regex-based filename grouping into `Zeitpunkt → Proband → Bild`, configurable cell types, Cellpose parameters, target cell count, implausible-cell-size bounds.
-- **Lazy Cellpose** with on-disk cache and parameter manifest. Open 200 images, only the ones you actually look at trigger compute.
-- **Hierarchical sidebar** with collapsible subject groups and an always-visible counter `n/target Erys` per group.
-- **Cockpit detail panel** that shows live per-image or per-subject statistics — % per cell type, % verändert, % toward target.
-- **3-tool palette**: `Neue Zelle` (add manual cell), `Zählen ein/aus` (toggle active state, also re-include border / size-filtered cells), `Verändert` (assign type from dropdown).
-- **Implausible-cell-size filter** — erythrocytes in one field are strikingly uniform (measured IQR 0.90–1.09× the median area over 3164 cells), so anything below `min_factor` or above `max_factor` of *that image's* median is a fragment or a merged pair. Excluded from the count, rendered gray, re-includable with `Zählen ein/aus`. Replaces the old centroid-distance duplicate detection, which was measured to be inert — a Cellpose mask is a pixel partition, so two labels can never overlap.
-- **Margin / border filter** so partial cells at image edges don't pollute counts. Configurable per profile.
-- **Auto-save** on every click into per-image JSON sidecars. No `Save` button.
-- **Structured export** to `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/` with original TIFs copied alongside masks, overlay PNGs, per-image stats CSV, and a per-subject summary CSV in a 4-block layout matching the standard lab spreadsheet format.
-- **Overview workbook** — on export, `outputs/Uebersicht.xlsx` aggregates every group: a tidy `Daten` sheet (one row per `Zeitpunkt × Condition × Proband` with counts, percentages, `% verändert`, `% Target`) plus pivot matrices (`% verändert` and one per cell type, `Proband × Zeitpunkt`) and an `RBC_nBilder` control sheet. Toggle per profile; a small preview pops up after export.
-- **Batch with hierarchical filtering** — *Mehrere Bilder* mirrors the sidebar: a `Zeitpunkt → Proband → Bild` tree plus `Zeitpunkt`/`Proband` dropdown filters, so you can target a single subject or timepoint. Quick-selects (all / unsegmented / unfinished / invert) and *Erste N pro Proband* stack as intersections; *Bis Ziel rechnen* computes each group in image order until its active count reaches the profile target; *wachhalten* prevents sleep during long runs (`caffeinate` on macOS, `SetThreadExecutionState` on Windows).
-- **Recursive image loading** — images in sub-folders are read too; the `outputs/` export folder and `.erys_cache/` are skipped and duplicate filenames are ignored.
-- **Two themes** — Lab Neutral (light) and Soft Dark (dark) — sharing identical semantic color keys, both targeted at scientific work.
-- **Remarks on cells and images** — right-click a cell (or `Notiz …` in the detail panel for the whole image) to jot down anything you want to discuss later. Cells carrying a remark get a `✎` marker on the canvas; the detail panel rolls up every remark of the current image. Stored in the same `<stem>_review.json` sidecar, exported in `erys.db`.
-- **Bulk status per group** — right-click a `Zeitpunkt`/`Proband` row in the sidebar to mark all its images *fertig* or to clear that flag, instead of pressing `f` on each one.
-- **Export with scope selection** — `Exportieren` first opens a picker listing every `Zeitpunkt/Proband` group with its image count and state (*bearbeitet* / *unbearbeitet*). Presets: all, only computed, only human-edited, none. Exporting in several smaller runs keeps weaker machines usable; `erys.db` accumulates across runs. Selection is per whole group on purpose — dropping single images inside a group would change that group's `% verändert pro 2000`, because the cap fills up over exactly the image list it is handed. The cross-group `Uebersicht.xlsx` is written only on a full run (a partial one would replace a complete workbook with an incomplete one); rebuild it any time via `Auswertung → Übersicht als Excel speichern`.
-- **Robust folder scanning** — AppleDouble `._` twins (macOS writes one next to every file on FAT/exFAT, i.e. any USB stick) are skipped, so a stick holding 238 photos is not read as 476 images half of which are 4 KB binary blobs. Unreadable sidecars are reported per file instead of aborting the folder open.
-- **Cell-area outcome** — `Auswertung → Zellflächen …` computes n, mean, median, SD, min and max of the cell area (px²) per image and per `Zeitpunkt/Proband`, on request only, and saves to CSV. Restricted to active cells in images inside the evaluation — the same sample as RBC and `% verändert pro 2000`, so two numbers for one subject never rest on different denominators. Per-cell areas were always in `*_stats.csv`; this adds the aggregate.
-- **DE / EN** strings.
-- **Share packages** — bundle a study (precomputed `.npy` masks + reviews, originals optional) into one ZIP via `Datei → Paket erstellen …`. Creation shows a `Zeitpunkt → Proband → Bild` checklist so you pick exactly which segmented images go in (group rows toggle all their children; All/None; default all). A teammate runs `Datei → Paket importieren …` and reviews **without ever running Cellpose** — ideal when their machine is too weak to segment. Imported images are always set to *bearbeitet* (never *fertig*); per-image conflicts with local reviews are resolved interactively (import / keep / all).
-- **Editable 2000-cell cap** — each subject×timepoint group auto-selects images (in order) until the running active count just exceeds the target; press `e` to swap any single image in/out/auto. Skipped images are marked `⊘` in the sidebar and drop out of the summary CSV.
-- **Friendly filename parser** — instead of a regex, tick delimiters (`_`, space, `-`, `.`) and assign each token a role (Proband / Zeitpunkt / Bildnummer / ignorieren) with a live preview over your real files. Regex stays available as an advanced fallback.
-- **In-app statistics** — `Auswertung → Statistik …` shows box-plots (by timepoint / by subject) and a descriptive table for `% verändert`, `% verändert pro 2000`, per-subtype %, and absolute counts.
-- **Progress dashboard & time tracking** — `Auswertung → Übersicht …` lists each group's `n/Ziel`, whether the target is reached, and the review time spent per subject and in total.
-- **No auto-render & instant navigation** — opening a folder or pressing `←`/`→` never blocks: unsegmented images show the raw picture immediately; you segment on demand with the Cellpose button / `r` (bulk via *Mehrere Bilder*). Per-image counts are cached on disk (mtime-invalidated) so the sidebar no longer reloads masks. Editing the profile (regex/parser) re-groups live; `F5` re-scans the folder.
-- **Responsive segmentation** — Cellpose runs on a worker thread, so the window keeps animating and the batch *Abbrechen* stays clickable even during slow CPU-only inference (e.g. Windows without a GPU); it never paints "Not Responding".
-
-> Building a downstream subtype classifier? See [`docs/ML_DATASET.md`](docs/ML_DATASET.md) — the per-cell `*_stats.csv` already carries canonical type keys, a `label_source` (reviewer vs. auto) flag and an `image_in_evaluation` flag so the export converts losslessly into a training set.
-
----
-
-## Screenshots
-
-> _placeholder — drop your screenshots into `docs/screenshots/` and link them here_
-
----
-
-## Manual install (if the double-click installer fails)
-
-ErysReview is a Python application. If you have never used Python before, follow the section that matches your operating system.
-
-The two platforms install **differently on purpose**: macOS uses a plain Python 3.12 virtual environment, while Windows uses a **conda-forge** environment (a single OpenMP runtime — mixing conda's MKL numpy with a pip-installed torch deadlocks Cellpose). Either way Cellpose's PyTorch stays isolated from your system Python.
-
-### macOS
-
-macOS uses a Python 3.12 **venv**, *not* conda — see the note above.
-
-1. **Install Python 3.12**: the macOS installer from <https://www.python.org/downloads/>, or with Homebrew (<https://brew.sh>):
-   ```bash
-   brew install python@3.12
-   ```
-
-2. **Clone this repo**:
-   ```bash
-   git clone https://github.com/finn-dreisigacker/ErysReview.git
-   cd ErysReview
-   ```
-
-3. **Create the venv** and install the tested versions (`requirements-lock-macos.txt`; `requirements.txt` lists the minimums):
-   ```bash
-   python3.12 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements-lock-macos.txt
-   python tools/check_install.py
-   ```
-   On Apple Silicon, `pip install` pulls a PyTorch build with MPS (GPU) support automatically. Segmentation will run on the Mac GPU.
-
-4. **Run**:
-   ```bash
-   python -m erysreview
-   ```
-
-5. (Optional) **Double-click launcher**: `run.command` in the repo folder starts the app; `install.command` also builds an `ErysReview.app` on your Desktop (proper Dock icon + name).
-
-### Windows
-
-> ⚠️ **Windows: do not `pip install` the dependencies.** Pip-installing torch on top of conda's MKL numpy loads `libiomp5md.dll` twice and **deadlocks Cellpose on the first run** (OMP Error #15 — the app appears frozen forever). Install the whole stack from **conda-forge** instead, as below. The easiest path is just to double-click `install.bat`, which does exactly this.
-
-1. **Install Miniforge**: download `Miniforge3-Windows-x86_64.exe` from <https://github.com/conda-forge/miniforge#download> and run it. Accept defaults. (Or skip this — `install.bat` offers to do it for you.)
-
-2. **Clone this repo** (you need [Git for Windows](https://git-scm.com/download/win) installed first):
-   ```cmd
-   git clone https://github.com/finn-dreisigacker/ErysReview.git
-   cd ErysReview
-   ```
-
-3. From the Start menu, open **Miniforge Prompt**, then build the env entirely from conda-forge (one OpenMP runtime — no pip for the scientific stack):
-   ```cmd
-   conda create -n erys --override-channels -c conda-forge --strict-channel-priority python=3.12 "cellpose>=4.1.1,<5" pytorch numpy scipy scikit-image matplotlib-base pandas pillow tifffile openpyxl -y
-   conda activate erys
-   ```
-   `--override-channels --strict-channel-priority` is not decoration: if you also have Anaconda installed, `defaults` is configured alongside conda-forge and a mixed solve pulls Intel's `intel-openmp` in next to conda-forge's `llvm-openmp` — two OpenMP runtimes, the same deadlock again. Pinning the solve to conda-forge alone is what keeps it at one.
-
-   _(Upgrading from an older pip-based install? Remove the stale env first — `conda env remove -n erys -y` — so the duplicate-OpenMP problem doesn't carry over, then run the create line above. On Windows that removal often can't delete everything, because antivirus or a still-open Python holds a DLL open; check whether `%USERPROFILE%\miniforge3\envs\erys` still exists afterwards and `rmdir /s /q` it by hand. `conda create` will happily install **on top of** such a leftover, which keeps the very files you were trying to get rid of.)_
-
-   The default solve installs the **CPU** PyTorch build. For an NVIDIA GPU, request the CUDA build from conda-forge instead (e.g. add a `pytorch=*=*cuda*` spec or install `pytorch-gpu`) — **do not** `pip install` a CUDA torch into this env.
-
-4. **Run**:
-   ```cmd
-   python -m erysreview
-   ```
-
-5. (Optional) Create a `run_erys.bat` next to the repo root:
-   ```bat
-   @echo off
-   call "%USERPROFILE%\miniforge3\Scripts\activate.bat" erys
-   python -m erysreview
-   pause
-   ```
-   Double-click it to launch the app.
-
-### Verifying the install
-
-Inside the environment, run:
-```bash
-python -c "import cellpose, torch; print(cellpose.version, torch.__version__, torch.backends.mps.is_available() or torch.cuda.is_available())"
-```
-You should see versions printed. The last value is `True` when a GPU is available (Mac MPS or NVIDIA CUDA) and `False` on a CPU-only Windows box — that's expected; segmentation still works, just on CPU (and the window stays responsive while it runs).
-
----
-
-## Quickstart
-
-1. Launch the app (`python -m erysreview`).
-2. **First start** opens the **Profile Manager**. Click **Default laden** — a TRIBAL-style profile is created with sensible defaults.
-3. Menu → **Profil → Aktives Profil bearbeiten …** and set:
-   - **Bilder-Ordner** to your folder of TIFs
-   - **Filename-Regex** if your filenames differ from `STUDY_SUBJECT_TIMEPOINT_DATE_NUM.tif`
-   - **Typen** (delete, add, reorder — `Normal` is protected)
-   - **Ziel-Zellzahl** (default 2000)
-   - **Cellpose-Parameter** (diameter, flow, cellprob, GPU on/off)
-4. Click **Speichern**. The sidebar populates as `Zeitpunkt → Proband → Bild`.
-5. Click any image — Cellpose runs (modal spinner shows progress on first load, instant from cache afterwards).
-6. **Tools** in the toolbar (or press `1`, `2`, `3`):
-   - `1 Neue Zelle` — click empty space to add a manual cell
-   - `2 Zählen ein/aus` — click an active cell to remove it from the count, click a gray (border / implausible size) cell to manually include it
-   - `3 Verändert` — pick a type from the dropdown and click cells to label them
-7. Press `f` to mark the current image as **fertig** (green ●).
-8. Click `↓ Exportieren` (or `Cmd+S`) — writes `outputs/<Zeitpunkt>/<Zeitpunkt>_<Proband>/…` with everything.
-
----
-
-## Hotkeys
-
-| Key | Action |
+| Schritt | Verfahren |
 |---|---|
-| `1` / `2` / `3` / `4` | switch tool (4 = ❝ annotate) |
-| `Linksklick` | tool action (add / toggle count / assign type) |
-| `Rechtsklick` (Zelle) | add / edit a remark on that cell (same floating editor as tool 4) |
-| `Rechtsklick` (Sidebar-Gruppe) | mark all images of the group finished / open |
-| `Mausrad` | zoom on cursor |
-| `Mittel-Drag` | pan |
-| `Home` / `0` | reset zoom |
-| `←` / `→` | previous / next image |
-| `f` | mark image as finished |
-| `e` | toggle current image in / out / auto for the 2000-cell evaluation |
-| `o` | overlay on/off (also toggles margin overlay, numbers, outlines and `✎` markers) |
-| — | editing with the overlay hidden turns it back on: the result would otherwise be invisible |
-| `r` | segment / re-run Cellpose on current image (no auto-render on load) |
-| `F5` / `Cmd+R` | refresh — re-scan folder + re-group (also after editing the profile) |
-| `z` | undo |
-| `s` / `Cmd+S` / `Ctrl+S` | export |
-| `q` | quit |
+| Vorfilter | Cellpose läuft nur auf Ausschnitten um DAB-positive Bereiche (geglättete DAB-OD > 0,04, ≥ 150 px, +48 px Rand, mind. 256 px, auf Vielfache von 32 mit Hintergrundfarbe aufgefüllt). Farbloser Debris erreicht Cellpose gar nicht; ein dünn besiedeltes Bild dauert Sekunden statt einer Minute. |
+| Kontur (Standard: Hybrid) | Cellpose (cpsam, Standard-Durchmesser) findet die Zelle; der Rand wird aus der Gesamt-OD neu gezogen: alle Pixel > Schwelle (0,05), die mit der Zelle zusammenhängen, höchstens 10 px außerhalb, Löcher gefüllt. Ist die Zelle zu blass dafür, bleibt die Cellpose-Kontur. Alternativen: nur Cellpose · nur OD-Schwelle (Backup ohne Cellpose). |
+| Hintergrund I₀ | pro Bild und Kanal: Median aller Pixel ≥ 15 px von jeder Zelle entfernt; optional per Rechteck-ROI. |
+| OD | Beer–Lambert, dekadisch: OD = −log₁₀(I / I₀) pro RGB-Kanal, nicht bei 0 abgeschnitten (Rauschen mittelt sich heraus). |
+| DAB | Ruifrok–Johnston-Deconvolution mit dem Fiji-Preset „H DAB“, gerechnet auf der OD (ohne Fijis 8-bit-Rundung). |
 
----
+Keine Step-Tablet-Kalibrierung: I₀ aus dem Bild macht den Wert bereits zu einer echten Transmissions-OD.
 
-## Folder layout
+### CSV-Spalten (eine Zeile pro Zelle)
 
-```
-<study_folder>/
-  *.tif                       your microscope images (sub-folders are scanned too)
-  .erys_cache/                created automatically
-    <stem>_masks.npy          cached Cellpose mask
-    <stem>_masks.json         which parameters produced this mask
-    <stem>_review.json        per-image user edits + remarks (auto-saved on every click)
-    folder_state.json         last opened image index
-  outputs/                    created when you export
-    <Zeitpunkt>/
-      <Zeitpunkt>_<Proband>/
-        *.tif                                copies of the originals
-        *_stats.csv                          per-cell flags + types
-        *_masks.npy                          final mask (with manual additions)
-        *_overlay.png                        rendered overlay
-        <Zeitpunkt>_<Proband>_summary.csv    4-block aggregated CSV
-    Uebersicht.xlsx           cross-group overview (full exports only)
-    erys.db                   SQLite reporting store (images, cells, remarks; upserted per image)
-    manifest.json             profile snapshot + app version + timestamp
-```
+`bild, geprueft, zelle, verworfen, manuell, kontur, flaeche_px, x, y, randzelle,`
+`dab_od_mean, dab_od_sd, dab_od_median, dab_od_p95, dab_od_max, dab_iod,`
+`gesamt_od_mean, gesamt_iod, kanal_h_od_mean, kanal_rest_od_mean,`
+`i0_r, i0_g, i0_b, i0_quelle, ring_i0_abweichung_pct, ring_warnung, schwelle_od`
 
-### Do not keep the study folder in a cloud drive
+- **IOD** = Summe der OD über alle Pixel der Zelle (OD · px).
+- **kanal_h** ist der zweite Deconvolution-Kanal. Ohne Hämatoxylin-Gegenfärbung ist er Übersprechen bzw. Kontrolle, kein Hämatoxylin.
+- **ring_i0_abweichung_pct**: Der lokale Hintergrund (Ring 15–60 px um die Zelle) weicht so weit vom Bild-I₀ ab. Über 5 % wird `ring_warnung` gesetzt (ungleichmäßige Ausleuchtung, Debris in der Nähe).
+- Verworfene Zellen stehen mit `verworfen = True` in der Tabelle, damit nichts stillschweigend verschwindet. Für die Auswertung bitte filtern.
 
-iCloud Drive, OneDrive and Dropbox *evict* files that have not been touched for a
-while: the name and size stay, the content does not. Both the app folder and the
-study folder are affected, and the failure is quiet rather than loud:
+## Bedienung
 
-- reading an evicted file sometimes returns **zero bytes instead of blocking**, so
-  a mask comes back as `EOFError` and the image silently counts as unsegmented;
-- copying one with the usual clone-based copy (`shutil.copy2`, Finder duplicate,
-  `cp`) copies the *placeholder* — the copy reports the full size but has no data,
-  and outside the synced folder it can never be filled in again;
-- the first Cellpose run of a session pays for re-downloading PyTorch: measured
-  **44 s cold vs. 2 s warm** for the import alone, with 2374 of 14556 torch files
-  evicted.
+| Taste | Aktion |
+|---|---|
+| ← / → | vorheriges / nächstes Bild |
+| 1 / 2 / 3 | Auswählen (Ziehen = verschieben) · Zelle zeichnen (freihand) · Hintergrund-ROI ziehen |
+| X / Entf | ausgewählte Zelle verwerfen / zurückholen |
+| Enter | Bild als geprüft markieren |
+| D | Ansicht: Original → DAB-Kanal → Gesamt-OD (feste Skala 0–0,6) |
+| O | Konturen an/aus |
+| F | ganzes Bild einpassen |
+| ⌘Z | rückgängig |
+| Mausrad | Zoom |
 
-ErysReview defends itself where it can — unreadable masks are reported per file
-instead of crashing, originals are copied through an explicit read, and the
-`Übersicht`/`Statistik` windows no longer block on it — but it cannot invent data
-that is not on the disk. Keep `<study_folder>` (and the app) on a local disk, e.g.
-`~/ErysData`, and use the cloud for finished `outputs/` only.
+Methode und Schwelle gelten für den ganzen Ordner, außer „nur für dieses Bild“ ist angehakt.
 
-App-wide preferences live in `~/Library/Application Support/Erys/settings.json` (macOS) or `%APPDATA%/Erys/settings.json` (Windows). Profiles live next to it in `profiles/<slug>.json`.
+## Daten
 
----
+Alles, was die App sich merkt, liegt im Bildordner unter `.nk_cache/`: `settings.json` (Ordner-Einstellungen), `<bild>_cellpose.npz/.json` (Masken + Parameter) und `<bild>_review.json` (verworfen, gezeichnet, ROI, geprüft). Ändert sich ein Cellpose-Parameter, wird neu gerechnet.
 
-## CSV format
+## Installation / Start
 
-The per-subject `<Zeitpunkt>_<Proband>_summary.csv` is a 4-block layout designed for direct copy-paste into Excel:
+macOS: `install.command` doppelklicken (legt `.venv` an, wie bei ErysReview), danach `run.command` oder NKReview auf dem Schreibtisch.
+Windows: `install.bat` (eigene conda-Umgebung `nkreview`), dann `run.bat`. Unter Windows bisher ungetestet.
 
-```
-Block 1 — counts per image
-  Bildnummer; RBC; <Type1>; <Type2>; …; Normal
+Tests: `./.venv/bin/python tests/test_core.py`
 
-Block 2 — percent per image (immediately right of Block 1)
-  %<Type1>; %<Type2>; …; %Normal
+## Bekannte Grenzen
 
-Block 3 — Summe row at bottom
-  total counts | total percentages | %verändert | %verändert per 2000
-
-Block 4 — % target reached
-  total_RBC / target × 100
-```
-
-`Normal` is computed as the residual: `RBC − sum(other types)`. `%verändert per 2000` is the back-calculation: `%verändert × 2000 / total_RBC`.
-
-CSV uses `;` as delimiter and `,` as decimal separator for direct Excel import on German locales.
-
----
-
-## Profile system
-
-A study profile is a small JSON file in `~/Library/Application Support/Erys/profiles/`:
-
-```json
-{
-  "name": "TRIBAL 2026",
-  "import_folder": "/path/to/images",
-  "image_pattern": "^(?P<study>[A-Za-z]+)_(?P<subject>\\d+)_(?P<timepoint>[^_]+)_(?P<date>[^_]+)_(?P<image_num>\\d+)\\.tif$",
-  "target_cells": 2000,
-  "cell_types": [
-    {"key": "normal",       "name": "Normal",               "color": "#FFD000"},
-    {"key": "stechapfel",   "name": "Stechapfel",           "color": "#FF6B6B"},
-    {"key": "auszug",       "name": "Auszüge Membran",      "color": "#4ECDC4"},
-    {"key": "verschmolzen", "name": "Verschmolzen Membran", "color": "#9D4EDD"},
-    {"key": "elongiert",    "name": "Elongierte RBC",       "color": "#F77F00"}
-  ],
-  "cellpose": {"diameter": 30, "flow_threshold": 0.4, "cellprob_threshold": 0.0, "model": "cpsam"},
-  "use_gpu": true,
-  "margin_n": 0,
-  "show_margin_overlay": true,
-  "size_filter": {"enabled": true, "min_factor": 0.35, "max_factor": 1.7}
-}
-```
-
-The **filename regex** must capture three named groups: `subject`, `timepoint`, `image_num`. Optional named groups (e.g. `study`, `date`) are stored for audit but not used for grouping. Files that don't match end up in an `_ungrouped` bucket.
-
-You can keep multiple profiles side-by-side (one per study) and switch via menu → **Profil → Profile verwalten …**.
-
----
-
-## Roadmap
-
-Items the project will likely tackle next, in roughly the order they make sense:
-
-- **v14** ✅ — Per-study aggregated Excel `.xlsx` export (`outputs/Uebersicht.xlsx`: tidy sheet + `Proband × Zeitpunkt` pivot matrices); hierarchical batch filtering with *Bis Ziel rechnen* + keep-awake; recursive image loading from sub-folders.
-- **v15** — Auto-resegment workflow when profile parameters change (per-image user-confirm).
-- **v16** — Pluggable Cellpose model paths (run your own custom-trained model from a profile).
-- **v17** ✅ — Friendly filename parser (delimiter + roles, live preview), share packages (create/import), editable 2000-cell cap, in-app statistics box-plots, progress dashboard + time tracking, ML-ready per-cell export columns.
-- **v18** — One-click ML dataset export (consolidated parquet + per-cell crops + COCO), see [`docs/ML_DATASET.md`](docs/ML_DATASET.md).
-- **v19** — Built-in stats: A/B comparisons between timepoints, significance tests.
-- **v20** — Multi-user sync (server-merged reviews).
-
----
-
-## Acknowledgments
-
-- **Cellpose** — the underlying segmentation engine. <https://github.com/MouseLand/cellpose>
-  > Pachitariu, M., & Stringer, C. (2022). _Cellpose 2.0: how to train your own model._ Nature Methods.
-  > Stringer, C., & Pachitariu, M. (2025). _Cellpose-SAM: superhuman generalization for cellular segmentation._ bioRxiv.
-- **scikit-image** for the morphological operations + label measurements.
-- **matplotlib** for the canvas.
-
-If you publish work that used ErysReview, please cite the relevant Cellpose papers.
-
----
-
-## License
-
-MIT. See `LICENSE`.
+- Cellpose-SAM: Ein **kleinerer** Durchmesser verliert die Zelle (das Bild wird hochskaliert); `cellprob < 0` bläht die Maske nur auf. Am Testbild getestet, deshalb bleibt der Standard-Durchmesser.
+- Cellpose-SAM liefert auf Ausschnitten, deren Seiten keine Vielfachen von 16 sind, keine Masken. Deshalb das Auffüllen (cellpose 4.1.1).
+- Sich berührende, stark gefärbte Zellen: Der DAB-Vorfilter fasst sie zu einem Ausschnitt zusammen; Cellpose trennt sie dort wie gewohnt.

@@ -1,22 +1,22 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────
-#  ErysReview — macOS installer
+#  NKReview — macOS installer
 #
-#  Double-click this file inside the ErysReview folder. It
+#  Double-click this file inside the NKReview folder. It
 #    1. finds Python 3.12,
 #    2. creates the local .venv,
 #    3. keeps every package in vendor/wheels/ (downloads what is missing),
 #    4. installs the exact tested versions (requirements-lock-macos.txt),
 #    5. keeps the Cellpose model in vendor/models/ and installs it,
-#    6. runs the self-test and puts ErysReview.app on the Desktop.
+#    6. runs the self-test and puts NKReview.app on the Desktop.
 #
 #  Offline: copy the whole folder including vendor/ (e.g. on a stick) to the
 #  next Mac — it then installs without internet (Python 3.12 must be there).
 #
 #  Output: "[n/6] …" per step, "##DONE" or "##FAIL <reason>" at the end
 #  (read by the installer window). --yes: no questions, no "press Enter".
-#  ERYS_INSTALL_NO_APP=1 skips the Desktop app (tests, installer window option).
-#  ERYS_INSTALL_DROP_VENDOR=1 removes vendor/ again after a good install.
+#  NK_INSTALL_NO_APP=1 skips the Desktop app (tests, installer window option).
+#  NK_INSTALL_DROP_VENDOR=1 removes vendor/ again after a good install.
 #  Everything is also written to install.log.
 # ─────────────────────────────────────────────────────────────────────────
 set -u
@@ -35,7 +35,7 @@ export PIP_DISABLE_PIP_VERSION_CHECK=1     # no "new pip available" noise
 exec > >(tee -a "$LOG") 2>&1
 echo ""
 echo "============================================"
-echo " ErysReview installer (macOS) — $(date '+%Y-%m-%d %H:%M')"
+echo " NKReview installer (macOS) — $(date '+%Y-%m-%d %H:%M')"
 echo "============================================"
 
 pause() { if [ "$ASK" = 1 ]; then read -r -p "Enter zum Schließen ..."; fi; }
@@ -155,33 +155,33 @@ if big "$HOME_MODEL" && ! big "$MODELS/cpsam"; then
 fi
 
 # ─── 6. Self-test + Desktop app ──────────────────────────────────────────
-step 6 "Selbsttest und ErysReview.app"
+step 6 "Selbsttest und NKReview.app"
 "$VPY" tools/check_install.py || fail "Selbsttest fehlgeschlagen — siehe die Zeilen 'CHECK fail' oben."
 
-VERSION="$("$VPY" -c 'import erysreview; print(erysreview.__version__)' 2>/dev/null || echo 1.0)"
-if [ "${ERYS_INSTALL_NO_APP:-0}" != "1" ]; then
+VERSION="$("$VPY" -c 'import nkreview; print(nkreview.__version__)' 2>/dev/null || echo 1.0)"
+if [ "${NK_INSTALL_NO_APP:-0}" != "1" ]; then
     chmod +x "$ROOT/run.command" 2>/dev/null
-    APP="$HOME/Desktop/ErysReview.app"
+    APP="$HOME/Desktop/NKReview.app"
     rm -rf "$APP"
     mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
     # The bundle runs THIS folder's .venv — the Dock shows our icon and name
     # instead of Python's. $ROOT is fixed at install time.
-    cat > "$APP/Contents/MacOS/ErysReview" <<LAUNCHER
+    cat > "$APP/Contents/MacOS/NKReview" <<LAUNCHER
 #!/bin/bash
 cd "$ROOT" || exit 1
-exec "$ROOT/.venv/bin/python" -m erysreview
+exec "$ROOT/.venv/bin/python" -m nkreview
 LAUNCHER
-    chmod +x "$APP/Contents/MacOS/ErysReview"
+    chmod +x "$APP/Contents/MacOS/NKReview"
     if [ -f "$ROOT/assets/icon.icns" ]; then cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"; fi
     cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>               <string>ErysReview</string>
-    <key>CFBundleDisplayName</key>        <string>ErysReview</string>
-    <key>CFBundleExecutable</key>         <string>ErysReview</string>
-    <key>CFBundleIdentifier</key>         <string>de.erys.review</string>
+    <key>CFBundleName</key>               <string>NKReview</string>
+    <key>CFBundleDisplayName</key>        <string>NKReview</string>
+    <key>CFBundleExecutable</key>         <string>NKReview</string>
+    <key>CFBundleIdentifier</key>         <string>de.nkreview</string>
     <key>CFBundleIconFile</key>           <string>icon</string>
     <key>CFBundlePackageType</key>        <string>APPL</string>
     <key>CFBundleShortVersionString</key> <string>$VERSION</string>
@@ -190,19 +190,19 @@ LAUNCHER
 </plist>
 PLIST
     touch "$APP" 2>/dev/null || true
-    echo "      ErysReview.app auf dem Schreibtisch angelegt."
+    echo "      NKReview.app auf dem Schreibtisch angelegt."
 fi
 
-if [ "${ERYS_INSTALL_DROP_VENDOR:-0}" = "1" ]; then
+if [ "${NK_INSTALL_DROP_VENDOR:-0}" = "1" ]; then
     rm -rf "$WHEELS" "$MODELS"
     echo "      Pakete im Ordner entfernt (wie gewählt)."
 fi
 
 echo ""
 echo "============================================"
-echo " Fertig. ErysReview $VERSION ist installiert."
+echo " Fertig. NKReview $VERSION ist installiert."
 echo "============================================"
-echo "Start: ErysReview auf dem Schreibtisch (oder run.command in diesem Ordner)."
+echo "Start: NKReview auf dem Schreibtisch (oder run.command in diesem Ordner)."
 echo "##DONE"
 pause
 exit 0

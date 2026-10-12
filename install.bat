@@ -1,10 +1,10 @@
 @echo off
 REM -------------------------------------------------------------------------
-REM  ErysReview - Windows installer
+REM  NKReview - Windows installer
 REM
-REM  Double-click this file from inside the ErysReview folder.
+REM  Double-click this file from inside the NKReview folder.
 REM  It ensures Miniforge/conda is present (offering to install it for you),
-REM  builds a CLEAN "erys" conda env with the full scientific stack from
+REM  builds a CLEAN "nkreview" conda env with the full scientific stack from
 REM  conda-forge, drops a desktop shortcut, and prints what to do next.
 REM
 REM  Why conda-forge instead of pip:
@@ -30,7 +30,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================
-echo  ErysReview installer (Windows)
+echo  NKReview installer (Windows)
 echo ============================================
 echo.
 
@@ -81,11 +81,11 @@ if not exist "%CONDA_ACTIVATE%" (
     exit /b 1
 )
 
-REM --- 2. (Re)create the "erys" env CLEANLY from conda-forge ---------------
+REM --- 2. (Re)create the "nkreview" env CLEANLY from conda-forge ---------------
 REM  We always rebuild the env: an env left over from the old pip-based
 REM  installer still has the duplicate-OpenMP problem, so reusing it would
 REM  keep the hang. A clean conda-forge solve is the whole fix.
-echo [2/4] Building a clean conda-forge env "erys" (Python 3.12) ...
+echo [2/4] Building a clean conda-forge env "nkreview" (Python 3.12) ...
 
 REM  "conda env list" only shows REGISTERED envs, so it is not enough on its
 REM  own. On Windows a "conda env remove" that hits a locked DLL (antivirus,
@@ -97,21 +97,21 @@ REM  hang walks straight back in. So: unregister it if conda knows it, then
 REM  delete the prefix directory outright, then verify it is really gone.
 for /f "delims=" %%B in ('"%CONDA_EXE%" info --base 2^>nul') do set "CONDA_BASE=%%B"
 if not defined CONDA_BASE set "CONDA_BASE=%CONDA_DIR:~0,-1%"
-set "ERYS_PREFIX=%CONDA_BASE%\envs\erys"
+set "NK_PREFIX=%CONDA_BASE%\envs\nkreview"
 
-"%CONDA_EXE%" env list | findstr /B /C:"erys " >nul 2>&1
+"%CONDA_EXE%" env list | findstr /B /C:"nkreview " >nul 2>&1
 if not errorlevel 1 (
-    echo     Removing the registered "erys" env so the OpenMP stack is clean ...
-    call "%CONDA_EXE%" env remove -n erys -y
+    echo     Removing the registered "nkreview" env so the OpenMP stack is clean ...
+    call "%CONDA_EXE%" env remove -n nkreview -y
 )
-if exist "%ERYS_PREFIX%\" (
-    echo     Deleting leftover files in "%ERYS_PREFIX%" ...
-    rmdir /s /q "%ERYS_PREFIX%" >nul 2>&1
+if exist "%NK_PREFIX%\" (
+    echo     Deleting leftover files in "%NK_PREFIX%" ...
+    rmdir /s /q "%NK_PREFIX%" >nul 2>&1
 )
-if exist "%ERYS_PREFIX%\" (
+if exist "%NK_PREFIX%\" (
     echo [!] Could not delete the old env directory:
-    echo         %ERYS_PREFIX%
-    echo     Something still has a file in there open. Close ErysReview, any
+    echo         %NK_PREFIX%
+    echo     Something still has a file in there open. Close NKReview, any
     echo     Python / Anaconda Prompt window, and your antivirus scan ^(a
     echo     reboot settles all three^), then run install.bat again.
     echo     Installing on top of it would bring back the Cellpose freeze.
@@ -127,7 +127,7 @@ REM channel is configured too, and a mixed solve happily pulls Intel's
 REM intel-openmp in next to conda-forge's llvm-openmp. Two OpenMP runtimes
 REM again. Pinning the solve to conda-forge alone is what keeps it at one.
 REM (Default solve is the CPU torch build; NVIDIA users: see README for the GPU variant.)
-call "%CONDA_EXE%" create -n erys --override-channels -c conda-forge --strict-channel-priority -y python=3.12 "cellpose>=4.1.1,<5" pytorch numpy scipy scikit-image matplotlib-base pandas pillow tifffile openpyxl
+call "%CONDA_EXE%" create -n nkreview --override-channels -c conda-forge --strict-channel-priority -y python=3.12 "cellpose>=4.1.1,<5" pytorch numpy scipy scikit-image matplotlib-base pandas pillow tifffile openpyxl
 if errorlevel 1 (
     echo [!] conda create failed. Check your internet / proxy settings and retry.
     pause
@@ -136,9 +136,9 @@ if errorlevel 1 (
 
 REM --- 3. Sanity-check the stack actually imports (no OMP deadlock) --------
 echo [3/4] Verifying torch + cellpose import cleanly ...
-call "%CONDA_ACTIVATE%" erys
+call "%CONDA_ACTIVATE%" nkreview
 if errorlevel 1 (
-    echo [!] Failed to activate the erys env.
+    echo [!] Failed to activate the nkreview env.
     pause
     exit /b 1
 )
@@ -171,7 +171,7 @@ if errorlevel 1 (
     python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
     if errorlevel 1 (
         echo     NVIDIA GPU found - installing the CUDA build from conda-forge ^(one-time, large download^) ...
-        call "%CONDA_EXE%" install -n erys --override-channels -c conda-forge --strict-channel-priority -y "pytorch-gpu"
+        call "%CONDA_EXE%" install -n nkreview --override-channels -c conda-forge --strict-channel-priority -y "pytorch-gpu"
         if errorlevel 1 (
             echo     [!] CUDA PyTorch install failed - keeping CPU PyTorch ^(app still works, just slower^).
         )
@@ -190,16 +190,16 @@ REM  does not exist at all, so the shortcut would silently go nowhere.
 echo [4/4] Creating Desktop shortcut ...
 set "ICON=%CD%\assets\icon.ico"
 set "TARGET=%CD%\run.bat"
-set "PSSCRIPT=%TEMP%\make_erys_shortcut.ps1"
+set "PSSCRIPT=%TEMP%\make_nkreview_shortcut.ps1"
 
 >  "%PSSCRIPT%" echo $ErrorActionPreference = 'Stop'
 >> "%PSSCRIPT%" echo $desktop = [Environment]::GetFolderPath('Desktop')
 >> "%PSSCRIPT%" echo $ws = New-Object -ComObject WScript.Shell
->> "%PSSCRIPT%" echo $sc = $ws.CreateShortcut((Join-Path $desktop 'ErysReview.lnk'))
+>> "%PSSCRIPT%" echo $sc = $ws.CreateShortcut((Join-Path $desktop 'NKReview.lnk'))
 >> "%PSSCRIPT%" echo $sc.TargetPath = '%TARGET%'
 >> "%PSSCRIPT%" echo $sc.WorkingDirectory = '%CD%'
 >> "%PSSCRIPT%" echo $sc.IconLocation = '%ICON%'
->> "%PSSCRIPT%" echo $sc.Description = 'ErysReview'
+>> "%PSSCRIPT%" echo $sc.Description = 'NKReview'
 >> "%PSSCRIPT%" echo $sc.Save()
 >> "%PSSCRIPT%" echo Write-Host ('    Shortcut: ' + $sc.FullName)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PSSCRIPT%"
@@ -210,11 +210,11 @@ del "%PSSCRIPT%" >nul 2>&1
 
 echo.
 echo ============================================
-echo  Done. ErysReview is installed.
+echo  Done. NKReview is installed.
 echo ============================================
 echo.
 echo You now have two ways to start the app:
-echo   1. Double-click "ErysReview" on your Desktop
+echo   1. Double-click "NKReview" on your Desktop
 echo   2. Double-click run.bat inside this folder
 echo.
 pause
