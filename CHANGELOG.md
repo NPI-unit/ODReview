@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0 — 2026-10-13
+
+- **Studies view like ErysReview:** one card per study (last opened first) with target and markers, folders and image count, subjects done as a big number, a bar of reviewed images, a chip per subject (done / in progress / open) and the measurement in one line. Progress is counted after the window shows. Actions for the selected study: Open, Settings, Save as template, Duplicate, Rename, Delete (removes only the study entry – images, Cellpose results, reviews and exports stay).
+
 ## 0.6.0 — 2026-10-13
 
 - **Settings window like ErysReview:** navigation on the left (study switch, Images & names, Segmentation, Background I₀, Analysis, Templates), one page per topic with cards, footer with the number of unsaved changes, Discard, Save, Close. Warns before Cellpose would re-run. Opens from ⚙ in the toolbar (⌘,) or “Settings” in the study list; the “New study” assistant uses the same fields.

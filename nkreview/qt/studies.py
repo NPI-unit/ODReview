@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QScrollArea, QSpinBox,
+    QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSpinBox,
     QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -120,130 +120,211 @@ def _fill_tree(parent: QTreeWidgetItem, folder: Path) -> int:
 # ─────────────────────────────────────────────
 # Overview
 # ─────────────────────────────────────────────
+class _StudyCard(QFrame):
+    """One study: name, target and markers, folders, progress per subject,
+    the measurement in one line. Click selects, double-click opens."""
+
+    def __init__(self, picker: "StudyPicker", st: Study, is_last: bool):
+        super().__init__(objectName="studyCard")
+        self.picker, self.study = picker, st
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(200)
+        v = QVBoxLayout(self); v.setContentsMargins(18, 16, 18, 14); v.setSpacing(6)
+        top = QHBoxLayout()
+        name = QLabel(st.name); name.setStyleSheet("font-size: 17px; font-weight: 600;"); name.setWordWrap(True)
+        top.addWidget(name, 1)
+        if is_last:
+            tag = QLabel("last opened"); tag.setStyleSheet("color: #2161D9; font-size: 11px;")
+            top.addWidget(tag, 0, Qt.AlignTop)
+        v.addLayout(top)
+        self.kind = QLabel(TARGET_LABELS.get(st.target, st.target)); self.kind.setObjectName("caption")
+        v.addWidget(self.kind)
+        self.folder = QLabel(""); self.folder.setWordWrap(True); self.folder.setObjectName("caption")
+        v.addWidget(self.folder)
+        self.big = QLabel(""); v.addWidget(self.big)
+        self.bar = QProgressBar(); self.bar.setTextVisible(False); self.bar.setRange(0, 0); v.addWidget(self.bar)
+        self.rest = QLabel("counting …"); self.rest.setObjectName("caption"); self.rest.setWordWrap(True)
+        v.addWidget(self.rest)
+        self.dots = QLabel(""); self.dots.setTextFormat(Qt.RichText); self.dots.setWordWrap(True)
+        v.addWidget(self.dots)
+        v.addStretch(1)
+        s = st.settings
+        meas = QLabel(f"Grey OD · I₀ {i0_rule(s)} · {METHOD_LABELS.get(s.method, s.method)}")
+        meas.setObjectName("caption"); meas.setWordWrap(True)
+        v.addWidget(meas)
+        self.counted = False
+
+    def count(self) -> None:
+        """Read the review state of every image (fast; done after the window shows)."""
+        st = self.study
+        missing = [f for f in st.folders if not Path(f).is_dir()]
+        imgs = st.images()
+        markers = st.markers(imgs)
+        self.kind.setText(f"{TARGET_LABELS.get(st.target, st.target)} · {', '.join(markers) or 'no marker'}")
+        if not st.folders:
+            self.folder.setText("no folder")
+        elif missing:
+            self.folder.setText(f"⚠ folder not found: {missing[0]}")
+            self.folder.setStyleSheet("color: #975E0C;")
+        else:
+            first = Path(st.folders[0])
+            more = f" + {len(st.folders) - 1} more" if len(st.folders) > 1 else ""
+            self.folder.setText(f"{first.name}{more} · {len(imgs)} images")
+            self.folder.setToolTip("\n".join(st.folders))
+        prog = progress(imgs)
+        per: dict = {}
+        for (subj, _tp, _mk), (done, n) in prog.items():
+            a = per.setdefault(subj, [0, 0]); a[0] += done; a[1] += n
+        n_sub = len(per)
+        sub_done = sum(1 for d, n in per.values() if d == n)
+        img_done = sum(d for d, _ in per.values())
+        self.big.setText(f'<span style="font-size:22px; font-weight:700; color:#1B7A4D;">{sub_done}</span>'
+                         f'&nbsp;<span style="color:#5B6476;">/ {n_sub} subjects done</span>')
+        self.bar.setRange(0, max(1, len(imgs))); self.bar.setValue(img_done)
+        wip = sum(1 for d, n in per.values() if 0 < d < n)
+        self.rest.setText(f"{img_done} of {len(imgs)} images reviewed · {wip} subject(s) in progress, "
+                          f"{n_sub - sub_done - wip} open")
+        chips = []
+        for subj in sorted(per)[:14]:
+            d, n = per[subj]
+            col, bg = (("#FFFFFF", "#1B7A4D") if d == n else ("#975E0C", "#F4E8D2") if d else ("#5B6476", "#EEF0F4"))
+            chips.append(f'<span style="background:{bg}; color:{col};">&nbsp;{subj}&nbsp;</span>')
+        if len(per) > 14:
+            chips.append(f'<span style="color:#5B6476;">+{len(per) - 14}</span>')
+        self.dots.setText(" ".join(chips))
+        self.counted = True
+
+    def set_selected(self, on: bool) -> None:
+        self.setProperty("selected", on)
+        self.style().unpolish(self); self.style().polish(self)
+
+    def mousePressEvent(self, _e):
+        self.picker.select(self)
+
+    def mouseDoubleClickEvent(self, _e):
+        self.picker.select(self)
+        self.picker.open_selected()
+
+
+def _last_study_file() -> str | None:
+    import json
+    from ..paths import app_support_dir
+    try:
+        return json.loads((app_support_dir() / "app.json").read_text("utf-8")).get("study")
+    except (OSError, ValueError):
+        return None
+
+
 class StudyPicker(QDialog):
-    """Pick a study to work on (or make a new one). `self.chosen` after accept."""
+    """All studies as cards (as in ErysReview), actions for the selected one.
+    `self.chosen` after accept."""
 
     def __init__(self, parent=None, current: Study | None = None):
         super().__init__(parent)
         self.setWindowTitle("Studies")
-        fit_to_screen(self, 1100, 700)
+        fit_to_screen(self, 1080, 720)
         self.chosen: Study | None = None
-        self._studies: list[Study] = []
-        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
-
-        left = QWidget(objectName="sidebar"); ll = QVBoxLayout(left); ll.setContentsMargins(14, 14, 14, 14)
-        top = QHBoxLayout(); t = QLabel("<b>Studies</b>"); f = t.font(); f.setPointSizeF(f.pointSizeF() * 1.3); t.setFont(f)
-        b_new = QPushButton("+ New study"); b_new.setProperty("class", "primary"); b_new.clicked.connect(self.new_study)
-        top.addWidget(t); top.addStretch(1); top.addWidget(b_new)
-        ll.addLayout(top)
-        self.list = QListWidget(); self.list.currentRowChanged.connect(self._show)
-        self.list.itemDoubleClicked.connect(lambda _: self.open_selected())
-        ll.addWidget(self.list, 1)
-        left.setFixedWidth(320)
-        lay.addWidget(left)
-
-        right = QWidget(); self.rl = QVBoxLayout(right); self.rl.setContentsMargins(22, 18, 22, 18); self.rl.setSpacing(12)
+        self._selected: _StudyCard | None = None
+        self.cards: list[_StudyCard] = []
+        v = QVBoxLayout(self); v.setContentsMargins(36, 28, 36, 22); v.setSpacing(16)
         head = QHBoxLayout()
-        self.h_name = QLabel(""); f = self.h_name.font(); f.setPointSizeF(f.pointSizeF() * 1.5); f.setBold(True); self.h_name.setFont(f)
-        self.h_sub = QLabel("", objectName="caption")
-        hv = QVBoxLayout(); hv.addWidget(self.h_name); hv.addWidget(self.h_sub)
-        self.b_tpl = QPushButton("Save as template"); self.b_tpl.clicked.connect(self.save_template)
-        self.b_edit = QPushButton("Settings"); self.b_edit.clicked.connect(self.edit_study)
-        self.b_open = QPushButton("Open review"); self.b_open.setProperty("class", "primary")
-        self.b_open.clicked.connect(self.open_selected)
-        head.addLayout(hv, 1); head.addWidget(self.b_tpl); head.addWidget(self.b_edit); head.addWidget(self.b_open)
-        self.rl.addLayout(head)
-        self.cards = QGridLayout(); self.cards.setSpacing(10)
-        self.rl.addLayout(self.cards)
-        self.rl.addWidget(QLabel("<b>Progress</b>  – reviewed / all images per subject × timepoint × marker"))
-        self.grid = QTableWidget(); self.grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.grid.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.rl.addWidget(self.grid, 1)
-        self.rl.addWidget(QLabel("<b>Folders</b>"))
-        self.folders = QLabel(""); self.folders.setWordWrap(True); self.folders.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.rl.addWidget(self.folders)
-        lay.addWidget(right, 1)
-        self.reload(current)
+        col = QVBoxLayout()
+        t = QLabel("Studies"); t.setStyleSheet("font-size: 26px; font-weight: 700;")
+        sub = QLabel("Choose a study to review, or create a new one. Double-click opens.", objectName="caption")
+        col.addWidget(t); col.addWidget(sub)
+        head.addLayout(col, 1)
+        new = QPushButton("+ New study"); new.setProperty("class", "primary"); new.clicked.connect(self.new_study)
+        head.addWidget(new, 0, Qt.AlignTop)
+        v.addLayout(head)
 
-    def reload(self, select: Study | None = None) -> None:
-        self._studies = list_studies()
-        self.list.blockSignals(True); self.list.clear()
-        row = 0
-        for i, st in enumerate(self._studies):
-            imgs = st.images()
-            done, n = proband_progress(imgs)
-            markers = ", ".join(st.markers(imgs)) or "–"
-            self.list.addItem(QListWidgetItem(
-                f"{st.name}\n{TARGET_LABELS.get(st.target, st.target)} · {markers} · {done}/{n} subjects done"))
-            if select is not None and st.file == select.file:
-                row = i
-        self.list.blockSignals(False)
-        has = bool(self._studies)
-        for b in (self.b_open, self.b_edit, self.b_tpl):
+        self.area = QScrollArea(); self.area.setWidgetResizable(True); self.area.setFrameShape(QFrame.NoFrame)
+        v.addWidget(self.area, 1)
+
+        v.addWidget(QLabel("SELECTED STUDY", objectName="caption"))
+        acts = QHBoxLayout(); acts.setSpacing(8)
+        self.btn_open = QPushButton("Open"); self.btn_open.setProperty("class", "primary")
+        self.btn_open.clicked.connect(self.open_selected)
+        self.btn_set = QPushButton("Settings"); self.btn_set.clicked.connect(self.edit_study)
+        self.btn_tpl = QPushButton("Save as template"); self.btn_tpl.clicked.connect(self.save_template)
+        self.btn_dup = QPushButton("Duplicate"); self.btn_dup.clicked.connect(self._duplicate)
+        self.btn_ren = QPushButton("Rename"); self.btn_ren.clicked.connect(self._rename)
+        self.btn_del = QPushButton("Delete"); self.btn_del.clicked.connect(self._delete)
+        self.btn_del.setStyleSheet("color: #B83A3A;")
+        for b in (self.btn_open, self.btn_set, self.btn_tpl, self.btn_dup, self.btn_ren):
+            acts.addWidget(b)
+        acts.addStretch(1); acts.addWidget(self.btn_del)
+        v.addLayout(acts)
+        self._fill(current.file if current else None)
+
+    # ── cards ────────────────────────────────────────────
+    def _fill(self, select_file: str | None = None) -> None:
+        holder = QWidget()
+        grid = QGridLayout(holder); grid.setSpacing(16); grid.setContentsMargins(0, 0, 0, 0)
+        self.cards = []
+        last = _last_study_file()
+        studies = sorted(list_studies(), key=lambda s: (s.file != last, s.name.lower()))
+        cols = 3
+        for i, st in enumerate(studies):
+            card = _StudyCard(self, st, st.file == last)
+            grid.addWidget(card, i // cols, i % cols)
+            self.cards.append(card)
+        for c in range(cols):
+            grid.setColumnStretch(c, 1)
+        grid.setRowStretch(len(studies) // cols + 1, 1)
+        if not studies:
+            empty = QLabel("No study yet.\nCreate one with “+ New study”: choose folders, map the file names, "
+                           "set the measurement – or start from a template.")
+            empty.setAlignment(Qt.AlignCenter); empty.setObjectName("caption")
+            grid.addWidget(empty, 0, 0, 1, cols)
+        self.area.setWidget(holder)
+        self._selected = None
+        target = next((c for c in self.cards if c.study.file == (select_file or last)), None)
+        if target is None and self.cards:
+            target = self.cards[0]
+        if target is not None:
+            self.select(target)
+        self._update_buttons()
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._count_next)       # counts after the window is up
+
+    def _count_next(self) -> None:
+        card = next((c for c in self.cards if not c.counted), None)
+        if card is None:
+            return
+        try:
+            card.count()
+        except Exception:  # noqa: BLE001 — an unreadable folder must not break the list
+            card.counted = True
+            card.rest.setText("could not be counted")
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._count_next)
+
+    def select(self, card: _StudyCard) -> None:
+        if self._selected is not None:
+            self._selected.set_selected(False)
+        self._selected = card
+        card.set_selected(True)
+        self._update_buttons()
+
+    def _update_buttons(self) -> None:
+        has = self._selected is not None
+        for b in (self.btn_open, self.btn_set, self.btn_tpl, self.btn_dup, self.btn_ren, self.btn_del):
             b.setEnabled(has)
-        if has:
-            self.list.setCurrentRow(row); self._show(row)
-        else:
-            self.h_name.setText("No study yet")
-            self.h_sub.setText("Create a new study: choose folders, map the file names, set the measurement.")
 
     def _current(self) -> Study | None:
-        r = self.list.currentRow()
-        return self._studies[r] if 0 <= r < len(self._studies) else None
+        return self._selected.study if self._selected else None
 
-    def _show(self, _row: int) -> None:
+    # ── actions ──────────────────────────────────────────
+    def open_selected(self) -> None:
         st = self._current()
-        if st is None:
-            return
-        imgs = st.images()
-        s = st.settings
-        self.h_name.setText(st.name)
-        self.h_sub.setText(f"{len(st.folders)} folder(s) · {len(imgs)} images · created {st.created_at[:10]}")
-        _clear_layout(self.cards)
-        gray = "(R+G+B)/3" if s.gray_mode == GRAY_MEAN else "0.299·R + 0.587·G + 0.114·B"
-        for i, c in enumerate((
-            _card("Measurement", f"Grey OD, {TARGET_LABELS.get(st.target, st.target)}", f"−log₁₀(Ī / I₀) · grey = {gray}"),
-            _card("Background I₀", f"{s.i0_fields} fields of {s.i0_field_size ** 2} px per cell",
-                  f"ring {s.i0_ring_inner}–{s.i0_ring_outer} px · {i0_rule(s)}"),
-            _card("Contour", METHOD_LABELS.get(s.method, s.method),
-                  f"Cellpose on {'DAB map' if s.cellpose.input == 'dab' else 'RGB'} · OD threshold {s.threshold:g}"),
-            _card("Stain", s.stain_preset,
-                  (f"positive above OD {s.pos_threshold:g}" if s.pos_threshold > 0 else "no positive cut-off")
-                  + (f" · min. area {s.min_cell_area} px" if s.min_cell_area else "")),
-        )):
-            self.cards.addWidget(c, 0, i)
-        prog = progress(imgs)
-        probands = sorted({k[0] for k in prog})
-        cols = sorted({(k[1], k[2]) for k in prog})
-        self.grid.clear()
-        self.grid.setRowCount(len(probands)); self.grid.setColumnCount(len(cols))
-        self.grid.setHorizontalHeaderLabels([f"{tp} · {mk or '–'}" for tp, mk in cols])
-        self.grid.setVerticalHeaderLabels([f"{p}" + (f" · {st.groups[p]}" if p in st.groups else "") for p in probands])
-        for r, p in enumerate(probands):
-            for c, (tp, mk) in enumerate(cols):
-                v = prog.get((p, tp, mk))
-                it = QTableWidgetItem("" if v is None else f"{v[0]} / {v[1]}")
-                it.setTextAlignment(Qt.AlignCenter)
-                if v is not None:
-                    if v[0] == v[1]:
-                        it.setBackground(QColor("#1B7A4D")); it.setForeground(QColor("#FFFFFF"))
-                    elif v[0]:
-                        it.setBackground(QColor("#F4E8D2")); it.setForeground(QColor("#975E0C"))
-                    else:
-                        it.setBackground(QColor("#EEF0F4"))
-                self.grid.setItem(r, c, it)
-        lines = []
-        for f in st.folders:
-            if Path(f).is_dir():
-                lines.append(f"{f}  —  {len(list_images(Path(f)))} images")
-            else:
-                lines.append(f"{f}  —  not found")
-        self.folders.setText("\n".join(lines) or "–")
+        if st is not None:
+            self.chosen = st
+            self.accept()
 
     def new_study(self) -> None:
         w = StudyWizard(self)
         if w.exec() == QDialog.Accepted:
-            self.reload(w.study)
+            self._fill(w.study.file)
 
     def edit_study(self) -> None:
         st = self._current()
@@ -251,7 +332,7 @@ class StudyPicker(QDialog):
             return
         w = StudySettings(self, st)
         w.exec()
-        self.reload(w.saved or st)
+        self._fill((w.saved or st).file)
 
     def save_template(self) -> None:
         st = self._current()
@@ -270,11 +351,48 @@ class StudyPicker(QDialog):
         Template.from_study(st, name, f"from study “{st.name}”").save()
         QMessageBox.information(self, "Template saved", f"“{name}” is now available in “New study”.")
 
-    def open_selected(self) -> None:
+    def _ask_name(self, title: str, default: str) -> str | None:
+        name, ok = QInputDialog.getText(self, title, "Study name:", text=default)
+        name = name.strip()
+        if not ok or not name:
+            return None
+        if any(s.name == name for s in list_studies()):
+            QMessageBox.information(self, title, f"A study “{name}” already exists.")
+            return None
+        return name
+
+    def _duplicate(self) -> None:
         st = self._current()
-        if st is not None:
-            self.chosen = st
-            self.accept()
+        name = self._ask_name("Duplicate study", f"{st.name} 2") if st else None
+        if not name:
+            return
+        dup = copy.deepcopy(st); dup.name, dup.file, dup.created_at = name, "", ""
+        dup.save()
+        self._fill(dup.file)
+
+    def _rename(self) -> None:
+        st = self._current()
+        name = self._ask_name("Rename study", st.name) if st else None
+        if not name:
+            return
+        st.name = name
+        st.save()                     # same file, new name
+        self._fill(st.file)
+
+    def _delete(self) -> None:
+        st = self._current()
+        if st is None:
+            return
+        if QMessageBox.question(
+                self, "Delete study",
+                f"Delete the study “{st.name}”?\n\nOnly the study entry is removed. Images, Cellpose results, "
+                "reviews (in each folder's .nk_cache) and exports stay where they are.") != QMessageBox.Yes:
+            return
+        try:
+            st.path.unlink()
+        except OSError as e:
+            QMessageBox.warning(self, "Delete study", f"Could not delete: {e}")
+        self._fill()
 
 
 # ─────────────────────────────────────────────
