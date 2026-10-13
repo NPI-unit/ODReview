@@ -1,10 +1,10 @@
-"""Study export into outputs/<time>/ next to the study's first folder:
+"""Study export into outputs/nkreview_<time>/ next to the study's first folder:
 
-  zellen.csv            one row per cell, long format for R
-  zusammenfassung.csv   one row per proband × zeitpunkt × marker (kept cells)
-  einstellungen.json    the study incl. every parameter + app version
-  overlays/*.png        contours, I₀ fields and the OD per image
-  nk_export.xlsx        the two tables as sheets
+  cells.csv         one row per cell, long format for R
+  summary.csv       one row per subject × group × timepoint × cell type × marker (kept cells)
+  settings.json     the study incl. every parameter + app version
+  overlays/*.png    contours, I₀ fields and the OD per image
+  nk_export.xlsx    the two tables as sheets
 """
 
 from __future__ import annotations
@@ -19,50 +19,50 @@ import numpy as np
 from . import __version__
 from .analysis import STATUS_KEPT, ImageResult, analyze
 from .state import Review, load_image
-from .study import META_ROLES, ROLE_IMAGE_NUM, ImageInfo, Study
+from .study import META_ROLES, ROLE_COLUMNS, ROLE_IMAGE_NUM, ImageInfo, Study
 
 
 def overlay_png(img: np.ndarray, res: ImageResult, path: Path, field_size: int) -> None:
     from PIL import Image, ImageDraw
     from skimage.segmentation import find_boundaries
     rgb = img[..., :3].astype(np.uint8).copy()
-    colors = {"gewertet": (33, 97, 217), "ausgeschlossen": (151, 94, 12), "verworfen": (150, 150, 150)}
+    colors = {"kept": (33, 97, 217), "excluded": (151, 94, 12), "discarded": (150, 150, 150)}
     for r in res.rows:
-        m = res.labels == r["zelle"]
+        m = res.labels == r["cell"]
         rgb[find_boundaries(m, mode="outer")] = colors[r["status"]]
     im = Image.fromarray(rgb)
     d = ImageDraw.Draw(im)
     half = field_size // 2
     for r in res.rows:
-        cm = res.cells.get(r["zelle"])
-        if cm and r["status"] != "verworfen":
+        cm = res.cells.get(r["cell"])
+        if cm and r["status"] != "discarded":
             for x, y in cm.fields:
                 d.rectangle([x - half, y - half, x + half, y + half], outline=(151, 94, 12), width=1)
-        od = "–" if r["od_fiji"] is None else f'{r["od_fiji"]:.3f}'
-        d.text((r["x"] + 30, r["y"] - 30), f'#{r["zelle"]} {od} {r["status"]}', fill=colors[r["status"]])
+        od = "–" if r["od"] is None else f'{r["od"]:.3f}'
+        d.text((r["x"] + 30, r["y"] - 30), f'#{r["cell"]} {od} {r["status"]}', fill=colors[r["status"]])
     im.save(path)
 
 
 def summarize(cells: list[dict]) -> list[dict]:
-    """Per proband × zeitpunkt × marker over the kept cells."""
+    """Per subject × group × timepoint × cell type × marker over the kept cells."""
     groups: dict = {}
     for c in cells:
-        if c["status"] != STATUS_KEPT or c["od_fiji"] is None:
+        if c["status"] != STATUS_KEPT or c["od"] is None:
             continue
-        k = (c["proband"], c["gruppe"], c["zeitpunkt"], c["zelltyp"], c["marker"])
+        k = (c["subject"], c["group"], c["timepoint"], c["cell_type"], c["marker"])
         groups.setdefault(k, []).append(c)
     out = []
     for (prob, grp, tp, ct, mk), cs in sorted(groups.items()):
-        od = np.array([c["od_fiji"] for c in cs], dtype=float)
-        pos = [c["positiv"] for c in cs if c.get("positiv") is not None]
+        od = np.array([c["od"] for c in cs], dtype=float)
+        pos = [c["positive"] for c in cs if c.get("positive") is not None]
         out.append({
-            "proband": prob, "gruppe": grp, "zeitpunkt": tp, "zelltyp": ct, "marker": mk,
-            "n_bilder": len({c["bild"] for c in cs}), "n_zellen": len(cs),
-            "od_fiji_mean": round(float(od.mean()), 4),
-            "od_fiji_sd": round(float(od.std(ddof=1)), 4) if len(od) > 1 else None,
-            "od_fiji_median": round(float(np.median(od)), 4),
-            "n_positiv": sum(pos) if pos else None,
-            "anteil_positiv": round(sum(pos) / len(pos), 4) if pos else None,
+            "subject": prob, "group": grp, "timepoint": tp, "cell_type": ct, "marker": mk,
+            "n_images": len({c["image"] for c in cs}), "n_cells": len(cs),
+            "od_mean": round(float(od.mean()), 4),
+            "od_sd": round(float(od.std(ddof=1)), 4) if len(od) > 1 else None,
+            "od_median": round(float(np.median(od)), 4),
+            "n_positive": sum(pos) if pos else None,
+            "share_positive": round(sum(pos) / len(pos), 4) if pos else None,
         })
     return out
 
@@ -89,12 +89,12 @@ def export_study(study: Study, only_reviewed: bool = True, with_excluded: bool =
         if res.note:
             notes.append(f"{info.path.name}: {res.note}")
         rel = info.path.relative_to(info.folder).as_posix()
-        meta = {r: info.meta.get(r, "") for r in META_ROLES if r != ROLE_IMAGE_NUM}
+        meta = {ROLE_COLUMNS[r]: info.meta.get(r, "") for r in META_ROLES if r != ROLE_IMAGE_NUM}
         for r in res.rows:
             if r["status"] != STATUS_KEPT and not with_excluded:
                 continue
-            cells.append({**meta, "bild_nr": info.meta.get(ROLE_IMAGE_NUM, ""), "bild": rel,
-                          "ordner": str(info.folder), "geprueft": rv.reviewed, **r})
+            cells.append({**meta, "image_no": info.meta.get(ROLE_IMAGE_NUM, ""), "image": rel,
+                          "folder": str(info.folder), "reviewed": rv.reviewed, **r})
         stem = "__".join(info.path.relative_to(info.folder).with_suffix("").parts)
         overlay_png(img, res, out / "overlays" / f"{info.folder.name}__{stem}.png",
                     study.settings.i0_field_size)
@@ -102,19 +102,19 @@ def export_study(study: Study, only_reviewed: bool = True, with_excluded: bool =
         progress(len(images), len(images), "")
     df = pd.DataFrame(cells)
     summary = pd.DataFrame(summarize(cells))
-    df.to_csv(out / "zellen.csv", index=False)
-    summary.to_csv(out / "zusammenfassung.csv", index=False)
+    df.to_csv(out / "cells.csv", index=False)
+    summary.to_csv(out / "summary.csv", index=False)
     try:
         with pd.ExcelWriter(out / "nk_export.xlsx") as xw:
-            df.to_excel(xw, sheet_name="zellen", index=False)
-            summary.to_excel(xw, sheet_name="zusammenfassung", index=False)
+            df.to_excel(xw, sheet_name="cells", index=False)
+            summary.to_excel(xw, sheet_name="summary", index=False)
     except Exception as e:      # openpyxl missing: the CSVs are the record anyway
-        notes.append(f"XLSX nicht geschrieben: {e}")
+        notes.append(f"XLSX not written: {e}")
     info = study.to_dict()
-    info.update({"export_zeit": _dt.datetime.now().isoformat(timespec="seconds"),
-                 "app_version": __version__, "nur_gepruefte": only_reviewed,
-                 "mit_ausgeschlossenen": with_excluded})
-    (out / "einstellungen.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), "utf-8")
+    info.update({"exported_at": _dt.datetime.now().isoformat(timespec="seconds"),
+                 "app_version": __version__, "only_reviewed": only_reviewed,
+                 "with_excluded": with_excluded})
+    (out / "settings.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), "utf-8")
     kept = sum(c["status"] == STATUS_KEPT for c in cells)
     return {"folder": out, "n_cells": kept, "n_rows": len(cells), "n_images": len(images) - skipped,
             "skipped": skipped, "notes": notes}

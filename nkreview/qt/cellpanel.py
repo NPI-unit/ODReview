@@ -17,7 +17,7 @@ def _magma(v: np.ndarray) -> np.ndarray:
 
 
 def _fmt(v, n=3) -> str:
-    return "–" if v is None else f"{v:.{n}f}".replace(".", ",")
+    return "–" if v is None else f"{v:.{n}f}"
 
 
 class Card(QFrame):
@@ -56,7 +56,7 @@ class ODMap(QWidget):
         p = QPainter(self)
         if self._img is None:
             p.setPen(self.palette().mid().color())
-            p.drawText(self.rect(), Qt.AlignCenter, "keine Zelle gewählt")
+            p.drawText(self.rect(), Qt.AlignCenter, "no cell selected")
             return
         bar = 14
         area = QRectF(0, 0, self.width(), self.height() - bar - 4)
@@ -93,8 +93,8 @@ class Profile(QWidget):
         p.setPen(QPen(mid, 1)); p.drawLine(L, T + H, L + W, T + H)
         f = p.font(); f.setPointSizeF(f.pointSizeF() * 0.8); p.setFont(f)
         p.setPen(fg)
-        p.drawText(QRectF(L, T + H + 2, 80, 14), Qt.AlignLeft, "Zentrum")
-        p.drawText(QRectF(L + W - 80, T + H + 2, 80, 14), Qt.AlignRight, "Membran")
+        p.drawText(QRectF(L, T + H + 2, 80, 14), Qt.AlignLeft, "centre")
+        p.drawText(QRectF(L + W - 80, T + H + 2, 80, 14), Qt.AlignRight, "membrane")
         vals = [v for v in self._v if v is not None]
         if not vals:
             return
@@ -173,19 +173,19 @@ class CellPanel(QWidget):
         head.addWidget(self.title); head.addWidget(self.sub); head.addStretch(1); head.addWidget(self.badge)
         lay.addLayout(head)
         grid = QGridLayout(); grid.setSpacing(6)
-        self.c_od = Card("OD (Methode)"); self.c_pix = Card("Pixel-OD mean ± SD")
-        self.c_i0 = Card("I₀ (Felder)"); self.c_dab = Card("DAB-OD (Zusatz)")
+        self.c_od = Card("OD (method)"); self.c_pix = Card("pixel OD mean ± SD")
+        self.c_i0 = Card("I₀ (fields)"); self.c_dab = Card("DAB OD (extra)")
         for i, c in enumerate((self.c_od, self.c_pix, self.c_i0, self.c_dab)):
             grid.addWidget(c, i // 2, i % 2)
         lay.addLayout(grid)
         self.i0_state = QLabel(""); self.i0_state.setWordWrap(True); self.i0_state.setObjectName("i0state")
         lay.addWidget(self.i0_state)
         row = QHBoxLayout(); row.setSpacing(8)
-        lm = QVBoxLayout(); lm.addWidget(QLabel("<b>OD-Karte</b>")); self.map = ODMap(); lm.addWidget(self.map, 1)
-        lp = QVBoxLayout(); lp.addWidget(QLabel("<b>Radiales Profil</b>")); self.prof = Profile(); lp.addWidget(self.prof, 1)
+        lm = QVBoxLayout(); lm.addWidget(QLabel("<b>OD map</b>")); self.map = ODMap(); lm.addWidget(self.map, 1)
+        lp = QVBoxLayout(); lp.addWidget(QLabel("<b>Radial profile</b>")); self.prof = Profile(); lp.addWidget(self.prof, 1)
         row.addLayout(lm, 1); row.addLayout(lp, 1)
         lay.addLayout(row)
-        self.hist_label = QLabel("<b>Verteilung der Pixel-OD</b>")
+        self.hist_label = QLabel("<b>Distribution of pixel OD</b>")
         self.hist_sub = QLabel("", objectName="caption")
         hl = QHBoxLayout(); hl.addWidget(self.hist_label); hl.addWidget(self.hist_sub); hl.addStretch(1)
         lay.addLayout(hl)
@@ -194,63 +194,63 @@ class CellPanel(QWidget):
 
     def show_cell(self, row: dict | None, cm=None, gray=None, labels=None, s=None) -> None:
         if row is None:
-            self.title.setText("Keine Zelle gewählt"); self.sub.setText("Klick auf eine Zelle")
+            self.title.setText("No cell selected"); self.sub.setText("Click a cell")
             self.badge.setText("")
             for c in (self.c_od, self.c_pix, self.c_i0, self.c_dab):
                 c.set("–")
             self.i0_state.setText("")
             self.map.set_data(None, None); self.prof.set_data([]); self.hist.set_data(None, []); self.hist_sub.setText("")
             return
-        self.title.setText(f"Zelle #{row['zelle']}")
-        self.sub.setText(f"{row['kontur']} · {row['flaeche_px']} px")
-        colors = {"gewertet": ("#1B7A4D", "#E4F2EA"), "ausgeschlossen": ("#975E0C", "#F8EFDF"),
-                  "verworfen": ("#5A6577", "#EEF0F4")}
+        self.title.setText(f"Cell #{row['cell']}")
+        self.sub.setText(f"{row['contour']} · {row['area_px']} px")
+        colors = {"kept": ("#1B7A4D", "#E4F2EA"), "excluded": ("#975E0C", "#F8EFDF"),
+                  "discarded": ("#5A6577", "#EEF0F4")}
         fg, bg = colors[row["status"]]
         self.badge.setText(row["status"])
         self.badge.setStyleSheet(f"color:{fg};background:{bg};border-radius:9px;padding:2px 10px;font-weight:600;")
-        self.c_od.set(_fmt(row["od_fiji"]), "−log₁₀(Ī / I₀), grau")
+        self.c_od.set(_fmt(row["od"]), "−log₁₀(Ī / I₀), grey")
         self.c_pix.set(_fmt(row["pixel_od_mean"]), f"± {_fmt(row['pixel_od_sd'])} · median {_fmt(row['pixel_od_median'])}")
-        fields = " · ".join(_fmt(row.get(f"i0_feld{k + 1}"), 1) for k in range(s.i0_fields) if row.get(f"i0_feld{k + 1}") is not None)
-        self.c_i0.set(_fmt(row["i0"], 1), fields or "kein Hintergrund gefunden")
-        self.c_dab.set(_fmt(row["dab_od_mean"]), "Deconvolution H-DAB")
+        fields = " · ".join(_fmt(row.get(f"i0_field{k + 1}"), 1) for k in range(s.i0_fields) if row.get(f"i0_field{k + 1}") is not None)
+        self.c_i0.set(_fmt(row["i0"], 1), fields or "no background found")
+        self.c_dab.set(_fmt(row["dab_od_mean"]), "deconvolution H-DAB")
         if row["i0"] is None:
-            msg, fg, bg = "Kein Hintergrund neben der Zelle – I₀-Felder von Hand setzen (Werkzeug 3)", "#975E0C", "#F8EFDF"
+            msg, fg, bg = "No background next to the cell – set the I₀ fields by hand (tool 3)", "#975E0C", "#F8EFDF"
         elif s.i0_check == "relativ":
-            ref, dev = row.get("i0_hintergrund"), row.get("i0_abw_pct")
+            ref, dev = row.get("i0_background"), row.get("i0_dev_pct")
             if dev is None:
-                msg, fg, bg = "⚠  Kein freier Hintergrund im Bild – I₀ nicht prüfbar → ausgeschlossen", "#975E0C", "#F8EFDF"
+                msg, fg, bg = "⚠  No free background in the image – I₀ cannot be checked → excluded", "#975E0C", "#F8EFDF"
             else:
-                txt = (f"I₀ {_fmt(row['i0'], 1)} · freier Hintergrund {_fmt(ref, 1)} "
-                       f"({dev:+.1f} %, erlaubt ± {s.i0_rel_pct:g} %)").replace(".", ",")
+                txt = (f"I₀ {_fmt(row['i0'], 1)} · free background {_fmt(ref, 1)} "
+                       f"({dev:+.1f} %, allowed ± {s.i0_rel_pct:g} %)")
                 ok = row["i0_ok"]
-                msg = ("✓  " if ok else "⚠  ") + txt + ("" if ok else " → ausgeschlossen")
+                msg = ("✓  " if ok else "⚠  ") + txt + ("" if ok else " → excluded")
                 fg, bg = ("#1B7A4D", "#E4F2EA") if ok else ("#975E0C", "#F8EFDF")
         elif row["i0_ok"]:
-            msg, fg, bg = f"✓  I₀ {_fmt(row['i0'], 1)} liegt im Bereich {s.i0_min:g}–{s.i0_max:g}", "#1B7A4D", "#E4F2EA"
+            msg, fg, bg = f"✓  I₀ {_fmt(row['i0'], 1)} is within {s.i0_min:g}–{s.i0_max:g}", "#1B7A4D", "#E4F2EA"
         else:
-            msg, fg, bg = f"⚠  I₀ {_fmt(row['i0'], 1)} liegt außerhalb {s.i0_min:g}–{s.i0_max:g} → ausgeschlossen", "#975E0C", "#F8EFDF"
-        if row.get("positiv") is not None:
-            msg += f"  ·  {'positiv' if row['positiv'] else 'negativ'} (Grenze OD {_fmt(s.pos_threshold)})"
-        if row.get("debris_verdacht"):
-            msg += "  ·  Debris-Verdacht (H-Kanal hoch)"
+            msg, fg, bg = f"⚠  I₀ {_fmt(row['i0'], 1)} is outside {s.i0_min:g}–{s.i0_max:g} → excluded", "#975E0C", "#F8EFDF"
+        if row.get("positive") is not None:
+            msg += f"  ·  {'positive' if row['positive'] else 'negative'} (cut-off OD {_fmt(s.pos_threshold)})"
+        if row.get("debris_suspect"):
+            msg += "  ·  debris suspected (high H channel)"
         self.i0_state.setText(msg)
         self.i0_state.setStyleSheet(f"color:{fg};background:{bg};border-radius:8px;padding:6px 10px;")
         # map + histogram need the per-pixel OD
         from scipy import ndimage as ndi
-        sl = ndi.find_objects((labels == row["zelle"]).astype(np.uint8))[0] if cm is not None and cm.i0 else None
+        sl = ndi.find_objects((labels == row["cell"]).astype(np.uint8))[0] if cm is not None and cm.i0 else None
         if sl is not None:
             pad = 4
             H, W = labels.shape
             y0, y1 = max(sl[0].start - pad, 0), min(sl[0].stop + pad, H)
             x0, x1 = max(sl[1].start - pad, 0), min(sl[1].stop + pad, W)
             od = -np.log10(np.clip(gray[y0:y1, x0:x1], 1, None) / cm.i0)
-            self.map.set_data(od, labels[y0:y1, x0:x1] == row["zelle"])
+            self.map.set_data(od, labels[y0:y1, x0:x1] == row["cell"])
         else:
             self.map.set_data(None, None)
         self.prof.set_data(cm.profile if cm is not None else [])
         self.hist.set_data(cm.hist if cm is not None and cm.i0 else None,
-                           [(row["od_fiji"], f"Methode {_fmt(row['od_fiji'])}", True),
+                           [(row["od"], f"method {_fmt(row['od'])}", True),
                             (row["pixel_od_p95"], "p95", False)])
-        share = row.get("anteil_od_ueber")
+        share = row.get("share_od_above")
         self.hist_sub.setText(f"p5 {_fmt(row['pixel_od_p5'])} · p95 {_fmt(row['pixel_od_p95'])}"
                               + (f" · > {_fmt(s.od_high, 1)}: {share * 100:.1f} %" if share is not None else ""))

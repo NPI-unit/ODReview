@@ -45,7 +45,7 @@ class Settings:
     i0_max: float = 220.0
     i0_rel_pct: float = 3.0
     min_cell_area: int = 0          # smaller Cellpose objects are dropped (0 = keep all)
-    pos_threshold: float = 0.0      # OD above this = "positiv" (0 = no positive/negative call)
+    pos_threshold: float = 0.0      # OD above this = "positive" (0 = no positive/negative call)
     od_high: float = 0.3            # report the share of pixels above this OD
     debris_h: float = 0.0           # flag "Debris?" if H-channel OD ≥ this (0 = off)
     method: str = METHOD_HYBRID

@@ -121,12 +121,12 @@ def test_analyze_end_to_end_with_manual_and_discard():
         s = Settings(method="threshold")
         rv = Review(discarded=[2], manual=[[[10, 10], [60, 10], [60, 60], [10, 60]]])
         res = analyze(folder, image, img, s, rv)
-        rows = {r["zelle"]: r for r in res.rows}
+        rows = {r["cell"]: r for r in res.rows}
         assert set(rows) == {1, 2, MANUAL_ID_BASE}
         assert abs(rows[1]["dab_od_mean"] - 0.3) < 0.02
-        assert abs(rows[2]["dab_od_mean"] - 0.15) < 0.02 and rows[2]["verworfen"]
-        assert rows[MANUAL_ID_BASE]["manuell"] and abs(rows[MANUAL_ID_BASE]["dab_od_mean"]) < 0.01
-        assert rows[1]["dab_iod"] > rows[1]["dab_od_mean"] * rows[1]["flaeche_px"] * 0.99
+        assert abs(rows[2]["dab_od_mean"] - 0.15) < 0.02 and rows[2]["discarded"]
+        assert rows[MANUAL_ID_BASE]["manual"] and abs(rows[MANUAL_ID_BASE]["dab_od_mean"]) < 0.01
+        assert rows[1]["dab_iod"] > rows[1]["dab_od_mean"] * rows[1]["area_px"] * 0.99
         # no Cellpose cache yet → hybrid falls back to the threshold, and says so
         res2 = analyze(folder, image, img, Settings(), Review())
         assert res2.method == "threshold" and res2.note
@@ -159,15 +159,15 @@ def test_fiji_od_is_od_of_the_mean_with_field_i0():
         s = Settings(method="threshold")
         res = analyze(folder, image, img, s, Review())
         [row] = res.rows
-        assert row["status"] == "gewertet" and row["i0"] == 216.0
-        mean_i = res.gray[res.labels == row["zelle"]].mean()          # Ī over the contour
-        assert abs(row["od_fiji"] - (-np.log10(mean_i / 216))) < 1e-4
-        cm = res.cells[row["zelle"]]
+        assert row["status"] == "kept" and row["i0"] == 216.0
+        mean_i = res.gray[res.labels == row["cell"]].mean()          # Ī over the contour
+        assert abs(row["od"] - (-np.log10(mean_i / 216))) < 1e-4
+        cm = res.cells[row["cell"]]
         assert len(cm.fields) == 3
         dist = ndi_distance_to(res.labels > 0)
         for x, y in cm.fields:                       # in the ring, off the cell
             assert s.i0_ring_inner <= dist[int(y), int(x)] <= s.i0_ring_outer + 1
-        assert len(row["i0_feld1"].__str__()) and row["profil_r1"] is not None
+        assert len(row["i0_field1"].__str__()) and row["profile_r1"] is not None
 
 
 def ndi_distance_to(mask):
@@ -181,7 +181,7 @@ def test_i0_out_of_range_excludes_but_keeps_the_cell():
         folder = Path(d); image = folder / "a.tif"; image.touch()
         res = analyze(folder, image, img, Settings(method="threshold"), Review())
         [row] = res.rows
-        assert row["status"] == "ausgeschlossen" and not row["i0_ok"] and row["od_fiji"] is not None
+        assert row["status"] == "excluded" and not row["i0_ok"] and row["od"] is not None
 
 
 def test_i0_fields_reproducible_redraw_and_manual():
@@ -246,13 +246,13 @@ def test_study_images_groups_and_summary():
         for i in imgs:
             Review(reviewed=True).save(i.folder, i.path)
         info = export_study(st, images=imgs)
-        assert info["n_cells"] == 3 and (info["folder"] / "zellen.csv").exists()
+        assert info["n_cells"] == 3 and (info["folder"] / "cells.csv").exists()
         import pandas as pd
-        summ = pd.read_csv(info["folder"] / "zusammenfassung.csv")
-        cells = pd.read_csv(info["folder"] / "zellen.csv")
-        a = summ[summ.proband == "A"].iloc[0]
-        expect = cells[cells.proband == "A"].od_fiji.mean()
-        assert a.n_zellen == 2 and abs(a.od_fiji_mean - expect) < 1e-3 and a.gruppe == "Intervention"
+        summ = pd.read_csv(info["folder"] / "summary.csv")
+        cells = pd.read_csv(info["folder"] / "cells.csv")
+        a = summ[summ.subject == "A"].iloc[0]
+        expect = cells[cells.subject == "A"].od.mean()
+        assert a.n_cells == 2 and abs(a.od_mean - expect) < 1e-3 and a.group == "Intervention"
 
 
 def test_relative_i0_check_follows_each_image():
@@ -261,11 +261,11 @@ def test_relative_i0_check_follows_each_image():
         folder = Path(d); image = folder / "a.tif"; image.touch()
         for bg in (190, 228):                          # dark and bright series both pass
             [row] = analyze(folder, image, _gray_scene(bg=bg, cell_gray=bg - 50), s, Review()).rows
-            assert row["status"] == "gewertet" and abs(row["i0_abw_pct"]) < 0.5, row
+            assert row["status"] == "kept" and abs(row["i0_dev_pct"]) < 0.5, row
         img = _gray_scene(bg=216, cell_gray=150)
         img[10:30, 10:30] = 200                             # a field on "cytoplasm": -7 %
         [row] = analyze(folder, image, img, s, Review(i0_fields={"1": [[20, 20]]})).rows
-        assert row["status"] == "ausgeschlossen" and row["i0_abw_pct"] < -3
+        assert row["status"] == "excluded" and row["i0_dev_pct"] < -3
 
 
 def test_min_area_and_positive_call():
@@ -278,11 +278,11 @@ def test_min_area_and_positive_call():
         cp[20:28, 20:28] = 2                               # 64 px speck
         s = Settings(method="cellpose", min_cell_area=500, pos_threshold=0.1)
         rows = analyze(folder, image, img, s, Review(), cp=cp).rows
-        assert [r["zelle"] for r in rows] == [1] and rows[0]["positiv"] is True
+        assert [r["cell"] for r in rows] == [1] and rows[0]["positive"] is True
         s.pos_threshold = 0.5
-        assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positiv"] is False
+        assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positive"] is False
         s.pos_threshold = 0
-        assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positiv"] is None
+        assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positive"] is None
 
 
 def test_template_roundtrip_keeps_scheme_not_folders():

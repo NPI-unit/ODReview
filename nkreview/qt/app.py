@@ -26,21 +26,21 @@ from .. import __version__
 from ..analysis import STATUS_KEPT, ImageResult, analyze
 from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, has_cellpose_cache
 from ..state import MANUAL_ID_BASE, Review, app_support_dir, load_image
-from ..study import ImageInfo, Study, list_studies, proband_progress
+from ..study import META_ROLES, ROLE_LABELS, ImageInfo, Study, list_studies, proband_progress
 from .cellpanel import CellPanel
 from .style import apply_look
 from .studies import StudyPicker, _clear_layout
 from .view import TOOL_DRAW, TOOL_I0, TOOL_SELECT, ImageView
 from .worker import CellposeWorker
 
-METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD-Rand)",
-                 METHOD_CELLPOSE: "Nur Cellpose",
-                 METHOD_THRESHOLD: "Nur OD-Schwelle (Backup)"}
-VIEWS = (("rgb", "Original"), ("gray", "Grau-OD"), ("dab", "DAB-Kanal"))
+METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD edge)",
+                 METHOD_CELLPOSE: "Cellpose only",
+                 METHOD_THRESHOLD: "OD threshold only (backup)"}
+VIEWS = (("rgb", "Original"), ("gray", "Grey OD"), ("dab", "DAB channel"))
 OD_DISPLAY_MAX = 0.4          # fixed scale so images stay comparable
 
-COLUMNS = [("zelle", "#"), ("status", "Status"), ("od_fiji", "OD"), ("i0", "I₀"),
-           ("flaeche_px", "Fläche"), ("hinweis", "")]
+COLUMNS = [("cell", "#"), ("status", "Status"), ("od", "OD"), ("i0", "I₀"),
+           ("area_px", "Area"), ("note", "")]
 
 ST_WAIT, ST_RUN, ST_SEG, ST_DONE, ST_ERR = "○", "◐", "●", "✔", "✕"
 ALL_MARKERS = ""
@@ -111,14 +111,14 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         tb = QFrame(objectName="toolbar")
         tl = QHBoxLayout(tb); tl.setContentsMargins(10, 6, 10, 6)
-        self.b_study = QPushButton("Studie wählen"); self.b_study.setObjectName("study")
+        self.b_study = QPushButton("Choose study"); self.b_study.setObjectName("study")
         self.b_study.clicked.connect(self.choose_study)
         tl.addWidget(self.b_study)
         seg = QFrame(objectName="segment"); sl = QHBoxLayout(seg)
         sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
         self.tool_group = QButtonGroup(self)
-        for i, (tool, text) in enumerate(((TOOL_SELECT, "1  Auswählen"), (TOOL_DRAW, "2  Kontur zeichnen"),
-                                          (TOOL_I0, "3  I₀-Feld setzen"))):
+        for i, (tool, text) in enumerate(((TOOL_SELECT, "1  Select"), (TOOL_DRAW, "2  Draw contour"),
+                                          (TOOL_I0, "3  Set I₀ field"))):
             b = QPushButton(text); b.setCheckable(True)
             b.setProperty("first", i == 0); b.setProperty("last", i == 2)
             b.setProperty("tool", tool)
@@ -131,10 +131,10 @@ class MainWindow(QMainWindow):
         for key, text in VIEWS:
             self.view_combo.addItem(text, key)
         self.view_combo.currentIndexChanged.connect(lambda _: self.set_view_mode(self.view_combo.currentData()))
-        tl.addWidget(QLabel("Ansicht (D):")); tl.addWidget(self.view_combo)
-        self.cb_contours = QCheckBox("Konturen (O)"); self.cb_contours.setChecked(True)
+        tl.addWidget(QLabel("View (D):")); tl.addWidget(self.view_combo)
+        self.cb_contours = QCheckBox("Contours (O)"); self.cb_contours.setChecked(True)
         self.cb_contours.toggled.connect(lambda on: self.view.set_contours_visible(on))
-        self.cb_fields = QCheckBox("I₀-Felder (I)"); self.cb_fields.setChecked(True)
+        self.cb_fields = QCheckBox("I₀ fields (I)"); self.cb_fields.setChecked(True)
         self.cb_fields.toggled.connect(lambda on: self.view.set_fields_visible(on))
         tl.addWidget(self.cb_contours); tl.addWidget(self.cb_fields)
         tl.addStretch(1)
@@ -155,7 +155,7 @@ class MainWindow(QMainWindow):
         self.tree.setFocusPolicy(Qt.NoFocus)
         self.tree.currentItemChanged.connect(self._tree_changed)
         ll.addWidget(self.tree, 1)
-        legend = QLabel("○ wartet · ◐ Cellpose · ● segmentiert · ✔ geprüft", objectName="caption")
+        legend = QLabel("○ waiting · ◐ Cellpose · ● segmented · ✔ reviewed", objectName="caption")
         ll.addWidget(legend)
 
         # centre
@@ -179,11 +179,11 @@ class MainWindow(QMainWindow):
         self.thr_spin.setSingleStep(0.005); self.thr_spin.setDecimals(3)
         self.thr_spin.setKeyboardTracking(False)
         self.thr_spin.valueChanged.connect(lambda _: self._threshold_changed())
-        self.cb_only_this = QCheckBox("nur für dieses Bild")
-        self.cb_only_this.setToolTip("Aus: Methode und Schwelle gelten für die ganze Studie.")
+        self.cb_only_this = QCheckBox("this image only")
+        self.cb_only_this.setToolTip("Off: method and threshold apply to the whole study.")
         thr_row = QHBoxLayout(); thr_row.addWidget(self.thr_spin); thr_row.addWidget(self.cb_only_this)
-        form.addRow("Kontur:", self.method_combo)
-        form.addRow("OD-Schwelle:", thr_row)
+        form.addRow("Contour:", self.method_combo)
+        form.addRow("OD threshold:", thr_row)
         rl.addLayout(form)
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels([c[1] for c in COLUMNS])
@@ -199,14 +199,14 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.table)
         self.panel = CellPanel(); rl.addWidget(self.panel)
         row2 = QHBoxLayout()
-        self.b_discard = QPushButton("Verwerfen (X)"); self.b_discard.clicked.connect(self.toggle_discard)
-        self.b_redraw = QPushButton("I₀-Felder neu losen (R)"); self.b_redraw.clicked.connect(self.redraw_fields)
-        self.b_delete = QPushButton("Gezeichnete löschen"); self.b_delete.clicked.connect(self.delete_manual)
+        self.b_discard = QPushButton("Discard (X)"); self.b_discard.clicked.connect(self.toggle_discard)
+        self.b_redraw = QPushButton("Redraw I₀ fields (R)"); self.b_redraw.clicked.connect(self.redraw_fields)
+        self.b_delete = QPushButton("Delete drawn"); self.b_delete.clicked.connect(self.delete_manual)
         row2.addWidget(self.b_discard); row2.addWidget(self.b_redraw); row2.addWidget(self.b_delete)
         rl.addLayout(row2)
         row3 = QHBoxLayout()
-        self.b_rerun = QPushButton("Cellpose neu"); self.b_rerun.clicked.connect(self.rerun_cellpose)
-        self.b_done = QPushButton("✔ Bild geprüft (Enter)"); self.b_done.setProperty("class", "primary")
+        self.b_rerun = QPushButton("Rerun Cellpose"); self.b_rerun.clicked.connect(self.rerun_cellpose)
+        self.b_done = QPushButton("✔ Image reviewed (Enter)"); self.b_done.setProperty("class", "primary")
         self.b_done.clicked.connect(self.toggle_reviewed)
         row3.addWidget(self.b_rerun); row3.addWidget(self.b_done, 1)
         rl.addLayout(row3)
@@ -273,12 +273,12 @@ class MainWindow(QMainWindow):
         else:
             self.img = None; self.result = None
             self._set_enabled(False)
-            self.banner.setText("Diese Studie hat keine Bilder – Ordner in den Einstellungen prüfen.")
+            self.banner.setText("This study has no images – check the folders in its settings.")
 
     def _update_study_button(self) -> None:
         done, n = proband_progress(self.images)
         markers = ", ".join(self.study.markers(self.images)) or "–"
-        self.b_study.setText(f"{self.study.name}   ·   {markers}   ·   {done}/{n} Probanden")
+        self.b_study.setText(f"{self.study.name}   ·   {markers}   ·   {done}/{n} subjects")
 
     def _build_chips(self) -> None:
         _clear_layout(self.chip_row)
@@ -286,7 +286,7 @@ class MainWindow(QMainWindow):
         if self.marker not in markers:
             self.marker = ALL_MARKERS
         for m in markers + [ALL_MARKERS]:
-            b = QPushButton(m or "alle"); b.setCheckable(True); b.setProperty("class", "chip")
+            b = QPushButton(m or "all"); b.setCheckable(True); b.setProperty("class", "chip")
             b.setChecked(m == self.marker)
             b.clicked.connect(lambda _=False, mk=m: self._set_marker(mk))
             self.chip_row.addWidget(b)
@@ -309,7 +309,7 @@ class MainWindow(QMainWindow):
             groups.setdefault((info.timepoint, info.proband), []).append(i)
         for (tp, prob), idxs in sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower())):
             grp = self.images[idxs[0]].meta.get("gruppe", "")
-            head = QTreeWidgetItem([f"{tp}  ·  Proband {prob}" + (f"  ·  {grp}" if grp else ""), ""])
+            head = QTreeWidgetItem([f"{tp}  ·  subject {prob}" + (f"  ·  {grp}" if grp else ""), ""])
             f = head.font(0); f.setBold(True); head.setFont(0, f)
             head.setFlags(head.flags() & ~Qt.ItemIsSelectable)
             self.tree.addTopLevelItem(head)
@@ -374,7 +374,7 @@ class MainWindow(QMainWindow):
         self.worker.prioritize(info.path)
         self._set_enabled(True)
         m = info.meta
-        bits = [f"{k}: {m[k]}" for k in ("proband", "gruppe", "zeitpunkt", "zelltyp", "marker", "bildnr") if m.get(k)]
+        bits = [f"{ROLE_LABELS[k].lower()}: {m[k]}" for k in META_ROLES if m.get(k)]
         self.footer.setText(f"{info.path.name}   ·   " + "  ·  ".join(bits))
         self._recompute(fit=True)
 
@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
         if self.selected and self._row(self.selected) is None:
             self.selected = 0
         if not self.selected and self.result.rows:
-            self.selected = self.result.rows[0]["zelle"]
+            self.selected = self.result.rows[0]["cell"]
         self._render_base(fit)
         self.view.set_cells(self.result.labels, self.result.rows, self.selected)
         self._draw_fields()
@@ -402,7 +402,7 @@ class MainWindow(QMainWindow):
 
     def _draw_fields(self) -> None:
         fields = {cid: cm.fields for cid, cm in self.result.cells.items()
-                  if self._row(cid) and self._row(cid)["status"] != "verworfen"}
+                  if self._row(cid) and self._row(cid)["status"] != "discarded"}
         self.view.set_fields(fields, self.study.settings.i0_field_size, self.selected)
 
     def _render_base(self, fit: bool = False) -> None:
@@ -432,55 +432,55 @@ class MainWindow(QMainWindow):
                       (self.cb_only_this, lambda: self.cb_only_this.setChecked(own))):
             w.blockSignals(True); fn(); w.blockSignals(False)
         self.banner.setText(r.note)
-        self.b_done.setText("↺ Prüfung zurücknehmen (Enter)" if self.review.reviewed else "✔ Bild geprüft (Enter)")
+        self.b_done.setText("↺ Undo reviewed (Enter)" if self.review.reviewed else "✔ Image reviewed (Enter)")
 
     def _fill_table(self) -> None:
         rows = self.result.rows
         self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
-        colors = {"verworfen": QColor("#8A8F99"), "ausgeschlossen": QColor("#975E0C")}
+        colors = {"discarded": QColor("#8A8F99"), "excluded": QColor("#975E0C")}
         for i, r in enumerate(rows):
             hint = []
-            if r["manuell"]: hint.append("gezeichnet")
-            if r["randzelle"]: hint.append("Bildrand")
-            if r["debris_verdacht"]: hint.append("Debris?")
-            if r.get("positiv") is not None: hint.append("pos" if r["positiv"] else "neg")
-            if r["grund"] and r["status"] == "ausgeschlossen": hint.append(r["grund"])
-            vals = {**r, "hinweis": ", ".join(hint)}
+            if r["manual"]: hint.append("drawn")
+            if r["edge_cell"]: hint.append("image edge")
+            if r["debris_suspect"]: hint.append("Debris?")
+            if r.get("positive") is not None: hint.append("pos" if r["positive"] else "neg")
+            if r["reason"] and r["status"] == "excluded": hint.append(r["reason"])
+            vals = {**r, "note": ", ".join(hint)}
             for c, (key, _) in enumerate(COLUMNS):
                 v = vals[key]
                 if v is None:
                     text = "–"
-                elif key == "od_fiji":
+                elif key == "od":
                     text = f"{v:.4f}"
                 elif key == "i0":
                     text = f"{v:.1f}"
                 else:
                     text = str(v)
                 it = QTableWidgetItem(text)
-                it.setData(Qt.UserRole, r["zelle"])
+                it.setData(Qt.UserRole, r["cell"])
                 if r["status"] in colors:
                     it.setForeground(colors[r["status"]])
                 self.table.setItem(i, c, it)
-            if r["zelle"] == self.selected:
+            if r["cell"] == self.selected:
                 self.table.selectRow(i)
-        if not any(r["zelle"] == self.selected for r in rows):
+        if not any(r["cell"] == self.selected for r in rows):
             self.table.clearSelection()
         self.table.blockSignals(False)
 
     def _row(self, cid: int) -> dict | None:
-        return next((r for r in self.result.rows if r["zelle"] == cid), None) if self.result else None
+        return next((r for r in self.result.rows if r["cell"] == cid), None) if self.result else None
 
     def _update_detail(self) -> None:
         r = self._row(self.selected)
         self.b_discard.setEnabled(r is not None)
         self.b_redraw.setEnabled(r is not None)
-        self.b_delete.setEnabled(bool(r and r["manuell"]))
+        self.b_delete.setEnabled(bool(r and r["manual"]))
         if r is None:
             self.panel.show_cell(None)
             return
-        self.b_discard.setText("Zurückholen (X)" if r["status"] == "verworfen" else "Verwerfen (X)")
-        self.panel.show_cell(r, self.result.cells.get(r["zelle"]), self.result.gray,
+        self.b_discard.setText("Restore (X)" if r["status"] == "discarded" else "Discard (X)")
+        self.panel.show_cell(r, self.result.cells.get(r["cell"]), self.result.gray,
                              self.result.labels, self.study.settings)
 
     def _update_status(self) -> None:
@@ -488,10 +488,10 @@ class MainWindow(QMainWindow):
             self.status.setText("")
             return
         pend = self.worker.pending() + len(self.running)
-        cp = f"Cellpose: {pend} offen" if pend else "Cellpose: fertig"
+        cp = f"Cellpose: {pend} to go" if pend else "Cellpose: done"
         pos = self.visible.index(self.idx) + 1 if self.idx in self.visible else 0
         kept = sum(r["status"] == STATUS_KEPT for r in self.result.rows) if self.result else 0
-        self.status.setText(f"Bild {pos}/{len(self.visible)} · {kept} Zelle(n) gewertet · {cp}")
+        self.status.setText(f"Image {pos}/{len(self.visible)} · {kept} cell(s) kept · {cp}")
 
     # ── review edits ────────────────────────────────────────
     def _edit(self, fn) -> None:
@@ -532,17 +532,17 @@ class MainWindow(QMainWindow):
         if not r:
             return
         def fn(rv: Review):
-            if r["zelle"] in rv.discarded:
-                rv.discarded.remove(r["zelle"])
+            if r["cell"] in rv.discarded:
+                rv.discarded.remove(r["cell"])
             else:
-                rv.discarded.append(r["zelle"])
+                rv.discarded.append(r["cell"])
         self._edit(fn)
 
     def redraw_fields(self) -> None:
         r = self._row(self.selected)
         if not r:
             return
-        key = str(r["zelle"])
+        key = str(r["cell"])
         def fn(rv: Review):
             rv.i0_fields.pop(key, None)
             rv.i0_seed[key] = int(rv.i0_seed.get(key, 0)) + 1
@@ -552,9 +552,9 @@ class MainWindow(QMainWindow):
         """Tool 3: move the selected cell's nearest I₀ field to the click."""
         r = self._row(self.selected)
         if not r:
-            QMessageBox.information(self, "I₀-Feld", "Erst eine Zelle auswählen (Werkzeug 1), dann ihre Felder setzen.")
+            QMessageBox.information(self, "I₀ field", "Select a cell first (tool 1), then set its fields.")
             return
-        cm = self.result.cells.get(r["zelle"])
+        cm = self.result.cells.get(r["cell"])
         fields = [list(p) for p in (cm.fields if cm else [])]
         n = self.study.settings.i0_fields
         if len(fields) < n:
@@ -562,7 +562,7 @@ class MainWindow(QMainWindow):
         else:
             k = min(range(len(fields)), key=lambda j: (fields[j][0] - x) ** 2 + (fields[j][1] - y) ** 2)
             fields[k] = [round(x, 1), round(y, 1)]
-        key = str(r["zelle"])
+        key = str(r["cell"])
         self._edit(lambda rv: rv.i0_fields.__setitem__(key, fields))
 
     def add_manual(self, pts: list) -> None:
@@ -574,10 +574,10 @@ class MainWindow(QMainWindow):
 
     def delete_manual(self) -> None:
         r = self._row(self.selected)
-        if not (r and r["manuell"]):
+        if not (r and r["manual"]):
             return
-        k = r["zelle"] - MANUAL_ID_BASE
-        cid = r["zelle"]
+        k = r["cell"] - MANUAL_ID_BASE
+        cid = r["cell"]
         def fn(rv: Review):
             rv.manual.pop(k)
             # later drawn cells shift down one id
@@ -675,26 +675,26 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted:
             return
         from ..export import export_study
-        prog = QProgressDialog("Exportiere …", None, 0, len(self.images), self)
+        prog = QProgressDialog("Exporting …", None, 0, len(self.images), self)
         prog.setWindowModality(Qt.WindowModal); prog.setMinimumDuration(0)
 
         def step(i, n, name):
-            prog.setValue(i); prog.setLabelText(f"Exportiere {name} ({min(i + 1, n)}/{n})")
+            prog.setValue(i); prog.setLabelText(f"Exporting {name} ({min(i + 1, n)}/{n})")
             QApplication.processEvents()
         try:
             info = export_study(self.study, dlg.only_reviewed.isChecked(), dlg.with_excluded.isChecked(),
                                 step, self.images)
         except Exception as e:  # noqa: BLE001
             prog.close()
-            QMessageBox.critical(self, "Export fehlgeschlagen", f"{type(e).__name__}: {e}")
+            QMessageBox.critical(self, "Export failed", f"{type(e).__name__}: {e}")
             return
         prog.setValue(len(self.images))
         notes = "\n".join(info["notes"][:15])
         QMessageBox.information(
-            self, "Export fertig",
-            f"{info['n_cells']} gewertete Zellen aus {info['n_images']} Bildern"
-            + (f" ({info['skipped']} ungeprüfte übersprungen)" if info["skipped"] else "")
-            + f".\n\n{info['folder']}" + (f"\n\nHinweise:\n{notes}" if notes else ""))
+            self, "Export done",
+            f"{info['n_cells']} kept cells from {info['n_images']} images"
+            + (f" ({info['skipped']} not reviewed, skipped)" if info["skipped"] else "")
+            + f".\n\n{info['folder']}" + (f"\n\nNotes:\n{notes}" if notes else ""))
 
     def closeEvent(self, e):
         self.worker.shutdown()
@@ -709,29 +709,29 @@ class ExportDialog(QDialog):
         self.setWindowTitle("Export")
         self.resize(640, 360)
         l = QVBoxLayout(self); l.setSpacing(10)
-        head = QLabel(f"<b>{study.name}</b> – nach <code>outputs/nkreview_&lt;Zeit&gt;/</code> im ersten Ordner der Studie")
+        head = QLabel(f"<b>{study.name}</b> – to <code>outputs/nkreview_&lt;time&gt;/</code> in the study's first folder")
         head.setWordWrap(True); l.addWidget(head)
-        l.addWidget(QLabel("• zellen.csv – 1 Zeile pro Zelle (Long-Format für R)\n"
-                           "• zusammenfassung.csv – Proband × Zeitpunkt × Marker\n"
-                           "• einstellungen.json – Studie mit allen Parametern\n"
-                           "• overlays/ – PNG je Bild · nk_export.xlsx – beide Tabellen"))
-        self.only_reviewed = QCheckBox("nur geprüfte Bilder"); self.only_reviewed.setChecked(True)
-        self.with_excluded = QCheckBox("verworfene und ausgeschlossene Zellen mitschreiben (markiert)")
+        l.addWidget(QLabel("• cells.csv – one row per cell (long format for R)\n"
+                           "• summary.csv – subject × group × timepoint × marker\n"
+                           "• settings.json – the study with every parameter\n"
+                           "• overlays/ – PNG per image · nk_export.xlsx – both tables"))
+        self.only_reviewed = QCheckBox("reviewed images only"); self.only_reviewed.setChecked(True)
+        self.with_excluded = QCheckBox("include discarded and excluded cells (flagged)")
         l.addWidget(self.only_reviewed); l.addWidget(self.with_excluded)
         no_cp = sum(not has_cellpose_cache(i.folder, i.path, study.settings.cellpose) for i in images)
         not_rev = sum(not Review.load(i.folder, i.path).reviewed for i in images)
         warn = []
         if no_cp:
-            warn.append(f"{no_cp} Bild(er) ohne Cellpose (würden nur mit der OD-Schwelle gemessen)")
+            warn.append(f"{no_cp} image(s) without Cellpose (would be measured with the OD threshold only)")
         if not_rev:
-            warn.append(f"{not_rev} Bild(er) noch nicht geprüft")
+            warn.append(f"{not_rev} image(s) not reviewed yet")
         if warn:
-            w = QLabel("Vor dem Export:  " + " · ".join(warn), objectName="banner"); w.setWordWrap(True)
+            w = QLabel("Before exporting:  " + " · ".join(warn), objectName="banner"); w.setWordWrap(True)
             l.addWidget(w)
         l.addStretch(1)
         row = QHBoxLayout(); row.addStretch(1)
-        b_c = QPushButton("Abbrechen"); b_c.clicked.connect(self.reject)
-        b_ok = QPushButton("Exportieren", objectName="export"); b_ok.clicked.connect(self.accept)
+        b_c = QPushButton("Cancel"); b_c.clicked.connect(self.reject)
+        b_ok = QPushButton("Export", objectName="export"); b_ok.clicked.connect(self.accept)
         row.addWidget(b_c); row.addWidget(b_ok)
         l.addLayout(row)
 
@@ -761,6 +761,9 @@ def make_app(argv=None) -> QApplication:
     unhide_qt_plugins()
     app = QApplication.instance() or QApplication(argv or sys.argv)
     app.setStyle("Fusion")
+    # English UI: decimal point in every number field, whatever the system language.
+    from PySide6.QtCore import QLocale
+    QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
     apply_look(app)
     return app
 

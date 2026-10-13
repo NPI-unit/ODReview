@@ -25,9 +25,9 @@ from .segment import (
 )
 from .state import I0_RELATIVE, MANUAL_ID_BASE, Review, Settings
 
-STATUS_KEPT = "gewertet"
-STATUS_DISCARDED = "verworfen"
-STATUS_EXCLUDED = "ausgeschlossen"
+STATUS_KEPT = "kept"
+STATUS_DISCARDED = "discarded"
+STATUS_EXCLUDED = "excluded"
 
 
 @dataclass
@@ -49,7 +49,7 @@ def _contours(img, s: Settings, rv: Review, cp: np.ndarray | None,
     """(labels, method actually used, background, smoothed total OD, note)."""
     note = ""
     if method in (METHOD_HYBRID, METHOD_CELLPOSE) and cp is None:
-        method, note = METHOD_THRESHOLD, "Cellpose noch nicht gelaufen – OD-Schwelle verwendet"
+        method, note = METHOD_THRESHOLD, "Cellpose has not run yet – OD threshold used"
     # I₀ first from a provisional mask (Cellpose, or a rough threshold on an
     # image-median I₀), then the contour from the OD that I₀ defines.
     if cp is not None:
@@ -142,55 +142,55 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
         if s.i0_check == I0_RELATIVE:
             cm.i0_ok = dev is not None and abs(dev) <= s.i0_rel_pct
         if cid in discarded:
-            status, reason = STATUS_DISCARDED, "von Hand"
+            status, reason = STATUS_DISCARDED, "by hand"
         elif cm.i0 is None:
-            status, reason = STATUS_EXCLUDED, "kein Hintergrund neben der Zelle"
+            status, reason = STATUS_EXCLUDED, "no background next to the cell"
         elif not cm.i0_ok and s.i0_check == I0_RELATIVE:
             status, reason = STATUS_EXCLUDED, (
-                "kein freier Hintergrund im Bild" if dev is None
-                else f"I₀ {cm.i0:.1f} weicht {dev:+.1f} % vom Hintergrund ab")
+                "no free background in the image" if dev is None
+                else f"I₀ {cm.i0:.1f} deviates {dev:+.1f} % from the background")
         elif not cm.i0_ok:
-            status, reason = STATUS_EXCLUDED, f"I₀ {cm.i0:.1f} außerhalb {s.i0_min:g}–{s.i0_max:g}"
+            status, reason = STATUS_EXCLUDED, f"I₀ {cm.i0:.1f} outside {s.i0_min:g}–{s.i0_max:g}"
         else:
             status, reason = STATUS_KEPT, ""
         row = {
-            "zelle": cid,
+            "cell": cid,
             "status": status,
-            "grund": reason,
-            "verworfen": cid in discarded,
-            "manuell": manual,
-            "kontur": "manuell" if manual else used,
-            "flaeche_px": n,
+            "reason": reason,
+            "discarded": cid in discarded,
+            "manual": manual,
+            "contour": "manual" if manual else used,
+            "area_px": n,
             "x": round(float(xs.mean() + sl[1].start), 1),
             "y": round(float(ys.mean() + sl[0].start), 1),
-            "randzelle": bool(sl[0].start == 0 or sl[1].start == 0 or sl[0].stop == H or sl[1].stop == W),
-            "od_fiji": _r(cm.od),
+            "edge_cell": bool(sl[0].start == 0 or sl[1].start == 0 or sl[0].stop == H or sl[1].stop == W),
+            "od": _r(cm.od),
             "i0": _r(cm.i0, 2),
             "i0_ok": cm.i0_ok,
-            "i0_hintergrund": _r(i0_ref, 2),
-            "i0_abw_pct": _r(dev, 2),
-            "positiv": (None if s.pos_threshold <= 0 or cm.od is None
+            "i0_background": _r(i0_ref, 2),
+            "i0_dev_pct": _r(dev, 2),
+            "positive": (None if s.pos_threshold <= 0 or cm.od is None
                         else bool(cm.od > s.pos_threshold)),
-            "mittel_grau": _r(cm.mean_gray, 2),
+            "mean_gray": _r(cm.mean_gray, 2),
             "pixel_od_mean": _r(cm.pix_mean),
             "pixel_od_sd": _r(cm.pix_sd),
             "pixel_od_median": _r(cm.pix_median),
             "pixel_od_p5": _r(cm.pix_p5),
             "pixel_od_p95": _r(cm.pix_p95),
-            "anteil_od_ueber": _r(cm.share_high),
+            "share_od_above": _r(cm.share_high),
         }
         for k in range(s.i0_fields):
-            row[f"i0_feld{k + 1}"] = cm.field_means[k] if k < len(cm.field_means) else None
+            row[f"i0_field{k + 1}"] = cm.field_means[k] if k < len(cm.field_means) else None
         for k in range(PROFILE_RINGS):
-            row[f"profil_r{k + 1}"] = _r(cm.profile[k])
+            row[f"profile_r{k + 1}"] = _r(cm.profile[k])
         row.update({
             "dab_od_mean": _r(dab.mean()),
             "dab_iod": _r(dab.sum(), 1),
-            "gesamt_od_mean": _r(t.mean()),
-            "kanal_h_od_mean": _r(h_mean),
-            "ring_i0_abweichung_pct": None if ring_dev is None else round(ring_dev, 2),
-            "debris_verdacht": bool(s.debris_h > 0 and h_mean >= s.debris_h),
-            "schwelle_od": thr,
+            "total_od_mean": _r(t.mean()),
+            "h_channel_od_mean": _r(h_mean),
+            "ring_i0_dev_pct": None if ring_dev is None else round(ring_dev, 2),
+            "debris_suspect": bool(s.debris_h > 0 and h_mean >= s.debris_h),
+            "threshold_od": thr,
         })
         res.rows.append(row)
     return res

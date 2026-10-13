@@ -86,7 +86,7 @@ class ImageView(QGraphicsView):
             self.scene().removeItem(text)
         self._cell_items.clear()
         self._labels = labels
-        by_id = {r["zelle"]: r for r in rows}
+        by_id = {r["cell"]: r for r in rows}
         objs = ndi.find_objects(labels)
         f = QFont(); f.setPointSize(11); f.setBold(True)
         for cid, r in by_id.items():
@@ -106,21 +106,21 @@ class ImageView(QGraphicsView):
 
     @staticmethod
     def _caption(r: dict) -> str:
-        od = "–" if r["od_fiji"] is None else f'{r["od_fiji"]:.3f}'
-        warn = " ⚠" if r["status"] == "ausgeschlossen" or r["debris_verdacht"] or r["randzelle"] else ""
-        return f'#{r["zelle"]}  {od}{warn}'
+        od = "–" if r["od"] is None else f'{r["od"]:.3f}'
+        warn = " ⚠" if r["status"] == "excluded" or r["debris_suspect"] or r["edge_cell"] else ""
+        return f'#{r["cell"]}  {od}{warn}'
 
     def restyle(self, rows: list[dict], selected: int) -> None:
         for r in rows:
-            items = self._cell_items.get(r["zelle"])
+            items = self._cell_items.get(r["cell"])
             if not items:
                 continue
             p, t = items
-            if r["zelle"] == selected:
+            if r["cell"] == selected:
                 col, width, style = self.colors["sel"], 2.5, Qt.SolidLine
-            elif r["status"] == "verworfen":
+            elif r["status"] == "discarded":
                 col, width, style = self.colors["gone"], 1.5, Qt.DashLine
-            elif r["status"] == "ausgeschlossen":
+            elif r["status"] == "excluded":
                 col, width, style = self.colors["warn"], 1.5, Qt.DashLine
             else:
                 col, width, style = self.colors["keep"], 2.0, Qt.SolidLine

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 — 2026-10-13
+
+- **English** throughout: interface, status values (kept / discarded / excluded), export files (`cells.csv`, `summary.csv`, `settings.json`) and column names (`subject`, `group`, `od`, …). Number fields use a decimal point. Stored study and template files keep their keys, so existing studies open unchanged.
+- **Smaller study assistant** (900 × 640, never more than 90 % of the screen); the measurement page has two columns and scrolls.
+- **Folder tree** when adding image folders: sub-folders with image counts, the images, other files; `.nk_cache` and `outputs` shown as skipped.
+
 ## 0.3.0 — 2026-10-13
 
 - **Vorlagen:** „Als Vorlage speichern“ in der Studienübersicht; im Assistenten „Neue Studie“ ganz oben wählbar. Übernommen werden Ziel, Dateinamen-Schema und alle Messparameter – nicht Name, Ordner, Gruppen.

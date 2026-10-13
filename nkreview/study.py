@@ -44,18 +44,22 @@ ROLE_DATE = "datum"
 ROLE_IGNORE = "ignorieren"
 ROLES = [ROLE_PROBAND, ROLE_GROUP, ROLE_TIMEPOINT, ROLE_CELLTYPE, ROLE_MARKER,
          ROLE_DATE, ROLE_IMAGE_NUM, ROLE_IGNORE]
-ROLE_LABELS = {ROLE_PROBAND: "Proband", ROLE_GROUP: "Gruppe", ROLE_TIMEPOINT: "Zeitpunkt",
-               ROLE_CELLTYPE: "Zelltyp", ROLE_MARKER: "Marker", ROLE_DATE: "Datum",
-               ROLE_IMAGE_NUM: "Bildnummer", ROLE_IGNORE: "ignorieren"}
+ROLE_LABELS = {ROLE_PROBAND: "Subject", ROLE_GROUP: "Group", ROLE_TIMEPOINT: "Timepoint",
+               ROLE_CELLTYPE: "Cell type", ROLE_MARKER: "Marker", ROLE_DATE: "Date",
+               ROLE_IMAGE_NUM: "Image no.", ROLE_IGNORE: "ignore"}
 META_ROLES = [r for r in ROLES if r != ROLE_IGNORE]
+# Role keys are stored in study files (German); exports and the UI use these.
+ROLE_COLUMNS = {ROLE_PROBAND: "subject", ROLE_GROUP: "group", ROLE_TIMEPOINT: "timepoint",
+                ROLE_CELLTYPE: "cell_type", ROLE_MARKER: "marker", ROLE_DATE: "date",
+                ROLE_IMAGE_NUM: "image_no"}
 CANDIDATE_DELIMS = [" ", "_", "-", "."]
 
-TARGET_CELL = "zelle"           # whole cell (NK): Cellpose on RGB
+TARGET_CELL = "zelle"          # stored value (kept German); whole cell (NK): Cellpose on RGB
 TARGET_NUCLEUS = "kern"         # nucleus (C2C12 Ki67): Cellpose on the DAB map
-TARGET_LABELS = {TARGET_CELL: "ganze Zelle", TARGET_NUCLEUS: "Zellkern"}
+TARGET_LABELS = {TARGET_CELL: "whole cell", TARGET_NUCLEUS: "nucleus"}
 
-NO_TIMEPOINT = "ohne Zeitpunkt"
-NO_PROBAND = "ohne Proband"
+NO_TIMEPOINT = "no timepoint"
+NO_PROBAND = "no subject"
 
 
 # ─────────────────────────────────────────────
@@ -248,7 +252,7 @@ class Study:
     @classmethod
     def from_dict(cls, d: dict, file: str = "") -> "Study":
         return cls(
-            name=d.get("name", "Studie"),
+            name=d.get("name", "Study"),
             folders=list(d.get("folders", [])),
             delimiters=list(d.get("delimiters", [" ", "_"])),
             roles=list(d.get("roles", [])),

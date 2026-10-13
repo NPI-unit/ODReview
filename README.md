@@ -1,77 +1,77 @@
 # NKReview
 
-Desktop-Tool zur **optischen Dichte (DAB) von NK-Zellen** in RGB-Hellfeld-Bildern.
-Abgeleitet von ErysReview @ 3cacb26 (Qt-Oberfläche, Look, Installer) – die Mess-Schicht ist neu.
+Desktop tool for the **optical density of cells and nuclei** in RGB brightfield images (DAB immunohistochemistry: NK cells 5mC/5hmC, C2C12 Ki67).
+Derived from ErysReview @ 3cacb26 (Qt interface, look, installer) – the measuring layer is new.
 
-## Ablauf
+## Workflow
 
-1. **Studie wählen oder anlegen.** Der Assistent „Neue Studie“ hat vier Schritte:
-   - **Ordner und Ziel:** Name, ein oder mehrere Bildordner, Ziel *ganze Zelle* (NK) oder *Zellkern* (z. B. C2C12 Ki67).
-   - **Dateinamen:** Trennzeichen und eine Rolle pro Namensteil (Proband, Gruppe, Zeitpunkt, Zelltyp, Marker, Bildnummer, ignorieren), mit Live-Vorschau; Dateien mit abweichender Teilezahl stehen oben in Rot.
-   - **Messung:** I₀-Regel, Grauwert, Kontur und Gruppen je Proband.
-   - **Fertig.**
-2. **Cellpose läuft im Hintergrund**, das angezeigte Bild zuerst.
-3. **Durchsehen:** Bildbaum nach Zeitpunkt · Proband, Filter nach Marker. Pro Zelle siehst du OD, I₀-Felder, OD-Karte, radiales Profil und die Verteilung der Pixel-OD. Du kannst Zellen verwerfen, Konturen zeichnen und I₀-Felder versetzen oder neu losen; Enter markiert ein Bild als geprüft.
-4. **Export:** `outputs/nkreview_<Zeit>/` im ersten Ordner der Studie.
+1. **Choose or create a study.** The “New study” assistant has four steps:
+   - **Folders and target:** optional template, name, one or more image folders (shown as a tree with sub-folders and images), target *whole cell* (NK) or *nucleus* (e.g. C2C12 Ki67).
+   - **File names:** delimiters and one role per name part (subject, group, timepoint, cell type, marker, date, image no., ignore) with a live preview; files with a different number of parts are listed first in red. Dates (2026-08-27, 27.08.2026, 10.02.26) always stay one part.
+   - **Measurement:** grey value, I₀ rule, contour, cut-offs, groups per subject.
+   - **Done.**
+2. **Cellpose runs in the background**, the image on screen first.
+3. **Review:** image tree by timepoint · subject, filter by marker. Per cell: OD, I₀ fields, OD map, radial profile and the distribution of pixel OD. Discard cells, draw contours, move or redraw I₀ fields; Enter marks an image as reviewed.
+4. **Export:** `outputs/nkreview_<time>/` in the study's first folder.
 
-## Vorlagen
+## Templates
 
-Eine Studie lässt sich als Vorlage speichern (Studienübersicht › „Als Vorlage speichern“). Im Assistenten „Neue Studie“ füllt eine Vorlage Ziel, Dateinamen-Schema und alle Messparameter vor; Name, Ordner und Gruppen gehören zu jeder Studie neu. Vorlagen liegen unter `~/Library/Application Support/NKReview/vorlagen/`.
+A study can be saved as a template (Studies › “Save as template”). In “New study” a template fills in target, file-name scheme and every measurement setting; name, folders and groups belong to each study. Templates live in `~/Library/Application Support/NKReview/vorlagen/`.
 
-**C2C12 Kern 20×** (am Pilot NewPilot_27082026_Zheng ermittelt): Kerne über die DAB-Karte, Kontur „Nur Cellpose“, Mindestfläche 500 px, I₀-Felder 40–90 px neben dem Kern, I₀ relativ ±3 %, positiv ab Grau-OD 0,01 (Rauschgrenze; 99,9 % der Schein-Kerne auf Hintergrund < 0,006). Ki67-negative Kerne sind ohne Gegenfärbung nicht automatisch erkennbar → von Hand zeichnen (Werkzeug 2).
+**C2C12 nucleus 20×** (derived from the pilot NewPilot_27082026_Zheng): nuclei found on the DAB map, contour “Cellpose only”, min. area 500 px, I₀ fields 40–90 px from the nucleus, I₀ relative ±3 %, positive above grey OD 0.01 (noise floor; 99.9 % of pseudo-nuclei on background < 0.006). Ki67-negative nuclei cannot be found automatically without a counterstain → draw them by hand (tool 2).
 
-## Messprinzip (wie im Methodenteil)
+## Measurement (as in the method section)
 
-| Schritt | Verfahren |
+| Step | Method |
 |---|---|
-| Grauwert | ImageJ-Standard (R+G+B)/3, gerundet (alternativ gewichtet 0,299/0,587/0,114) |
-| I₀ je Zelle | Mittel von 3 Feldern à 9×9 = 81 px, zufällig 14–40 px neben der Kontur, nicht auf Zellen oder gefärbtem Debris. Reproduzierbar geseedet; per Werkzeug 3 versetzbar, mit R neu losbar. |
-| Gültigkeit | fest: I₀ außerhalb 210–220 → **ausgeschlossen** (nicht gelöscht) · oder relativ: I₀ weicht mehr als ±x % vom freien Hintergrund des Bildes ab (für unterschiedlich belichtete Serien) |
-| Positiv | optional: Grau-OD > Grenze → `positiv` (Zusammenfassung `n_positiv`, `anteil_positiv`) |
-| OD | −log₁₀(Ī / I₀), Ī = mittlerer Grauwert in der Kontur (OD des Mittelwerts, wie Fiji) |
-| Verteilung | Pixel-OD mean/SD/median/p5/p95, Anteil > 0,3, radiales Profil in 5 Ringen vom Zentrum zur Membran |
-| Kontur | Ganze Zelle: Hybrid (Cellpose auf RGB, Rand aus Gesamt-OD > 0,05). Zellkern: Cellpose auf der DAB-Karte. Backup: reine OD-Schwelle; manuell zeichnen jederzeit |
-| Vorfilter | Cellpose nur auf Ausschnitten um DAB-positive Bereiche (bei dichten Bildern automatisch ganzes Bild) |
-| Zusatz | DAB-OD (Ruifrok–Johnston „H DAB“), Gesamt-OD aus RGB, Ring-I₀-Kontrolle, Debris-Verdacht (H-Kanal ≥ 0,04, nur Kern-Studien) |
+| Grey value | ImageJ default (R+G+B)/3, rounded (or weighted 0.299/0.587/0.114) |
+| I₀ per cell | Mean of 3 fields of 9×9 = 81 px, at random 14–40 px from the contour (nuclei: 40–90 px), not on cells or stained debris. Seeded, so reproducible; move with tool 3, redraw with R. |
+| Validity | fixed: I₀ outside 210–220 → **excluded** (not deleted) · or relative: I₀ deviates more than ±x % from the image's free background (series with different exposure) |
+| OD | −log₁₀(Ī / I₀), Ī = mean grey value inside the contour (OD of the mean, as Fiji) |
+| Positive | optional: grey OD > cut-off → `positive` (summary `n_positive`, `share_positive`) |
+| Distribution | pixel OD mean/SD/median/p5/p95, share above 0.3, radial profile in 5 rings from centre to membrane |
+| Contour | Whole cell: hybrid (Cellpose on RGB, edge from total OD > 0.05). Nucleus: Cellpose on the DAB map. Backup: OD threshold only; drawing by hand always possible |
+| Pre-filter | Cellpose only on crops around DAB-positive regions (dense images: whole image) |
+| Extra | DAB OD (Ruifrok–Johnston “H DAB”), total RGB OD, ring-I₀ control, debris flag (H channel ≥ 0.04, nucleus studies) |
 
-Offen: das Makro aus Appendix E. Bis dahin gelten ImageJs Standard-Graukonversion und „80 pixels“ als Fläche 9×9.
+Open: the macro from Appendix E. Until then ImageJ's default grey conversion is used and “80 pixels” is read as a 9×9 area.
 
 ### Export
 
-| Datei | Inhalt |
+| File | Content |
 |---|---|
-| `zellen.csv` | 1 Zeile pro Zelle (Long-Format für R): Rollen aus dem Dateinamen, `status` (gewertet / verworfen / ausgeschlossen) + `grund`, `od_fiji`, `i0`, `i0_feld1…3`, `i0_ok`, Pixel-OD-Statistik, `profil_r1…r5`, `dab_od_mean`, `gesamt_od_mean`, `debris_verdacht`, `kontur` |
-| `zusammenfassung.csv` | Proband × Gruppe × Zeitpunkt × Zelltyp × Marker: n Bilder, n Zellen, `od_fiji` mean/SD/median (nur gewertete Zellen) |
-| `einstellungen.json` | die Studie mit allen Parametern, App-Version, Export-Optionen |
-| `overlays/` | PNG je Bild: Konturen nach Status, I₀-Felder, OD |
-| `nk_export.xlsx` | beide Tabellen als Blätter |
+| `cells.csv` | one row per cell (long format for R): `subject`, `group`, `timepoint`, `cell_type`, `marker`, `date`, `image_no`, `image`, `status` (kept / discarded / excluded) + `reason`, `od`, `i0`, `i0_field1…3`, `i0_ok`, `i0_background`, `i0_dev_pct`, `positive`, pixel OD statistics, `profile_r1…r5`, `dab_od_mean`, `total_od_mean`, `debris_suspect`, `contour` |
+| `summary.csv` | subject × group × timepoint × cell type × marker: `n_images`, `n_cells`, `od_mean`/`od_sd`/`od_median`, `n_positive`, `share_positive` (kept cells only) |
+| `settings.json` | the study with every parameter, app version, export options |
+| `overlays/` | PNG per image: contours by status, I₀ fields, OD |
+| `nk_export.xlsx` | both tables as sheets |
 
-## Bedienung
+## Keys
 
-| Taste | Aktion |
+| Key | Action |
 |---|---|
-| ← / → | vorheriges / nächstes Bild |
-| 1 / 2 / 3 | Auswählen · Kontur zeichnen (freihand) · I₀-Feld setzen (verschiebt das nächste Feld der gewählten Zelle) |
-| X / Entf | Zelle verwerfen / zurückholen |
-| R | I₀-Felder der Zelle neu losen |
-| Enter | Bild als geprüft markieren |
-| D | Ansicht: Original → Grau-OD → DAB-Kanal |
-| O / I | Konturen / I₀-Felder an/aus |
-| F | einpassen · ⌘Z rückgängig · Mausrad Zoom |
+| ← / → | previous / next image |
+| 1 / 2 / 3 | select · draw contour (freehand) · set I₀ field (moves the selected cell's nearest field) |
+| X / Del | discard / restore cell |
+| R | redraw the cell's I₀ fields |
+| Enter | mark image as reviewed |
+| D | view: original → grey OD → DAB channel |
+| O / I | contours / I₀ fields on/off |
+| F | fit · ⌘Z undo · mouse wheel zoom |
 
-## Daten
+## Data
 
-Studien liegen als JSON unter `~/Library/Application Support/NKReview/studien/`. Pro Bildordner speichert `.nk_cache/` die Cellpose-Masken (mit den Parametern, die sie erzeugt haben; geänderte Parameter → neu rechnen) und `<bild>_review.json` (verworfen, gezeichnet, I₀-Felder, geprüft).
+Studies are JSON files in `~/Library/Application Support/NKReview/studien/`. Each image folder keeps `.nk_cache/` with the Cellpose masks (with the parameters that made them; changed parameters → recomputed) and `<image>_review.json` (discarded, drawn, I₀ fields, reviewed).
 
-## Installation / Start
+## Install / start
 
-macOS: `install.command` doppelklicken (legt `.venv` an, wie bei ErysReview), danach `run.command` oder NKReview auf dem Schreibtisch.
-Windows: `install.bat` (eigene conda-Umgebung `nkreview`), dann `run.bat`. Unter Windows bisher ungetestet.
+macOS: double-click `install.command` (creates `.venv`, as in ErysReview), then `run.command` or NKReview on the Desktop.
+Windows: `install.bat` (own conda env `nkreview`), then `run.bat`. Not tested on Windows yet.
 
 Tests: `./.venv/bin/python tests/test_core.py`
 
-## Bekannte Grenzen
+## Known limits
 
-- Cellpose-SAM: Ein **kleinerer** Durchmesser verliert die Zelle (das Bild wird hochskaliert); `cellprob < 0` bläht die Maske nur auf. Am Testbild getestet, deshalb bleibt der Standard-Durchmesser.
-- Cellpose-SAM liefert auf Ausschnitten, deren Seiten keine Vielfachen von 16 sind, keine Masken. Deshalb das Auffüllen (cellpose 4.1.1).
-- Sich berührende, stark gefärbte Zellen: Der DAB-Vorfilter fasst sie zu einem Ausschnitt zusammen; Cellpose trennt sie dort wie gewohnt.
+- Cellpose-SAM: a **smaller** diameter loses the cell (the image is upscaled); `cellprob < 0` only inflates the mask. Tested on the NK test image, so the default diameter stays.
+- Cellpose-SAM returns no masks on crops whose sides are not multiples of 16 – hence the padding (cellpose 4.1.1).
+- Unstained nuclei are not visible in brightfield without a counterstain; on the C2C12 pilot no Cellpose input found them reliably.
