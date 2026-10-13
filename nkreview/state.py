@@ -89,6 +89,7 @@ class Review:
     reviewed: bool = False
     i0_fields: dict = field(default_factory=dict)       # "cid" -> [[x, y], …] set by hand
     i0_seed: dict = field(default_factory=dict)         # "cid" -> n (re-drawn n times)
+    display: dict | None = None                         # brightness/contrast/gamma, view only
 
     @staticmethod
     def path(folder: Path, image: Path) -> Path:

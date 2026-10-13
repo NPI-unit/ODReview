@@ -141,6 +141,9 @@ class MainWindow(QMainWindow):
         tl.addStretch(1)
         self.status = QLabel(""); self.status.setObjectName("caption")
         tl.addWidget(self.status)
+        b_br = QPushButton("☀︎"); b_br.setToolTip("Brightness & contrast – display only (B)")
+        b_br.setProperty("class", "icon"); b_br.clicked.connect(self.adjust_display)
+        tl.addWidget(b_br)
         b_set = QPushButton("⚙"); b_set.setToolTip("Study settings (⌘,)")
         b_set.setProperty("class", "icon"); b_set.clicked.connect(self.open_settings)
         tl.addWidget(b_set)
@@ -170,6 +173,7 @@ class MainWindow(QMainWindow):
         self.view.cellClicked.connect(self.select_cell)
         self.view.polygonDrawn.connect(self.add_manual)
         self.view.i0Clicked.connect(self.place_i0_field)
+        self.view.menuRequested.connect(self._image_menu)
         self.banner = QLabel("", objectName="banner"); self.banner.setWordWrap(True)
         self.footer = QLabel("", objectName="caption")
         centre = QWidget(); cl = QVBoxLayout(centre); cl.setContentsMargins(0, 0, 0, 0)
@@ -245,6 +249,7 @@ class MainWindow(QMainWindow):
             Qt.Key_I: lambda: self.cb_fields.toggle(),
             Qt.Key_Return: self.toggle_reviewed, Qt.Key_Enter: self.toggle_reviewed,
             Qt.Key_F: lambda: self.view.fit(), Qt.Key_Escape: lambda: self.select_cell(0),
+            Qt.Key_B: self.adjust_display,
         }
         for key, fn in keys.items():
             QShortcut(QKeySequence(key), self, activated=fn)
@@ -354,7 +359,8 @@ class MainWindow(QMainWindow):
             return
         info = self.images[i]
         st = self._status_of(i)
-        it.setText(0, f"{st}  {info.path.name}")
+        sun = "  ☀︎" if Review.load(info.folder, info.path).display else ""
+        it.setText(0, f"{st}  {info.path.name}{sun}")
         it.setToolTip(0, self.failed.get(str(info.path), str(info.path)))
         it.setText(1, info.marker)
 
@@ -421,6 +427,10 @@ class MainWindow(QMainWindow):
     def _render_base(self, fit: bool = False) -> None:
         if self.view_mode == "rgb" or self.result is None:
             rgb = self.img.astype(np.uint8)
+            if self.review.display:                       # brightness/contrast/gamma: view only
+                from .. import display_adjust as da
+                adj = da.apply(rgb.astype(np.float32) / 255.0, self.review.display)
+                rgb = (adj * 255.0 + 0.5).astype(np.uint8)
         else:
             if self.view_mode == "dab":
                 ch = self.result.stains[..., 1]
@@ -679,6 +689,51 @@ class MainWindow(QMainWindow):
         self.failed[path] = msg
         self._refresh_item(self._index_of(path))
         self._update_status()
+
+    # ── brightness & contrast (display only) ────────────────
+    def _image_menu(self) -> None:
+        if self.img is None:
+            return
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction("☀︎  Brightness & contrast …", self.adjust_display)
+        reset = m.addAction("Reset brightness", self.reset_display)
+        reset.setEnabled(bool(self.review.display))
+        m.exec(QCursor.pos())
+
+    def adjust_display(self) -> None:
+        if self.img is None:
+            return
+        from .brightness import BrightnessDialog
+        cur = self.images[self.idx]
+        same = [i for i in self.images if (i.proband, i.timepoint) == (cur.proband, cur.timepoint)]
+        label = f"subject {cur.proband} · {cur.timepoint}"
+        dlg = BrightnessDialog(self, cur, same, label, list(self.images))
+        if dlg.exec() == QDialog.Accepted:
+            self._after_display(dlg.applied)
+
+    def reset_display(self) -> None:
+        if self.img is None:
+            return
+        cur = self.images[self.idx]
+        self.review.display = None
+        self.review.save(cur.folder, cur.path)
+        self._after_display({str(cur.path): None})
+
+    def _after_display(self, applied: dict) -> None:
+        """Files are written; the open image's review in memory takes the same
+        value (else its next save would undo it), then view and list follow."""
+        cur = self.images[self.idx]
+        if str(cur.path) in applied:
+            self.review.display = applied[str(cur.path)]
+            self._render_base()
+        for i, info in enumerate(self.images):
+            if str(info.path) in applied:
+                self._refresh_item(i)
+        n = len(applied)
+        self.banner.setText(f"Brightness changed for {n} image{'s' if n != 1 else ''} – display only, "
+                            "measurements unchanged.")
 
     def open_settings(self) -> None:
         if self.study is None:

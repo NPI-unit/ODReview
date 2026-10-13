@@ -40,6 +40,7 @@ class ImageView(QGraphicsView):
     polygonDrawn = Signal(list)               # [[x, y], ...] image px
     roiDrawn = Signal(list)                   # [x0, y0, x1, y1]
     i0Clicked = Signal(float, float)          # image px, tool "I₀-Feld setzen"
+    menuRequested = Signal()                  # right click on the image
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -169,6 +170,10 @@ class ImageView(QGraphicsView):
             p.setVisible(on); t.setVisible(on)
 
     # ── tools ───────────────────────────────────────────────
+    def contextMenuEvent(self, e):
+        self.menuRequested.emit()
+        e.accept()
+
     def set_tool(self, tool: str) -> None:
         self._tool = tool
         self.setDragMode(QGraphicsView.ScrollHandDrag if tool == TOOL_SELECT else QGraphicsView.NoDrag)

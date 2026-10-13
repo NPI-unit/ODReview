@@ -306,6 +306,22 @@ def test_template_roundtrip_keeps_scheme_not_folders():
             stm.templates_dir = orig
 
 
+def test_display_adjust_is_view_only():
+    from nkreview import display_adjust as da
+    x = np.linspace(0, 1, 11, dtype=np.float32)
+    assert np.allclose(da.apply(x, None), x) and da.clean(da.DEFAULT) is None
+    y = da.apply(x, {"brightness": 0, "contrast": 100, "gamma": 0.5})
+    assert y[5] > x[5]                                   # gamma < 1 brightens mid-tones
+    assert da.clean({"brightness": 500, "contrast": 1, "gamma": 9}) == {"brightness": 100, "contrast": 50, "gamma": 2.5}
+    img = _gray_scene()
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        s = Settings(method="threshold")
+        a = analyze(folder, image, img, s, Review()).rows
+        b = analyze(folder, image, img, s, Review(display={"brightness": -40, "contrast": 300, "gamma": 0.6})).rows
+        assert a == b                                    # measurement never sees the display
+
+
 def test_polygon_mask():
     m = polygon_mask((50, 50), [[10, 10], [40, 10], [40, 40], [10, 40]])
     assert 800 < m.sum() < 1000

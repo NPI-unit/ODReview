@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0 — 2026-10-13
+
+- **Brightness & contrast** as in ErysReview (☀︎ in the toolbar, key B, or right click on the image): large before | after preview, brightness, contrast, gamma, Auto stretch, histogram; apply to this image, all images of the subject, or the whole study. Display only – Cellpose, the I₀ fields and every OD value use the original image. Adjusted images carry ☀︎ in the image list; right click › Reset brightness.
+
 ## 0.7.0 — 2026-10-13
 
 - **Studies view like ErysReview:** one card per study (last opened first) with target and markers, folders and image count, subjects done as a big number, a bar of reviewed images, a chip per subject (done / in progress / open) and the measurement in one line. Progress is counted after the window shows. Actions for the selected study: Open, Settings, Save as template, Duplicate, Rename, Delete (removes only the study entry – images, Cellpose results, reviews and exports stay).
