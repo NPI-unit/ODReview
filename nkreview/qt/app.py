@@ -31,6 +31,7 @@ from .cellpanel import CellPanel
 from .style import apply_look
 from .studies import StudyPicker, _clear_layout
 from .view import TOOL_DRAW, TOOL_I0, TOOL_SELECT, ImageView
+from .splitter import PaneSplitter
 from .worker import CellposeWorker
 
 METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD edge)",
@@ -140,6 +141,9 @@ class MainWindow(QMainWindow):
         tl.addStretch(1)
         self.status = QLabel(""); self.status.setObjectName("caption")
         tl.addWidget(self.status)
+        b_set = QPushButton("⚙"); b_set.setToolTip("Study settings (⌘,)")
+        b_set.setProperty("class", "icon"); b_set.clicked.connect(self.open_settings)
+        tl.addWidget(b_set)
         b_help = QPushButton("?"); b_help.setToolTip("How the OD is measured (F1)")
         b_help.setProperty("class", "icon"); b_help.clicked.connect(self.show_help)
         tl.addWidget(b_help)
@@ -217,10 +221,13 @@ class MainWindow(QMainWindow):
         right = QScrollArea(); right.setWidgetResizable(True); right.setWidget(right_inner)
         right.setFrameShape(QFrame.NoFrame); right.setMinimumWidth(430)
 
-        split = QSplitter(Qt.Horizontal)
+        # Side panels can be dragged shut; the arrow on their divider brings them back.
+        split = PaneSplitter(); split.setObjectName("paneSplit")
+        left.setMinimumWidth(200); right.setMinimumWidth(380); centre.setMinimumWidth(320)
         split.addWidget(left); split.addWidget(centre); split.addWidget(right)
         split.setSizes([290, 800, 450])
         split.setStretchFactor(1, 1)
+        self.split = split
         body = QWidget(); bl = QVBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
         bl.addWidget(tb); bl.addWidget(split, 1)
         self.setCentralWidget(body)
@@ -243,6 +250,7 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence(key), self, activated=fn)
         QShortcut(QKeySequence.Undo, self, activated=self.undo)
         QShortcut(QKeySequence(Qt.Key_F1), self, activated=self.show_help)
+        QShortcut(QKeySequence.Preferences, self, activated=self.open_settings)
 
     def _set_enabled(self, on: bool) -> None:
         for w in (self.method_combo, self.thr_spin, self.cb_only_this, self.b_rerun,
@@ -282,7 +290,8 @@ class MainWindow(QMainWindow):
     def _update_study_button(self) -> None:
         done, n = proband_progress(self.images)
         markers = ", ".join(self.study.markers(self.images)) or "–"
-        self.b_study.setText(f"{self.study.name}   ·   {markers}   ·   {done}/{n} subjects")
+        self.b_study.setText(f"{self.study.name}   ▾")
+        self.b_study.setToolTip(f"{markers} · {done}/{n} subjects done – click to switch study")
 
     def _build_chips(self) -> None:
         _clear_layout(self.chip_row)
@@ -670,6 +679,17 @@ class MainWindow(QMainWindow):
         self.failed[path] = msg
         self._refresh_item(self._index_of(path))
         self._update_status()
+
+    def open_settings(self) -> None:
+        if self.study is None:
+            return
+        from .studies import StudySettings
+        dlg = StudySettings(self, self.study)
+        dlg.exec()
+        if getattr(dlg, "switch_requested", False):
+            self.choose_study()
+        elif dlg.saved is not None:
+            self.open_study(dlg.saved)
 
     def show_help(self) -> None:
         from .help import HelpWindow

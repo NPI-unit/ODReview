@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 — 2026-10-13
+
+- **Settings window like ErysReview:** navigation on the left (study switch, Images & names, Segmentation, Background I₀, Analysis, Templates), one page per topic with cards, footer with the number of unsaved changes, Discard, Save, Close. Warns before Cellpose would re-run. Opens from ⚙ in the toolbar (⌘,) or “Settings” in the study list; the “New study” assistant uses the same fields.
+- **Study button** shows only the study name (details in the tooltip).
+- **Side panels** can be dragged shut and come back with the arrow on their divider; the image view cannot be closed.
+
 ## 0.5.0 — 2026-10-13
 
 - **Help window** (“?” in the toolbar, F1): pipeline from import to export with the steps for whole cells and nuclei, formula sheet with “Copy LaTeX”, worked example with an OD calculator. Formulas drawn offline with matplotlib; “Open as web page” opens the interactive version (`nkreview/help/pipeline.html`).

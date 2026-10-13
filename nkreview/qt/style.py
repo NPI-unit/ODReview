@@ -229,6 +229,7 @@ QFrame#probeBox {{ background: {T['sidebar_bg']}; border-radius: 10px; }}
 QLabel#probeThumb {{ background: {T['sidebar_alt_bg']}; border-radius: 8px; }}
 QLabel#detCells {{ color: {T['accent_error']}; font-size: 15px; font-weight: 700; }}
 QLabel#detCells[reached="true"] {{ color: {T['state_finished']}; }}
+QSplitter#paneSplit::handle {{ background: transparent; width: 16px; }}
 QFrame#metricCard {{ background: {T['sidebar_bg']}; border-radius: 8px; }}
 QFrame#metricCard QLabel {{ background: transparent; }}
 #notebox {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 12px; }}
