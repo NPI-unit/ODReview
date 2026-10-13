@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-10-13
+
+- **Vorlagen:** „Als Vorlage speichern“ in der Studienübersicht; im Assistenten „Neue Studie“ ganz oben wählbar. Übernommen werden Ziel, Dateinamen-Schema und alle Messparameter – nicht Name, Ordner, Gruppen.
+- **Datum im Dateinamen** bleibt ein Teil (2026-08-27, 27.08.2026, 10.02.26), neue Rolle „Datum“, Export als JJJJ-MM-TT. Vergrößerungen wie „20x“ werden automatisch ignoriert.
+- **I₀-Prüfung relativ** zum freien Hintergrund des eigenen Bildes (für Serien mit unterschiedlicher Belichtung), Spalten `i0_hintergrund`, `i0_abw_pct`.
+- **Mindestfläche** für Cellpose-Objekte, **Positiv-Grenze** mit Spalte `positiv` und `n_positiv`/`anteil_positiv` in der Zusammenfassung.
+
 ## 0.2.0 — 2026-10-13
 
 - **Studien** wie in ErysReview: Studien-Datei, mehrere Ordner, Assistent „Neue Studie“ mit erweiterten Namensrollen (Proband, Gruppe, Zeitpunkt, Zelltyp, Marker, Bildnummer) und Live-Vorschau, Gruppen je Proband, Fortschritt Proband × Zeitpunkt × Marker.

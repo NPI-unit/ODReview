@@ -444,6 +444,7 @@ class MainWindow(QMainWindow):
             if r["manuell"]: hint.append("gezeichnet")
             if r["randzelle"]: hint.append("Bildrand")
             if r["debris_verdacht"]: hint.append("Debris?")
+            if r.get("positiv") is not None: hint.append("pos" if r["positiv"] else "neg")
             if r["grund"] and r["status"] == "ausgeschlossen": hint.append(r["grund"])
             vals = {**r, "hinweis": ", ".join(hint)}
             for c, (key, _) in enumerate(COLUMNS):

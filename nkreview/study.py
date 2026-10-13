@@ -8,7 +8,16 @@ because 5mC and 5hmC are quantified separately and groups are compared.
 
 Example `TEST A NK 5hmc 10.02.2026_002.tif` with delimiters " " and "_":
     TEST → ignorieren, A → proband, NK → zelltyp, 5hmc → marker,
-    10.02.2026 → ignorieren, 002 → bildnr
+    10.02.2026 → datum, 002 → bildnr
+
+A date is always one part, even when its own separator is a delimiter:
+`2026-08-27-C2C12-Ki67-FE01R3-20x_001` with "-" and "_" reads
+2026-08-27 | C2C12 | Ki67 | FE01R3 | 20x | 001. The "datum" role is stored as
+JJJJ-MM-TT.
+
+Templates (Vorlagen) keep what a kind of experiment shares — target,
+file-name scheme and every measurement setting — without the name, folders
+and groups that belong to one experiment.
 """
 
 from __future__ import annotations
@@ -31,12 +40,13 @@ ROLE_TIMEPOINT = "zeitpunkt"
 ROLE_CELLTYPE = "zelltyp"
 ROLE_MARKER = "marker"
 ROLE_IMAGE_NUM = "bildnr"
+ROLE_DATE = "datum"
 ROLE_IGNORE = "ignorieren"
 ROLES = [ROLE_PROBAND, ROLE_GROUP, ROLE_TIMEPOINT, ROLE_CELLTYPE, ROLE_MARKER,
-         ROLE_IMAGE_NUM, ROLE_IGNORE]
+         ROLE_DATE, ROLE_IMAGE_NUM, ROLE_IGNORE]
 ROLE_LABELS = {ROLE_PROBAND: "Proband", ROLE_GROUP: "Gruppe", ROLE_TIMEPOINT: "Zeitpunkt",
-               ROLE_CELLTYPE: "Zelltyp", ROLE_MARKER: "Marker", ROLE_IMAGE_NUM: "Bildnummer",
-               ROLE_IGNORE: "ignorieren"}
+               ROLE_CELLTYPE: "Zelltyp", ROLE_MARKER: "Marker", ROLE_DATE: "Datum",
+               ROLE_IMAGE_NUM: "Bildnummer", ROLE_IGNORE: "ignorieren"}
 META_ROLES = [r for r in ROLES if r != ROLE_IGNORE]
 CANDIDATE_DELIMS = [" ", "_", "-", "."]
 
@@ -59,12 +69,45 @@ def strip_ext(name: str) -> str:
     return name
 
 
+# Dates that stay one part: 2026-08-27, 2026.08.27, 27.08.2026, 10.02.26
+_DATE_IN_NAME = re.compile(
+    r"(?<![0-9])(?:(?:19|20)\d{2}[-.](?:0?[1-9]|1[0-2])[-.](?:0?[1-9]|[12]\d|3[01])"
+    r"|(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.(?:\d{4}|\d{2}))(?![0-9])")
+
+
+def iso_date(text: str) -> str:
+    """'2026-08-27', '27.08.2026', '10.02.26' → 'JJJJ-MM-TT' ('' if not a date)."""
+    m = re.fullmatch(r"((?:19|20)\d{2})[-.](\d{1,2})[-.](\d{1,2})", text)
+    if m:
+        y, mo, d = m.groups()
+    else:
+        m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})", text)
+        if not m:
+            return ""
+        d, mo, y = m.groups()
+        if len(y) == 2:
+            y = "20" + y
+    try:
+        return _dt.date(int(y), int(mo), int(d)).isoformat()
+    except ValueError:
+        return ""
+
+
 def tokenize(name: str, delimiters: list[str]) -> list[str]:
     stem = strip_ext(name)
     delims = [d for d in delimiters if d]
     if not delims:
         return [stem]
-    return [t for t in re.split("|".join(re.escape(d) for d in delims), stem) if t]
+    # Protect dates: swap each for a placeholder free of delimiters, split,
+    # then put the dates back.
+    dates: list[str] = []
+
+    def keep(m):
+        dates.append(m.group(0))
+        return f"\x00{len(dates) - 1}\x00"
+    protected = _DATE_IN_NAME.sub(keep, stem)
+    parts = [t for t in re.split("|".join(re.escape(d) for d in delims), protected) if t]
+    return [re.sub("\x00(\\d+)\x00", lambda m: dates[int(m.group(1))], t) for t in parts]
 
 
 def parse_name(name: str, delimiters: list[str], roles: list[str]) -> dict:
@@ -73,6 +116,8 @@ def parse_name(name: str, delimiters: list[str], roles: list[str]) -> dict:
     toks = tokenize(name, delimiters)
     out = {r: "" for r in META_ROLES}
     for tok, role in zip(toks, roles):
+        if role == ROLE_DATE:
+            tok = iso_date(tok) or tok
         if role in out:
             out[role] = f"{out[role]} {tok}".strip() if out[role] else tok
     return out
@@ -94,6 +139,7 @@ _DATE = re.compile(r"^\d{1,4}[.\-/]\d{1,2}([.\-/]\d{1,4})?$|^\d{6}$|^\d{8}$")
 _MARKER = re.compile(r"^(5h?mc|ki-?67|foxp3|h3k\w+|dna|brdu|pcna)$", re.I)
 _CELLTYPE = re.compile(r"^(nk|treg|t-?reg|cd\d+|pbmc|c2c12|hela|mono\w*|lympho\w*)$", re.I)
 _TIMEPOINT = re.compile(r"^(pr[äa]e?|post|pre|t\d+|d\d+|w\d+|baseline|bl|fu\d*)$", re.I)
+_MAGNIFICATION = re.compile(r"^\d{1,3}x$", re.I)
 
 
 def guess_roles(names: list[str], delimiters: list[str]) -> list[str]:
@@ -106,7 +152,9 @@ def guess_roles(names: list[str], delimiters: list[str]) -> list[str]:
     roles: list = []
     open_cols = []
     for i, col in enumerate(cols):
-        if all(_DATE.match(v) for v in col):
+        if all(iso_date(v) for v in col):
+            roles.append(ROLE_DATE if ROLE_DATE not in roles else ROLE_IGNORE)
+        elif all(_DATE.match(v) or _MAGNIFICATION.match(v) for v in col):
             roles.append(ROLE_IGNORE)
         elif i == n - 1 and all(v.isdigit() for v in col):
             roles.append(ROLE_IMAGE_NUM)
@@ -241,6 +289,81 @@ class Study:
 
     def markers(self, images: list[ImageInfo] | None = None) -> list[str]:
         return sorted({i.marker for i in (images or self.images()) if i.marker}, key=str.lower)
+
+
+# ─────────────────────────────────────────────
+# Templates (Vorlagen)
+# ─────────────────────────────────────────────
+def templates_dir() -> Path:
+    d = app_support_dir() / "vorlagen"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@dataclass
+class Template:
+    """What a kind of experiment shares: target, file-name scheme and every
+    measurement setting. Name, folders and groups belong to each study."""
+    name: str
+    target: str = TARGET_CELL
+    delimiters: list = field(default_factory=lambda: [" ", "_"])
+    roles: list = field(default_factory=list)
+    settings: Settings = field(default_factory=Settings)
+    description: str = ""
+    created_at: str = ""
+    file: str = ""
+
+    @property
+    def path(self) -> Path:
+        return templates_dir() / (self.file or f"{_slug(self.name)}.json")
+
+    @classmethod
+    def from_study(cls, study: "Study", name: str, description: str = "") -> "Template":
+        import copy
+        return cls(name=name, target=study.target, delimiters=list(study.delimiters),
+                   roles=list(study.roles), settings=copy.deepcopy(study.settings),
+                   description=description)
+
+    def apply_to(self, study: "Study") -> None:
+        import copy
+        study.target = self.target
+        study.delimiters = list(self.delimiters)
+        study.roles = list(self.roles)
+        study.settings = copy.deepcopy(self.settings)
+
+    def save(self) -> None:
+        self.file = self.file or f"{_slug(self.name)}.json"
+        if not self.created_at:
+            self.created_at = _dt.datetime.now().isoformat(timespec="seconds")
+        d = asdict(self)
+        d.pop("file", None)
+        d["app_version"] = __version__
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(d, indent=2, ensure_ascii=False), "utf-8")
+        os.replace(tmp, self.path)
+
+    @classmethod
+    def load(cls, path: Path) -> "Template":
+        d = json.loads(Path(path).read_text("utf-8"))
+        return cls(name=d.get("name", Path(path).stem), target=d.get("target", TARGET_CELL),
+                   delimiters=list(d.get("delimiters", [" ", "_"])), roles=list(d.get("roles", [])),
+                   settings=Settings.from_dict(d.get("settings", {})),
+                   description=d.get("description", ""), created_at=d.get("created_at", ""),
+                   file=Path(path).name)
+
+
+def list_templates() -> list[Template]:
+    out = []
+    for p in sorted(templates_dir().glob("*.json")):
+        try:
+            out.append(Template.load(p))
+        except (OSError, ValueError, TypeError):
+            continue
+    return out
+
+
+def template_file_for(name: str) -> Path:
+    return templates_dir() / f"{_slug(name)}.json"
 
 
 def list_studies() -> list[Study]:

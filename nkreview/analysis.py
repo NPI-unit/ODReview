@@ -23,7 +23,7 @@ from .segment import (
     METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, cached_cellpose, polygon_mask,
     refine_hybrid, threshold_segment,
 )
-from .state import MANUAL_ID_BASE, Review, Settings
+from .state import I0_RELATIVE, MANUAL_ID_BASE, Review, Settings
 
 STATUS_KEPT = "gewertet"
 STATUS_DISCARDED = "verworfen"
@@ -93,6 +93,11 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
     method = rv.method or s.method
     thr = float(rv.threshold if rv.threshold is not None else s.threshold)
     labels, used, bg, tod_s, note = _contours(img, s, rv, cp, method, thr)
+    if s.min_cell_area > 0 and labels.max():
+        # Cellpose finds specks (debris, noise) far smaller than any nucleus
+        sizes = np.bincount(labels.ravel())
+        small = np.flatnonzero(sizes < s.min_cell_area)
+        labels[np.isin(labels, small[small > 0])] = 0
 
     for k, poly in enumerate(rv.manual):
         m = polygon_mask(labels.shape, poly)
@@ -106,6 +111,10 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
 
     # Background fields may not sit on stained debris either.
     background_ok = tod_s < thr
+    # The image's free background: far from every cell, unstained. Reference
+    # for the relative I₀ check (exposure differs between series).
+    free = ~ndi.binary_dilation(labels > 0, iterations=40) & background_ok
+    i0_ref = float(np.median(gray[free][::7])) if free.sum() > 5000 else None
     H, W = labels.shape
     discarded = set(int(v) for v in rv.discarded)
     i0_img = np.asarray(bg.i0)
@@ -126,13 +135,20 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
         t = tod[sl][m]
         ys, xs = np.nonzero(m)
         ring = _ring_i0(img, labels, cid, sl, s.ring_inner, s.ring_outer)
-        dev = None if ring is None else float(np.max(np.abs(ring - i0_img) / i0_img) * 100)
+        ring_dev = None if ring is None else float(np.max(np.abs(ring - i0_img) / i0_img) * 100)
         manual = cid >= MANUAL_ID_BASE
         h_mean = float(h.mean())
+        dev = None if (cm.i0 is None or not i0_ref) else (cm.i0 - i0_ref) / i0_ref * 100
+        if s.i0_check == I0_RELATIVE:
+            cm.i0_ok = dev is not None and abs(dev) <= s.i0_rel_pct
         if cid in discarded:
             status, reason = STATUS_DISCARDED, "von Hand"
         elif cm.i0 is None:
             status, reason = STATUS_EXCLUDED, "kein Hintergrund neben der Zelle"
+        elif not cm.i0_ok and s.i0_check == I0_RELATIVE:
+            status, reason = STATUS_EXCLUDED, (
+                "kein freier Hintergrund im Bild" if dev is None
+                else f"I₀ {cm.i0:.1f} weicht {dev:+.1f} % vom Hintergrund ab")
         elif not cm.i0_ok:
             status, reason = STATUS_EXCLUDED, f"I₀ {cm.i0:.1f} außerhalb {s.i0_min:g}–{s.i0_max:g}"
         else:
@@ -151,6 +167,10 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
             "od_fiji": _r(cm.od),
             "i0": _r(cm.i0, 2),
             "i0_ok": cm.i0_ok,
+            "i0_hintergrund": _r(i0_ref, 2),
+            "i0_abw_pct": _r(dev, 2),
+            "positiv": (None if s.pos_threshold <= 0 or cm.od is None
+                        else bool(cm.od > s.pos_threshold)),
             "mittel_grau": _r(cm.mean_gray, 2),
             "pixel_od_mean": _r(cm.pix_mean),
             "pixel_od_sd": _r(cm.pix_sd),
@@ -168,7 +188,7 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
             "dab_iod": _r(dab.sum(), 1),
             "gesamt_od_mean": _r(t.mean()),
             "kanal_h_od_mean": _r(h_mean),
-            "ring_i0_abweichung_pct": None if dev is None else round(dev, 2),
+            "ring_i0_abweichung_pct": None if ring_dev is None else round(ring_dev, 2),
             "debris_verdacht": bool(s.debris_h > 0 and h_mean >= s.debris_h),
             "schwelle_od": thr,
         })

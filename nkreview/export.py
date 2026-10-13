@@ -54,12 +54,15 @@ def summarize(cells: list[dict]) -> list[dict]:
     out = []
     for (prob, grp, tp, ct, mk), cs in sorted(groups.items()):
         od = np.array([c["od_fiji"] for c in cs], dtype=float)
+        pos = [c["positiv"] for c in cs if c.get("positiv") is not None]
         out.append({
             "proband": prob, "gruppe": grp, "zeitpunkt": tp, "zelltyp": ct, "marker": mk,
             "n_bilder": len({c["bild"] for c in cs}), "n_zellen": len(cs),
             "od_fiji_mean": round(float(od.mean()), 4),
             "od_fiji_sd": round(float(od.std(ddof=1)), 4) if len(od) > 1 else None,
             "od_fiji_median": round(float(np.median(od)), 4),
+            "n_positiv": sum(pos) if pos else None,
+            "anteil_positiv": round(sum(pos) / len(pos), 4) if pos else None,
         })
     return out
 

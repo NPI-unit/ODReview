@@ -215,10 +215,22 @@ class CellPanel(QWidget):
         self.c_dab.set(_fmt(row["dab_od_mean"]), "Deconvolution H-DAB")
         if row["i0"] is None:
             msg, fg, bg = "Kein Hintergrund neben der Zelle – I₀-Felder von Hand setzen (Werkzeug 3)", "#975E0C", "#F8EFDF"
+        elif s.i0_check == "relativ":
+            ref, dev = row.get("i0_hintergrund"), row.get("i0_abw_pct")
+            if dev is None:
+                msg, fg, bg = "⚠  Kein freier Hintergrund im Bild – I₀ nicht prüfbar → ausgeschlossen", "#975E0C", "#F8EFDF"
+            else:
+                txt = (f"I₀ {_fmt(row['i0'], 1)} · freier Hintergrund {_fmt(ref, 1)} "
+                       f"({dev:+.1f} %, erlaubt ± {s.i0_rel_pct:g} %)").replace(".", ",")
+                ok = row["i0_ok"]
+                msg = ("✓  " if ok else "⚠  ") + txt + ("" if ok else " → ausgeschlossen")
+                fg, bg = ("#1B7A4D", "#E4F2EA") if ok else ("#975E0C", "#F8EFDF")
         elif row["i0_ok"]:
             msg, fg, bg = f"✓  I₀ {_fmt(row['i0'], 1)} liegt im Bereich {s.i0_min:g}–{s.i0_max:g}", "#1B7A4D", "#E4F2EA"
         else:
             msg, fg, bg = f"⚠  I₀ {_fmt(row['i0'], 1)} liegt außerhalb {s.i0_min:g}–{s.i0_max:g} → ausgeschlossen", "#975E0C", "#F8EFDF"
+        if row.get("positiv") is not None:
+            msg += f"  ·  {'positiv' if row['positiv'] else 'negativ'} (Grenze OD {_fmt(s.pos_threshold)})"
         if row.get("debris_verdacht"):
             msg += "  ·  Debris-Verdacht (H-Kanal hoch)"
         self.i0_state.setText(msg)

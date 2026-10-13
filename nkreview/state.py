@@ -24,6 +24,8 @@ def _write_json(path: Path, data: dict) -> None:
 
 GRAY_MEAN = "mean"              # ImageJ default: (R+G+B)/3
 GRAY_WEIGHTED = "weighted"      # ImageJ "Weighted RGB conversions": 0.299/0.587/0.114
+I0_ABSOLUTE = "absolut"
+I0_RELATIVE = "relativ"
 
 
 @dataclass
@@ -37,8 +39,13 @@ class Settings:
     i0_field_size: int = 9          # … of size × size px (9×9 = 81 ≈ "80 pixels")
     i0_ring_inner: int = 14         # fields lie this far from the contour …
     i0_ring_outer: int = 40         # … and no further
+    i0_check: str = "absolut"       # "absolut": I₀ within [i0_min, i0_max];
+                                    # "relativ": within ± i0_rel_pct of the image's free background
     i0_min: float = 210.0           # I₀ outside [min, max] → cell excluded
     i0_max: float = 220.0
+    i0_rel_pct: float = 3.0
+    min_cell_area: int = 0          # smaller Cellpose objects are dropped (0 = keep all)
+    pos_threshold: float = 0.0      # OD above this = "positiv" (0 = no positive/negative call)
     od_high: float = 0.3            # report the share of pixels above this OD
     debris_h: float = 0.0           # flag "Debris?" if H-channel OD ≥ this (0 = off)
     method: str = METHOD_HYBRID

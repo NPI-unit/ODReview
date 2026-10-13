@@ -9,18 +9,25 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+    QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QSpinBox, QStackedWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD
-from ..state import GRAY_MEAN, GRAY_WEIGHTED, list_images
+from ..state import GRAY_MEAN, GRAY_WEIGHTED, I0_ABSOLUTE, I0_RELATIVE, Settings, list_images
 from ..study import (
     CANDIDATE_DELIMS, META_ROLES, ROLE_GROUP, ROLE_LABELS, ROLE_PROBAND, ROLE_TIMEPOINT,
-    ROLES, TARGET_CELL, TARGET_LABELS, TARGET_NUCLEUS, Study, detect_delimiters, guess_roles,
-    list_studies, parse_name, progress, proband_progress, tokenize,
+    ROLES, TARGET_CELL, TARGET_LABELS, TARGET_NUCLEUS, Study, Template, detect_delimiters,
+    guess_roles, list_studies, list_templates, parse_name, progress, proband_progress,
+    template_file_for, tokenize,
 )
+
+
+def i0_rule(s: Settings) -> str:
+    if s.i0_check == I0_RELATIVE:
+        return f"± {s.i0_rel_pct:g} % vom freien Hintergrund des Bildes"
+    return f"gültig {s.i0_min:g}–{s.i0_max:g}"
 
 DELIM_LABELS = {" ": "Leerzeichen", "_": "_", "-": "-", ".": "."}
 METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD-Rand)", METHOD_CELLPOSE: "Nur Cellpose",
@@ -79,9 +86,10 @@ class StudyPicker(QDialog):
         self.h_sub = QLabel("", objectName="caption")
         hv = QVBoxLayout(); hv.addWidget(self.h_name); hv.addWidget(self.h_sub)
         self.b_edit = QPushButton("Einstellungen"); self.b_edit.clicked.connect(self.edit_study)
+        self.b_tpl = QPushButton("Als Vorlage speichern"); self.b_tpl.clicked.connect(self.save_template)
         self.b_open = QPushButton("Auswertung öffnen"); self.b_open.setProperty("class", "primary")
         self.b_open.clicked.connect(self.open_selected)
-        head.addLayout(hv, 1); head.addWidget(self.b_edit); head.addWidget(self.b_open)
+        head.addLayout(hv, 1); head.addWidget(self.b_tpl); head.addWidget(self.b_edit); head.addWidget(self.b_open)
         self.rl.addLayout(head)
         self.cards = QGridLayout(); self.cards.setSpacing(10)
         self.rl.addLayout(self.cards)
@@ -110,7 +118,7 @@ class StudyPicker(QDialog):
                 row = i
         self.list.blockSignals(False)
         has = bool(self._studies)
-        self.b_open.setEnabled(has); self.b_edit.setEnabled(has)
+        self.b_open.setEnabled(has); self.b_edit.setEnabled(has); self.b_tpl.setEnabled(has)
         if has:
             self.list.setCurrentRow(row); self._show(row)
         else:
@@ -134,10 +142,12 @@ class StudyPicker(QDialog):
         for i, c in enumerate((
             _card("Messung", f"Grau-OD, {TARGET_LABELS.get(st.target, st.target)}", f"−log₁₀(Ī / I₀) · Grau = {gray}"),
             _card("Hintergrund I₀", f"{s.i0_fields} Felder à {s.i0_field_size ** 2} px je Zelle",
-                  f"Ring {s.i0_ring_inner}–{s.i0_ring_outer} px · gültig {s.i0_min:g}–{s.i0_max:g}"),
+                  f"Ring {s.i0_ring_inner}–{s.i0_ring_outer} px · {i0_rule(s)}"),
             _card("Kontur", METHOD_LABELS.get(s.method, s.method),
                   f"Cellpose auf {'DAB-Karte' if s.cellpose.input == 'dab' else 'RGB'} · OD-Schwelle {s.threshold:g}"),
-            _card("Färbung", s.stain_preset, "Treg / HRP-Green: Version 2"),
+            _card("Färbung", s.stain_preset,
+                  (f"positiv ab OD {s.pos_threshold:g}" if s.pos_threshold > 0 else "kein Positiv-Grenzwert")
+                  + (f" · Mindestfläche {s.min_cell_area} px" if s.min_cell_area else "")),
         )):
             self.cards.addWidget(c, 0, i)
         prog = progress(imgs)
@@ -179,6 +189,24 @@ class StudyPicker(QDialog):
         if w.exec() == QDialog.Accepted:
             self.reload(w.study)
 
+    def save_template(self) -> None:
+        st = self._current()
+        if st is None:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Als Vorlage speichern",
+            "Name der Vorlage (Ziel, Dateinamen-Schema und alle Messparameter –\n"
+            "ohne Studienname, Ordner und Gruppen):", text=st.name)
+        name = name.strip()
+        if not ok or not name:
+            return
+        if template_file_for(name).exists() and QMessageBox.question(
+                self, "Vorlage ersetzen", f"Die Vorlage „{name}“ gibt es schon. Ersetzen?") != QMessageBox.Yes:
+            return
+        Template.from_study(st, name, f"aus Studie „{st.name}“").save()
+        QMessageBox.information(self, "Vorlage gespeichert",
+                                f"„{name}“ steht jetzt im Assistenten „Neue Studie“ zur Auswahl.")
+
     def open_selected(self) -> None:
         st = self._current()
         if st is not None:
@@ -199,6 +227,8 @@ class StudyWizard(QDialog):
         self.setWindowTitle("Studie bearbeiten" if self.editing else "Neue Studie")
         self.resize(1040, 760)
         self._names: list[str] = []
+        self._template: Template | None = None
+        self._measure_key = None
         lay = QVBoxLayout(self); lay.setContentsMargins(24, 18, 24, 16); lay.setSpacing(12)
         steps = QHBoxLayout(); self.step_labels = []
         for s in self.STEPS:
@@ -221,6 +251,15 @@ class StudyWizard(QDialog):
     def _page_folders(self) -> QWidget:
         w = QWidget(); l = QVBoxLayout(w); l.setSpacing(10)
         form = QFormLayout()
+        self.t_combo = QComboBox()
+        self.t_combo.addItem("keine – alles selbst festlegen", None)
+        for t in list_templates():
+            self.t_combo.addItem(t.name, t)
+        self.t_combo.currentIndexChanged.connect(self._template_changed)
+        self.t_desc = QLabel("", objectName="caption"); self.t_desc.setWordWrap(True)
+        if not self.editing:
+            form.addRow("Vorlage:", self.t_combo)
+            form.addRow("", self.t_desc)
         self.e_name = QLineEdit(self.study.name); self.e_name.setPlaceholderText("NK Methylierung 2026")
         form.addRow("Name der Studie:", self.e_name)
         l.addLayout(form)
@@ -241,6 +280,17 @@ class StudyWizard(QDialog):
         (self.r_nuc if self.study.target == TARGET_NUCLEUS else self.r_cell).setChecked(True)
         l.addWidget(self.r_cell); l.addWidget(self.r_nuc)
         return w
+
+    def _template_changed(self) -> None:
+        t = self.t_combo.currentData()
+        self._template = t
+        if t is None:
+            self.t_desc.setText("")
+            return
+        t.apply_to(self.study)
+        (self.r_nuc if t.target == TARGET_NUCLEUS else self.r_cell).setChecked(True)
+        self.t_desc.setText(f"{TARGET_LABELS.get(t.target, t.target)} · Dateinamen-Schema und Messparameter "
+                            f"werden übernommen. {t.description}")
 
     def _add_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Bildordner wählen", str(Path.home()))
@@ -277,10 +327,11 @@ class StudyWizard(QDialog):
         self._names = []
         for i in range(self.f_list.count()):
             self._names += [p.name for p in list_images(Path(self.f_list.item(i).text()))]
-        delims = self.study.delimiters if (self.editing and self.study.roles) else detect_delimiters(self._names)
+        keep = (self.editing or self._template is not None) and self.study.roles
+        delims = self.study.delimiters if keep else detect_delimiters(self._names)
         for d, cb in self.d_boxes.items():
             cb.blockSignals(True); cb.setChecked(d in delims); cb.blockSignals(False)
-        roles = self.study.roles if (self.editing and self.study.roles) else guess_roles(self._names, delims)
+        roles = self.study.roles if keep else guess_roles(self._names, delims)
         self._build_tokens(delims, roles)
 
     def _delims(self) -> list[str]:
@@ -350,6 +401,13 @@ class StudyWizard(QDialog):
         self.m_fsize.setSuffix(" px Kante")
         self.m_rin = QSpinBox(); self.m_rin.setRange(1, 200); self.m_rin.setValue(s.i0_ring_inner); self.m_rin.setSuffix(" px")
         self.m_rout = QSpinBox(); self.m_rout.setRange(2, 400); self.m_rout.setValue(s.i0_ring_outer); self.m_rout.setSuffix(" px")
+        self.m_check = QComboBox(); self.m_check.addItem("fester Bereich", I0_ABSOLUTE)
+        self.m_check.addItem("relativ zum freien Hintergrund des Bildes", I0_RELATIVE)
+        self.m_rel = QDoubleSpinBox(); self.m_rel.setRange(0.1, 50); self.m_rel.setSuffix(" %"); self.m_rel.setValue(s.i0_rel_pct)
+        self.m_minarea = QSpinBox(); self.m_minarea.setRange(0, 100000); self.m_minarea.setSuffix(" px")
+        self.m_minarea.setSpecialValueText("aus"); self.m_minarea.setValue(s.min_cell_area)
+        self.m_pos = QDoubleSpinBox(); self.m_pos.setDecimals(3); self.m_pos.setRange(0, 2); self.m_pos.setSingleStep(0.005)
+        self.m_pos.setSpecialValueText("aus"); self.m_pos.setValue(s.pos_threshold)
         self.m_imin = QDoubleSpinBox(); self.m_imin.setRange(0, 255); self.m_imin.setValue(s.i0_min)
         self.m_imax = QDoubleSpinBox(); self.m_imax.setRange(0, 255); self.m_imax.setValue(s.i0_max)
         self.m_method = QComboBox()
@@ -367,6 +425,8 @@ class StudyWizard(QDialog):
         form.addRow("Feldgröße:", self.m_fsize)
         form.addRow("Abstand zur Kontur ab:", self.m_rin)
         form.addRow("… bis:", self.m_rout)
+        form.addRow("I₀-Prüfung:", self.m_check)
+        form.addRow("erlaubte Abweichung:", self.m_rel)
         form.addRow("I₀ gültig von:", self.m_imin)
         form.addRow("… bis:", self.m_imax)
         form.addRow("<b>Kontur</b>", QLabel(""))
@@ -374,6 +434,10 @@ class StudyWizard(QDialog):
         form.addRow("OD-Schwelle:", self.m_thr)
         form.addRow("Cellpose sieht:", self.m_input)
         form.addRow("Debris-Verdacht ab H-OD:", self.m_debris)
+        form.addRow("Mindestfläche:", self.m_minarea)
+        form.addRow("<b>Auswertung</b>", QLabel(""))
+        form.addRow("positiv ab OD:", self.m_pos)
+        self.m_check.currentIndexChanged.connect(self._check_mode)
         l.addLayout(form, 1)
         gl = QVBoxLayout()
         gl.addWidget(QLabel("<b>Gruppe je Proband</b> (nur nötig, wenn die Gruppe nicht im Dateinamen steht)"))
@@ -384,18 +448,34 @@ class StudyWizard(QDialog):
         l.addLayout(gl, 1)
         return w
 
+    def _check_mode(self) -> None:
+        rel = self.m_check.currentData() == I0_RELATIVE
+        self.m_rel.setEnabled(rel); self.m_imin.setEnabled(not rel); self.m_imax.setEnabled(not rel)
+
+    def _fill_measure(self, s: Settings) -> None:
+        self.m_gray.setCurrentIndex(0 if s.gray_mode == GRAY_MEAN else 1)
+        self.m_fields.setValue(s.i0_fields); self.m_fsize.setValue(s.i0_field_size)
+        self.m_rin.setValue(s.i0_ring_inner); self.m_rout.setValue(s.i0_ring_outer)
+        self.m_check.setCurrentIndex(self.m_check.findData(s.i0_check))
+        self.m_rel.setValue(s.i0_rel_pct); self.m_imin.setValue(s.i0_min); self.m_imax.setValue(s.i0_max)
+        self.m_method.setCurrentIndex(self.m_method.findData(s.method)); self.m_thr.setValue(s.threshold)
+        self.m_input.setCurrentIndex(self.m_input.findData(s.cellpose.input))
+        self.m_debris.setValue(s.debris_h); self.m_minarea.setValue(s.min_cell_area)
+        self.m_pos.setValue(s.pos_threshold)
+        self._check_mode()
+
     def _enter_measure(self) -> None:
-        target_changed = (self.study.target == TARGET_NUCLEUS) != self.r_nuc.isChecked()
-        if not self.editing or target_changed:
-            tmp = copy.deepcopy(self.study)
-            tmp.target = TARGET_NUCLEUS if self.r_nuc.isChecked() else TARGET_CELL
-            tmp.apply_target()
-            self.m_input.setCurrentIndex(self.m_input.findData(tmp.settings.cellpose.input))
-            self.m_debris.setValue(tmp.settings.debris_h)
-            self.m_method.setCurrentIndex(self.m_method.findData(tmp.settings.method))
-        else:
-            self.m_input.setCurrentIndex(self.m_input.findData(self.study.settings.cellpose.input))
-            self.m_debris.setValue(self.study.settings.debris_h)
+        nucleus = self.r_nuc.isChecked()
+        key = (nucleus, self._template.name if self._template else None)
+        if key != self._measure_key:
+            # Fill the form once per target/template, so edits survive Zurück/Weiter.
+            base = copy.deepcopy(self.study)
+            fresh = not self.editing and self._template is None
+            if fresh or (base.target == TARGET_NUCLEUS) != nucleus:
+                base.target = TARGET_NUCLEUS if nucleus else TARGET_CELL
+                base.apply_target()
+            self._fill_measure(base.settings)
+            self._measure_key = key
         delims, roles = self._delims(), self._roles()
         probands = sorted({parse_name(n, delims, roles)["proband"] for n in self._names} - {""})
         self.g_table.setRowCount(len(probands))
@@ -426,6 +506,8 @@ class StudyWizard(QDialog):
         s.method, s.threshold = self.m_method.currentData(), round(self.m_thr.value(), 4)
         s.cellpose.input = self.m_input.currentData()
         s.debris_h = round(self.m_debris.value(), 4)
+        s.i0_check, s.i0_rel_pct = self.m_check.currentData(), round(self.m_rel.value(), 2)
+        s.min_cell_area, s.pos_threshold = self.m_minarea.value(), round(self.m_pos.value(), 4)
         st.groups = {}
         for r in range(self.g_table.rowCount()):
             g = (self.g_table.item(r, 1).text() if self.g_table.item(r, 1) else "").strip()
@@ -442,7 +524,7 @@ class StudyWizard(QDialog):
             f"Marker: {', '.join(st.markers(imgs)) or '–'}</p>"
             f"<p>Gemessen wird: <b>{TARGET_LABELS[st.target]}</b>, OD = −log₁₀(Ī / I₀) aus dem Grauwert.<br>"
             f"I₀: {s.i0_fields} Felder à {s.i0_field_size}×{s.i0_field_size} px, {s.i0_ring_inner}–{s.i0_ring_outer} px neben der Kontur, "
-            f"gültig {s.i0_min:g}–{s.i0_max:g}.<br>"
+            f"{i0_rule(s)}.<br>"
             f"Kontur: {METHOD_LABELS[s.method]}, Cellpose auf {'DAB-Karte' if s.cellpose.input == 'dab' else 'RGB'}.</p>"
             "<p>Cellpose startet im Hintergrund, sobald die Auswertung geöffnet ist.</p>")
 

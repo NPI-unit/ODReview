@@ -14,13 +14,20 @@ Abgeleitet von ErysReview @ 3cacb26 (Qt-Oberfläche, Look, Installer) – die Me
 3. **Durchsehen:** Bildbaum nach Zeitpunkt · Proband, Filter nach Marker. Pro Zelle siehst du OD, I₀-Felder, OD-Karte, radiales Profil und die Verteilung der Pixel-OD. Du kannst Zellen verwerfen, Konturen zeichnen und I₀-Felder versetzen oder neu losen; Enter markiert ein Bild als geprüft.
 4. **Export:** `outputs/nkreview_<Zeit>/` im ersten Ordner der Studie.
 
+## Vorlagen
+
+Eine Studie lässt sich als Vorlage speichern (Studienübersicht › „Als Vorlage speichern“). Im Assistenten „Neue Studie“ füllt eine Vorlage Ziel, Dateinamen-Schema und alle Messparameter vor; Name, Ordner und Gruppen gehören zu jeder Studie neu. Vorlagen liegen unter `~/Library/Application Support/NKReview/vorlagen/`.
+
+**C2C12 Kern 20×** (am Pilot NewPilot_27082026_Zheng ermittelt): Kerne über die DAB-Karte, Kontur „Nur Cellpose“, Mindestfläche 500 px, I₀-Felder 40–90 px neben dem Kern, I₀ relativ ±3 %, positiv ab Grau-OD 0,01 (Rauschgrenze; 99,9 % der Schein-Kerne auf Hintergrund < 0,006). Ki67-negative Kerne sind ohne Gegenfärbung nicht automatisch erkennbar → von Hand zeichnen (Werkzeug 2).
+
 ## Messprinzip (wie im Methodenteil)
 
 | Schritt | Verfahren |
 |---|---|
 | Grauwert | ImageJ-Standard (R+G+B)/3, gerundet (alternativ gewichtet 0,299/0,587/0,114) |
 | I₀ je Zelle | Mittel von 3 Feldern à 9×9 = 81 px, zufällig 14–40 px neben der Kontur, nicht auf Zellen oder gefärbtem Debris. Reproduzierbar geseedet; per Werkzeug 3 versetzbar, mit R neu losbar. |
-| Gültigkeit | I₀ außerhalb 210–220 (pro Studie einstellbar) → Zelle **ausgeschlossen**, nicht gelöscht |
+| Gültigkeit | fest: I₀ außerhalb 210–220 → **ausgeschlossen** (nicht gelöscht) · oder relativ: I₀ weicht mehr als ±x % vom freien Hintergrund des Bildes ab (für unterschiedlich belichtete Serien) |
+| Positiv | optional: Grau-OD > Grenze → `positiv` (Zusammenfassung `n_positiv`, `anteil_positiv`) |
 | OD | −log₁₀(Ī / I₀), Ī = mittlerer Grauwert in der Kontur (OD des Mittelwerts, wie Fiji) |
 | Verteilung | Pixel-OD mean/SD/median/p5/p95, Anteil > 0,3, radiales Profil in 5 Ringen vom Zentrum zur Membran |
 | Kontur | Ganze Zelle: Hybrid (Cellpose auf RGB, Rand aus Gesamt-OD > 0,05). Zellkern: Cellpose auf der DAB-Karte. Backup: reine OD-Schwelle; manuell zeichnen jederzeit |

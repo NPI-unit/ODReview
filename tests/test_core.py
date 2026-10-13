@@ -211,11 +211,23 @@ def test_name_roles():
     names = ["TEST A NK 5hmc 10.02.2026_002.tif", "TEST B NK 5mc 10.02.2026_001.tif"]
     d = detect_delimiters(names)
     roles = guess_roles(names, d)
-    assert roles == ["ignorieren", "proband", "zelltyp", "marker", "ignorieren", "bildnr"]
+    assert roles == ["ignorieren", "proband", "zelltyp", "marker", "datum", "bildnr"]
     m = parse_name(names[1], d, roles)
     assert (m["proband"], m["zelltyp"], m["marker"], m["bildnr"]) == ("B", "NK", "5mc", "001")
     t = guess_roles(["TRIBAL_195_Prä_19.11.25_021.tif", "TRIBAL_196_Post_19.11.25_003.tif"], ["_"])
-    assert t == ["ignorieren", "proband", "zeitpunkt", "ignorieren", "bildnr"]
+    assert t == ["ignorieren", "proband", "zeitpunkt", "datum", "bildnr"]
+
+
+def test_dates_stay_one_part():
+    from nkreview.study import detect_delimiters, guess_roles, iso_date, parse_name, tokenize
+    n = "2026-08-27-C2C12-Ki67-FE01R3-20x_001.tif"
+    assert tokenize(n, ["_", "-"]) == ["2026-08-27", "C2C12", "Ki67", "FE01R3", "20x", "001"]
+    names = [n, "2026-08-28-C2C12-Ki67-FE02R3-20x_013.tif"]
+    d = detect_delimiters(names)
+    roles = guess_roles(names, d)
+    assert roles == ["datum", "zelltyp", "marker", "proband", "ignorieren", "bildnr"]
+    assert parse_name("10.02.26_x.tif", ["_"], ["datum", "proband"])["datum"] == "2026-02-10"
+    assert iso_date("31.02.2026") == "" and iso_date("2026-8-7") == "2026-08-07"
 
 
 def test_study_images_groups_and_summary():
@@ -241,6 +253,57 @@ def test_study_images_groups_and_summary():
         a = summ[summ.proband == "A"].iloc[0]
         expect = cells[cells.proband == "A"].od_fiji.mean()
         assert a.n_zellen == 2 and abs(a.od_fiji_mean - expect) < 1e-3 and a.gruppe == "Intervention"
+
+
+def test_relative_i0_check_follows_each_image():
+    s = Settings(method="threshold", i0_check="relativ", i0_rel_pct=3.0)
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        for bg in (190, 228):                          # dark and bright series both pass
+            [row] = analyze(folder, image, _gray_scene(bg=bg, cell_gray=bg - 50), s, Review()).rows
+            assert row["status"] == "gewertet" and abs(row["i0_abw_pct"]) < 0.5, row
+        img = _gray_scene(bg=216, cell_gray=150)
+        img[10:30, 10:30] = 200                             # a field on "cytoplasm": -7 %
+        [row] = analyze(folder, image, img, s, Review(i0_fields={"1": [[20, 20]]})).rows
+        assert row["status"] == "ausgeschlossen" and row["i0_abw_pct"] < -3
+
+
+def test_min_area_and_positive_call():
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        img = _gray_scene(bg=216, cell_gray=150)
+        cp = np.zeros(img.shape[:2], np.int32)
+        yy, xx = np.mgrid[:300, :400]
+        cp[(yy - 150) ** 2 + (xx - 200) ** 2 <= 40 ** 2] = 1
+        cp[20:28, 20:28] = 2                               # 64 px speck
+        s = Settings(method="cellpose", min_cell_area=500, pos_threshold=0.1)
+        rows = analyze(folder, image, img, s, Review(), cp=cp).rows
+        assert [r["zelle"] for r in rows] == [1] and rows[0]["positiv"] is True
+        s.pos_threshold = 0.5
+        assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positiv"] is False
+        s.pos_threshold = 0
+        assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positiv"] is None
+
+
+def test_template_roundtrip_keeps_scheme_not_folders():
+    from nkreview import study as stm
+    from nkreview.study import Study, Template, TARGET_NUCLEUS
+    with tempfile.TemporaryDirectory() as d:
+        orig = stm.templates_dir
+        stm.templates_dir = lambda: Path(d)
+        try:
+            st = Study(name="Pilot", folders=["/x"], roles=["datum", "proband"], delimiters=["-"],
+                       groups={"A": "K"}, target=TARGET_NUCLEUS)
+            st.settings.i0_check, st.settings.i0_rel_pct, st.settings.min_cell_area = "relativ", 3.0, 500
+            Template.from_study(st, "C2C12 Kern 20×", "Test").save()
+            [t] = stm.list_templates()
+            new = Study(name="Serie 2", folders=["/y"])
+            t.apply_to(new)
+            assert (new.name, new.folders, new.groups) == ("Serie 2", ["/y"], {})
+            assert new.target == TARGET_NUCLEUS and new.roles == ["datum", "proband"]
+            assert new.settings.i0_check == "relativ" and new.settings.min_cell_area == 500
+        finally:
+            stm.templates_dir = orig
 
 
 def test_polygon_mask():
