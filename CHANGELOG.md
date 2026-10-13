@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0 — 2026-10-13
+
+- **Help window** (“?” in the toolbar, F1): pipeline from import to export with the steps for whole cells and nuclei, formula sheet with “Copy LaTeX”, worked example with an OD calculator. Formulas drawn offline with matplotlib; “Open as web page” opens the interactive version (`nkreview/help/pipeline.html`).
+- **Own logo** (`tools/make_logo.py`): a DAB-brown cell with its contour and the three I₀ fields. App icon, `assets/icon.*`, and NKReview.app on the Desktop.
+
 ## 0.4.0 — 2026-10-13
 
 - **English** throughout: interface, status values (kept / discarded / excluded), export files (`cells.csv`, `summary.csv`, `settings.json`) and column names (`subject`, `group`, `od`, …). Number fields use a decimal point. Stored study and template files keep their keys, so existing studies open unchanged.

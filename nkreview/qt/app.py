@@ -140,6 +140,9 @@ class MainWindow(QMainWindow):
         tl.addStretch(1)
         self.status = QLabel(""); self.status.setObjectName("caption")
         tl.addWidget(self.status)
+        b_help = QPushButton("?"); b_help.setToolTip("How the OD is measured (F1)")
+        b_help.setProperty("class", "icon"); b_help.clicked.connect(self.show_help)
+        tl.addWidget(b_help)
         b_exp = QPushButton("⤓ Export", objectName="export"); b_exp.clicked.connect(self.export)
         tl.addWidget(b_exp)
 
@@ -239,6 +242,7 @@ class MainWindow(QMainWindow):
         for key, fn in keys.items():
             QShortcut(QKeySequence(key), self, activated=fn)
         QShortcut(QKeySequence.Undo, self, activated=self.undo)
+        QShortcut(QKeySequence(Qt.Key_F1), self, activated=self.show_help)
 
     def _set_enabled(self, on: bool) -> None:
         for w in (self.method_combo, self.thr_spin, self.cb_only_this, self.b_rerun,
@@ -667,6 +671,12 @@ class MainWindow(QMainWindow):
         self._refresh_item(self._index_of(path))
         self._update_status()
 
+    def show_help(self) -> None:
+        from .help import HelpWindow
+        if getattr(self, "_help", None) is None:
+            self._help = HelpWindow(self)
+        self._help.show(); self._help.raise_(); self._help.activateWindow()
+
     # ── export ──────────────────────────────────────────────
     def export(self) -> None:
         if not self.study:
@@ -764,6 +774,10 @@ def make_app(argv=None) -> QApplication:
     # English UI: decimal point in every number field, whatever the system language.
     from PySide6.QtCore import QLocale
     QLocale.setDefault(QLocale(QLocale.English, QLocale.UnitedStates))
+    from PySide6.QtGui import QIcon
+    icon = Path(__file__).resolve().parent.parent.parent / "assets" / "icon.png"
+    if icon.exists():
+        app.setWindowIcon(QIcon(str(icon)))
     apply_look(app)
     return app
 
