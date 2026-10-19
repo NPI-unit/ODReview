@@ -1,8 +1,8 @@
 @echo off
 REM -------------------------------------------------------------------------
-REM  NKReview - Windows installer
+REM  ODReview - Windows installer
 REM
-REM  Double-click this file from inside the NKReview folder.
+REM  Double-click this file from inside the ODReview folder.
 REM  It ensures Miniforge/conda is present (offering to install it for you),
 REM  builds a CLEAN "nkreview" conda env with the full scientific stack from
 REM  conda-forge, drops a desktop shortcut, and prints what to do next.
@@ -30,7 +30,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================
-echo  NKReview installer (Windows)
+echo  ODReview installer (Windows)
 echo ============================================
 echo.
 
@@ -111,7 +111,7 @@ if exist "%NK_PREFIX%\" (
 if exist "%NK_PREFIX%\" (
     echo [!] Could not delete the old env directory:
     echo         %NK_PREFIX%
-    echo     Something still has a file in there open. Close NKReview, any
+    echo     Something still has a file in there open. Close ODReview, any
     echo     Python / Anaconda Prompt window, and your antivirus scan ^(a
     echo     reboot settles all three^), then run install.bat again.
     echo     Installing on top of it would bring back the Cellpose freeze.
@@ -127,9 +127,18 @@ REM channel is configured too, and a mixed solve happily pulls Intel's
 REM intel-openmp in next to conda-forge's llvm-openmp. Two OpenMP runtimes
 REM again. Pinning the solve to conda-forge alone is what keeps it at one.
 REM (Default solve is the CPU torch build; NVIDIA users: see README for the GPU variant.)
-call "%CONDA_EXE%" create -n nkreview --override-channels -c conda-forge --strict-channel-priority -y python=3.12 "cellpose>=4.1.1,<5" pytorch numpy scipy scikit-image matplotlib-base pandas pillow tifffile openpyxl
+call "%CONDA_EXE%" create -n nkreview --override-channels -c conda-forge --strict-channel-priority -y python=3.12 "cellpose>=4.1.1,<5" pytorch numpy scipy scikit-image matplotlib-base pandas pillow tifffile openpyxl einops fastremap requests tqdm
 if errorlevel 1 (
     echo [!] conda create failed. Check your internet / proxy settings and retry.
+    pause
+    exit /b 1
+)
+REM InstanSeg (nuclei) is not on conda-forge. --no-deps: its dependencies came
+REM from the solve above; letting pip resolve them would pull a pip torch next
+REM to conda's - the two-OpenMP hang again.
+call "%CONDA_EXE%" run -n nkreview python -m pip install --no-deps "instanseg-torch>=0.1.2"
+if errorlevel 1 (
+    echo [!] Installing InstanSeg failed. Check your internet / proxy settings and retry.
     pause
     exit /b 1
 )
@@ -195,11 +204,11 @@ set "PSSCRIPT=%TEMP%\make_nkreview_shortcut.ps1"
 >  "%PSSCRIPT%" echo $ErrorActionPreference = 'Stop'
 >> "%PSSCRIPT%" echo $desktop = [Environment]::GetFolderPath('Desktop')
 >> "%PSSCRIPT%" echo $ws = New-Object -ComObject WScript.Shell
->> "%PSSCRIPT%" echo $sc = $ws.CreateShortcut((Join-Path $desktop 'NKReview.lnk'))
+>> "%PSSCRIPT%" echo $sc = $ws.CreateShortcut((Join-Path $desktop 'ODReview.lnk'))
 >> "%PSSCRIPT%" echo $sc.TargetPath = '%TARGET%'
 >> "%PSSCRIPT%" echo $sc.WorkingDirectory = '%CD%'
 >> "%PSSCRIPT%" echo $sc.IconLocation = '%ICON%'
->> "%PSSCRIPT%" echo $sc.Description = 'NKReview'
+>> "%PSSCRIPT%" echo $sc.Description = 'ODReview'
 >> "%PSSCRIPT%" echo $sc.Save()
 >> "%PSSCRIPT%" echo Write-Host ('    Shortcut: ' + $sc.FullName)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PSSCRIPT%"
@@ -210,11 +219,11 @@ del "%PSSCRIPT%" >nul 2>&1
 
 echo.
 echo ============================================
-echo  Done. NKReview is installed.
+echo  Done. ODReview is installed.
 echo ============================================
 echo.
 echo You now have two ways to start the app:
-echo   1. Double-click "NKReview" on your Desktop
+echo   1. Double-click "ODReview" on your Desktop
 echo   2. Double-click run.bat inside this folder
 echo.
 pause

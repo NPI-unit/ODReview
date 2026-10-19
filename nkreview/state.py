@@ -26,6 +26,9 @@ GRAY_MEAN = "mean"              # ImageJ default: (R+G+B)/3
 GRAY_WEIGHTED = "weighted"      # ImageJ "Weighted RGB conversions": 0.299/0.587/0.114
 I0_ABSOLUTE = "absolut"
 I0_RELATIVE = "relativ"
+I0_LOCAL = "lokal"              # the fields of a cell must agree within ± i0_rel_pct
+I0_PER_CELL = "zelle"           # stored values (German, like the rest)
+I0_PER_IMAGE = "bild"
 
 
 @dataclass
@@ -35,16 +38,21 @@ class Settings:
     # Fiji-conform measurement (the method section): grey value, I₀ per cell
     # from random background fields next to it, OD of the mean.
     gray_mode: str = GRAY_MEAN
-    i0_fields: int = 3              # background fields per cell …
+    i0_scope: str = I0_PER_CELL     # "zelle": fields next to each cell; "bild": one set of
+                                    # fields per image, far from every cell, used for all its cells
+    i0_fields: int = 3              # background fields per cell (or per image) …
     i0_field_size: int = 9          # … of size × size px (9×9 = 81 ≈ "80 pixels")
     i0_ring_inner: int = 14         # fields lie this far from the contour …
     i0_ring_outer: int = 40         # … and no further
     i0_check: str = "absolut"       # "absolut": I₀ within [i0_min, i0_max];
-                                    # "relativ": within ± i0_rel_pct of the image's free background
+                                    # "relativ": within ± i0_rel_pct of the image's free background;
+                                    # "lokal": each field within ± i0_rel_pct of the fields' mean
+                                    # (robust to uneven illumination: catches a field on debris)
     i0_min: float = 210.0           # I₀ outside [min, max] → cell excluded
     i0_max: float = 220.0
     i0_rel_pct: float = 3.0
     min_cell_area: int = 0          # smaller Cellpose objects are dropped (0 = keep all)
+    max_cell_area: int = 0          # larger ones too (0 = no limit); nuclei: whole cells, clumps
     pos_threshold: float = 0.0      # OD above this = "positive" (0 = no positive/negative call)
     od_high: float = 0.3            # report the share of pixels above this OD
     debris_h: float = 0.0           # flag "Debris?" if H-channel OD ≥ this (0 = off)
@@ -90,6 +98,12 @@ class Review:
     i0_fields: dict = field(default_factory=dict)       # "cid" -> [[x, y], …] set by hand
     i0_seed: dict = field(default_factory=dict)         # "cid" -> n (re-drawn n times)
     display: dict | None = None                         # brightness/contrast/gamma, view only
+    confirmed: list = field(default_factory=list)       # cell ids the reviewer confirmed (C)
+    # Remarks for discussion, as in ErysReview: cell id (str) -> text, and one for the
+    # image. Review file only, deliberately not exported (export files get shared).
+    notes: dict = field(default_factory=dict)
+    note: str = ""
+    marks: list = field(default_factory=list)           # comment circles: {"x", "y", "r", "text"}, image px
 
     @staticmethod
     def path(folder: Path, image: Path) -> Path:

@@ -1,9 +1,9 @@
-"""Draws the NKReview logo with Qt and writes every icon size the app needs.
+"""Draws the ODReview logo with Qt and writes every icon size the app needs.
 
     ./.venv/bin/python tools/make_logo.py        (writes assets/)
 
 The mark: a DAB-brown cell with its segmentation contour, the three I₀
-background fields next to it — the measurement in one picture — and "NK".
+background fields next to it — the measurement in one picture — and "OD".
 """
 
 from __future__ import annotations
@@ -88,9 +88,9 @@ def draw(size: int = 1024) -> QImage:
     p.setFont(f)
     rect = QRectF(c.x() - r, c.y() - r + 6, 2 * r, 2 * r)
     p.setPen(QColor(50, 20, 4, 110))
-    p.drawText(rect.translated(0, 8), Qt.AlignCenter, "NK")
+    p.drawText(rect.translated(0, 8), Qt.AlignCenter, "OD")
     p.setPen(QColor("#FFFFFF"))
-    p.drawText(rect, Qt.AlignCenter, "NK")
+    p.drawText(rect, Qt.AlignCenter, "OD")
     p.end()
     return img
 

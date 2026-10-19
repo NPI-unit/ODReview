@@ -1,5 +1,5 @@
 #!/bin/bash
-# "NKReview installieren" — opens the installer window (tools/installer_gui.py).
+# "ODReview installieren" — opens the installer window (tools/installer_gui.py).
 # Before the window can exist it needs Python 3.12 and PySide6; this script
 # brings both: Python is looked for (and asked for, natively, if missing),
 # PySide6 comes from vendor/wheels or is downloaded into it first.
@@ -12,10 +12,10 @@ echo "== installer app $(date '+%Y-%m-%d %H:%M') ==" >> "$LOG"
 
 say() {   # native dialog; $1 text, $2 extra button (opens python.org)
     if [ -n "${2:-}" ]; then
-        r=$(osascript -e "display dialog \"$1\" with title \"NKReview installieren\" buttons {\"Abbrechen\", \"$2\"} default button 2 with icon caution" 2>/dev/null)
+        r=$(osascript -e "display dialog \"$1\" with title \"ODReview installieren\" buttons {\"Abbrechen\", \"$2\"} default button 2 with icon caution" 2>/dev/null)
         case "$r" in *"$2"*) open "https://www.python.org/downloads/macos/";; esac
     else
-        osascript -e "display dialog \"$1\" with title \"NKReview installieren\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1
+        osascript -e "display dialog \"$1\" with title \"ODReview installieren\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1
     fi
 }
 
@@ -31,7 +31,7 @@ for p in "$ROOT/vendor/python/bin/python3.12" /opt/homebrew/bin/python3.12 /usr/
     fi
 done
 if [ -z "$PY" ]; then
-    say "Python 3.12 fehlt.\n\nBitte den macOS-Installer von python.org laden und doppelklicken (oder im Terminal: brew install python@3.12). Danach NKReview installieren erneut öffnen." "python.org öffnen"
+    say "Python 3.12 fehlt.\n\nBitte den macOS-Installer von python.org laden und doppelklicken (oder im Terminal: brew install python@3.12). Danach ODReview installieren erneut öffnen." "python.org öffnen"
     exit 1
 fi
 
@@ -45,7 +45,7 @@ if ! "$VPY" -c 'import PySide6.QtWidgets' 2>/dev/null; then
     PINS=$(grep -iE '^(pyside6-essentials|shiboken6)==' "$ROOT/requirements-lock-macos.txt" | tr '\n' ' ')
     mkdir -p "$ROOT/vendor/wheels"
     if ! "$VPY" -m pip install --quiet --no-index --find-links "$ROOT/vendor/wheels" $PINS >> "$LOG" 2>&1; then
-        osascript -e 'display notification "Lade die Oberfläche für das Installationsfenster (~110 MB) …" with title "NKReview installieren"' 2>/dev/null
+        osascript -e 'display notification "Lade die Oberfläche für das Installationsfenster (~110 MB) …" with title "ODReview installieren"' 2>/dev/null
         "$VPY" -m pip download --quiet --only-binary=:all: -d "$ROOT/vendor/wheels" $PINS >> "$LOG" 2>&1 \
           && "$VPY" -m pip install --quiet --no-index --find-links "$ROOT/vendor/wheels" $PINS >> "$LOG" 2>&1 \
           || { say "Für das Installationsfenster fehlt Qt, und es konnte nicht geladen werden (Internet?).\n\nAlternative: install.command im Ordner doppelklicken (Terminal)."; exit 1; }

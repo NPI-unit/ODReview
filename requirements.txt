@@ -12,6 +12,9 @@
 # expected to keep working. Pin tighter only if you hit a regression.
 
 cellpose>=4.1.1,<5
+# Nuclei (target "nucleus"): InstanSeg's brightfield_nuclei model. Pure Python
+# on top of the torch cellpose brings; the 16 MB model downloads on first use.
+instanseg-torch>=0.1.2
 matplotlib>=3.10
 numpy>=2.0
 pandas>=2.2

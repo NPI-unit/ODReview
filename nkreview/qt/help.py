@@ -1,4 +1,4 @@
-"""Help window: how NKReview measures the OD.
+"""Help window: how ODReview measures the OD.
 
 Three tabs — the pipeline (click a step, switch whole cell / nucleus), the
 formula sheet (Copy LaTeX), and the worked example with a small calculator.
@@ -74,7 +74,7 @@ class FormulaBrowser(QTextBrowser):
 class HelpWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("NKReview – how the OD is measured")
+        self.setWindowTitle("ODReview – how the OD is measured")
         self.setModal(False)
         from .studies import fit_to_screen
         fit_to_screen(self, 1000, 720)
@@ -89,7 +89,7 @@ class HelpWindow(QDialog):
             logo.setPixmap(pm.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         title = QLabel("<b>From a brightfield image to one optical density per cell</b>")
         f = title.font(); f.setPointSizeF(f.pointSizeF() * 1.35); title.setFont(f); title.setWordWrap(True)
-        sub = QLabel("NKReview finds cells or nuclei, measures each against the background right next to it, "
+        sub = QLabel("ODReview finds cells or nuclei, measures each against the background right next to it, "
                      "and reports the OD as the Fiji method does – plus the OD distribution inside every cell.",
                      objectName="caption")
         sub.setWordWrap(True)
@@ -202,7 +202,7 @@ class HelpWindow(QDialog):
     @staticmethod
     def _symbols_html() -> str:
         rows = [("G(p)", "grey value of pixel p (ImageJ RGB → 8-bit)", "(R+G+B)/3"),
-                ("C", "pixels inside the cell or nucleus contour", "hybrid / Cellpose"),
+                ("C", "pixels inside the cell or nucleus contour", "hybrid / Cellpose / InstanSeg"),
                 ("F_k", "background field k, a square of s × s px", "k = 1…3, s = 9"),
                 ("d(p)", "distance of pixel p from the contour", "14–40 px (nuclei 40–90)"),
                 ("I0_bg", "median grey value of the image's free background", "≥ 40 px from all cells"),

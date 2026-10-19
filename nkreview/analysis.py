@@ -18,12 +18,14 @@ import numpy as np
 from scipy import ndimage as ndi
 
 from . import od as odm
-from .measure import CellMeasure, PROFILE_RINGS, gray_image, measure_cell
+from .measure import CellMeasure, PROFILE_RINGS, _seed, gray_image, measure_cell, place_image_fields
 from .segment import (
     METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, cached_cellpose, polygon_mask,
     refine_hybrid, threshold_segment,
 )
-from .state import I0_RELATIVE, MANUAL_ID_BASE, Review, Settings
+from .state import I0_LOCAL, I0_PER_IMAGE, I0_RELATIVE, MANUAL_ID_BASE, Review, Settings
+
+IMAGE_KEY = "image"     # Review.i0_fields / i0_seed key of the per-image fields
 
 STATUS_KEPT = "kept"
 STATUS_DISCARDED = "discarded"
@@ -40,6 +42,7 @@ class ImageResult:
     tod: np.ndarray                     # HxW total OD (unsmoothed)
     gray: np.ndarray                    # HxW grey value as the method defines it
     rows: list[dict] = field(default_factory=list)   # every cell, with its status
+    image_fields: list | None = None    # I₀ per image: the image's fields (else None)
     cells: dict[int, CellMeasure] = field(default_factory=dict)
     note: str = ""
 
@@ -49,7 +52,7 @@ def _contours(img, s: Settings, rv: Review, cp: np.ndarray | None,
     """(labels, method actually used, background, smoothed total OD, note)."""
     note = ""
     if method in (METHOD_HYBRID, METHOD_CELLPOSE) and cp is None:
-        method, note = METHOD_THRESHOLD, "Cellpose has not run yet – OD threshold used"
+        method, note = METHOD_THRESHOLD, "Segmentation has not run yet – OD threshold used"
     # I₀ first from a provisional mask (Cellpose, or a rough threshold on an
     # image-median I₀), then the contour from the OD that I₀ defines.
     if cp is not None:
@@ -82,6 +85,14 @@ def _ring_i0(img, labels, cid, sl, inner, outer):
     return np.median(pix.reshape(-1, 3), axis=0)
 
 
+def field_spread(means: list) -> float | None:
+    """Largest deviation of one I₀ field from the fields' mean, in % (None below 2 fields)."""
+    if len(means) < 2:
+        return None
+    m = float(np.mean(means))
+    return float(np.max(np.abs(np.asarray(means) - m)) / m * 100) if m else None
+
+
 def _r(v, n=4):
     return None if v is None else round(float(v), n)
 
@@ -93,11 +104,12 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
     method = rv.method or s.method
     thr = float(rv.threshold if rv.threshold is not None else s.threshold)
     labels, used, bg, tod_s, note = _contours(img, s, rv, cp, method, thr)
-    if s.min_cell_area > 0 and labels.max():
+    if (s.min_cell_area > 0 or s.max_cell_area > 0) and labels.max():
         # Cellpose finds specks (debris, noise) far smaller than any nucleus
         sizes = np.bincount(labels.ravel())
-        small = np.flatnonzero(sizes < s.min_cell_area)
-        labels[np.isin(labels, small[small > 0])] = 0
+        drop = (sizes < s.min_cell_area) | ((s.max_cell_area > 0) & (sizes > s.max_cell_area))
+        drop[0] = False
+        labels[drop[labels]] = 0
 
     for k, poly in enumerate(rv.manual):
         m = polygon_mask(labels.shape, poly)
@@ -117,7 +129,11 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
     i0_ref = float(np.median(gray[free][::7])) if free.sum() > 5000 else None
     H, W = labels.shape
     discarded = set(int(v) for v in rv.discarded)
+    confirmed = set(int(v) for v in rv.confirmed)
     i0_img = np.asarray(bg.i0)
+    if s.i0_scope == I0_PER_IMAGE:
+        res.image_fields = rv.i0_fields.get(IMAGE_KEY) or place_image_fields(
+            free, s, _seed(image.name, 0, int(rv.i0_seed.get(IMAGE_KEY, 0))))
     for idx, sl in enumerate(ndi.find_objects(labels), start=1):
         if sl is None:
             continue
@@ -128,7 +144,7 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
             continue
         cm = measure_cell(gray, labels, cid, sl, background_ok, s, image.name,
                           manual_fields=rv.i0_fields.get(str(cid)),
-                          redraw=int(rv.i0_seed.get(str(cid), 0)))
+                          redraw=int(rv.i0_seed.get(str(cid), 0)), image_fields=res.image_fields)
         res.cells[cid] = cm
         dab = stains[sl][..., odm.DAB][m]
         h = stains[sl][..., 0][m]
@@ -139,18 +155,25 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
         manual = cid >= MANUAL_ID_BASE
         h_mean = float(h.mean())
         dev = None if (cm.i0 is None or not i0_ref) else (cm.i0 - i0_ref) / i0_ref * 100
+        spread = field_spread(cm.field_means)
         if s.i0_check == I0_RELATIVE:
             cm.i0_ok = dev is not None and abs(dev) <= s.i0_rel_pct
+        elif s.i0_check == I0_LOCAL and cm.i0 is not None:
+            cm.i0_ok = spread is None or spread <= s.i0_rel_pct      # one field: nothing to compare
         if cid in discarded:
             status, reason = STATUS_DISCARDED, "by hand"
-        elif cm.i0 is None:
+        elif cm.i0 is None:                 # no OD at all: nothing a reviewer could confirm
             status, reason = STATUS_EXCLUDED, "no background next to the cell"
+        # A failed I₀ check is a warning, not an exclusion: the cell stays kept, is shown
+        # for a look, and counts once the reviewer confirms it (summary.csv: confirmed only).
         elif not cm.i0_ok and s.i0_check == I0_RELATIVE:
-            status, reason = STATUS_EXCLUDED, (
+            status, reason = STATUS_KEPT, (
                 "no free background in the image" if dev is None
                 else f"I₀ {cm.i0:.1f} deviates {dev:+.1f} % from the background")
+        elif not cm.i0_ok and s.i0_check == I0_LOCAL:
+            status, reason = STATUS_KEPT, f"I₀ fields disagree by {spread:.1f} %"
         elif not cm.i0_ok:
-            status, reason = STATUS_EXCLUDED, f"I₀ {cm.i0:.1f} outside {s.i0_min:g}–{s.i0_max:g}"
+            status, reason = STATUS_KEPT, f"I₀ {cm.i0:.1f} outside {s.i0_min:g}–{s.i0_max:g}"
         else:
             status, reason = STATUS_KEPT, ""
         row = {
@@ -158,6 +181,10 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
             "status": status,
             "reason": reason,
             "discarded": cid in discarded,
+            # only a kept cell can be confirmed; summary.csv counts confirmed cells only
+            "confirmed": status == STATUS_KEPT and cid in confirmed,
+            "has_note": bool(str(rv.notes.get(str(cid), "")).strip()),
+            "i0_warning": status == STATUS_KEPT and not cm.i0_ok,
             "manual": manual,
             "contour": "manual" if manual else used,
             "area_px": n,
@@ -169,6 +196,7 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
             "i0_ok": cm.i0_ok,
             "i0_background": _r(i0_ref, 2),
             "i0_dev_pct": _r(dev, 2),
+            "i0_field_spread_pct": _r(spread, 2),
             "positive": (None if s.pos_threshold <= 0 or cm.od is None
                         else bool(cm.od > s.pos_threshold)),
             "mean_gray": _r(cm.mean_gray, 2),

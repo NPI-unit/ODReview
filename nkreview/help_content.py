@@ -23,7 +23,7 @@ FORMULAS: dict[str, dict] = {
     "valAbs": {
         "tex": r"210 \le I_0 \le 220",
         "mt": r"$210 \leq I_0 \leq 220$",
-        "cap": "Fixed validity rule (NK, method section). Otherwise the cell is excluded, not deleted."},
+        "cap": "Fixed validity rule (NK, method section). Otherwise an I₀ warning: the reviewer checks and may confirm."},
     "valRel": {
         "tex": r"\frac{\lvert I_0 - I_0^{\mathrm{bg}} \rvert}{I_0^{\mathrm{bg}}} \le 3\,\%",
         "mt": r"$\dfrac{|I_0 - I_0^{bg}|}{I_0^{bg}} \leq 3\,\%$",
@@ -55,15 +55,15 @@ FORMULAS: dict[str, dict] = {
     "prefilter": {
         "tex": r"R = \{\, p : (c_{\mathrm{DAB}} * \mathcal{G}_{\sigma=3})(p) > 0.04 \,\},\quad \lvert R_i \rvert \ge 150\ \mathrm{px}",
         "mt": r"$R = \{\, p : (c_{DAB} \ast \mathcal{G}_{\sigma=3})(p) > 0.04 \,\},\quad |R_i| \geq 150\ \mathrm{px}$",
-        "cap": "DAB-positive regions; Cellpose runs on padded crops around them (sides multiples of 32)."},
+        "cap": "Whole cells: DAB-positive regions; Cellpose runs on padded crops around them (sides multiples of 32)."},
     "hybrid": {
         "tex": r"C_{\mathrm{hyb}} = \operatorname{fill}\!\Big(\big\{\, p : \widetilde{\mathrm{OD}}_{\mathrm{tot}}(p) > 0.05,\ d(p, C_{\mathrm{CP}}) \le 10 \,\big\}_{\text{connected to } C_{\mathrm{CP}}}\Big)",
         "mt": r"$C_{hyb} = \mathrm{fill}(\{\, p : \widetilde{\mathrm{OD}}_{tot}(p) > 0.05,\ d(p, C_{CP}) \leq 10 \,\})$",
         "cap": "Hybrid contour (whole cell): Cellpose finds the cell, the edge comes from the OD (parts connected to the Cellpose cell)."},
     "minarea": {
-        "tex": r"\lvert C \rvert \ge 500\ \mathrm{px}",
-        "mt": r"$|C| \geq 500\ \mathrm{px}$",
-        "cap": "Nucleus template: smaller Cellpose objects are dropped."},
+        "tex": r"A_{\min} \le \lvert C \rvert \le A_{\max},\qquad A = 200\text{–}4000\ \mathrm{px}\ (\text{high}),\ 100\text{–}1500\ \mathrm{px}\ (\text{low})",
+        "mt": r"$A_{min} \leq |C| \leq A_{max},\qquad A = 200\,\mathrm{to}\,4000\ \mathrm{px\ (high)},\ 100\,\mathrm{to}\,1500\ \mathrm{px\ (low)}$",
+        "cap": "Nuclei: objects outside the preset's area range are dropped (specks, whole cells)."},
     "pos": {
         "tex": r"\text{positive} \iff \mathrm{OD} > \tau,\qquad \tau = 0.01",
         "mt": r"$\mathrm{positive} \Leftrightarrow \mathrm{OD} > \tau,\qquad \tau = 0.01$",
@@ -96,18 +96,22 @@ STEPS = [
     {"id": "pre", "phase": "Processing", "t": "DAB pre-filter", "s": "Where is stain?",
      "body": "Colour deconvolution separates the DAB signal. Only regions with DAB are cut out and sent to "
              "Cellpose – unstained debris never reaches it, and a sparse image takes seconds instead of a "
-             "minute. Dense images run as a whole.",
+             "minute. Dense images run as a whole. Whole cells only – InstanSeg sees the whole image for nuclei.",
      "params": [("DAB threshold", "0.04"), ("Min. region", "150 px"), ("Crop", "+48 px, ≥ 256 px, multiple of 32")],
      "f": ["rgbod", "deconv", "prefilter"]},
     {"id": "seg", "phase": "Processing", "t": "Segmentation", "s": "", "body": "", "params": [], "f": []},
     {"id": "i0", "phase": "Processing", "t": "Background I₀", "s": "3 fields next to each cell",
      "body": "For every cell, three background fields are drawn at random in a ring around the contour, away "
              "from other cells and stained debris. Their mean is I₀. The draw is seeded, so it is "
-             "reproducible; fields can be moved by hand (tool 3) or redrawn (R).",
+             "reproducible; fields can be moved by hand (tool 3) or redrawn (R). Alternatively "I₀ per image": "
+             "one set of fields in the image's free background, ≥ 40 px from every cell, shared by all its cells "
+             "(only for evenly lit images). Validity: fixed range, relative to the free background, or "
+             "local – the fields of a cell must agree within ± x %, which tolerates uneven illumination "
+             "and catches a field on debris.",
      "params": [], "f": ["i0", "ring"]},
     {"id": "od", "phase": "Measurement", "t": "Optical density", "s": "OD of the mean grey value",
      "body": "The mean grey value inside the contour is compared with I₀. A cell whose I₀ fails the validity "
-             "rule stays in the table as excluded – nothing disappears silently.",
+             "rule gets an I₀ warning: it stays, is shown in orange and counts once the reviewer confirms it – nothing is dropped silently, nothing enters the summary unchecked.",
      "params": [], "f": ["od"]},
     {"id": "dist", "phase": "Measurement", "t": "Distribution", "s": "Inside each cell",
      "body": "Each pixel gets its own OD against the cell's I₀. From these: mean, SD, median, p5, p95, share "
@@ -116,8 +120,10 @@ STEPS = [
      "params": [("Profile rings", "5"), ("Share above", "OD 0.3"), ("Extra", "DAB OD, total OD, ring-I₀ check")],
      "f": ["pix", "radial", "tot"]},
     {"id": "export", "phase": "Output", "t": "Review & export", "s": "Check, then tables",
-     "body": "In the review you discard cells, draw missing ones (e.g. Ki67-negative nuclei), move I₀ fields "
-             "and mark images as reviewed. The export writes cells.csv (one row per cell), summary.csv, "
+     "body": "In the review you confirm each counted cell (C – white turns green), discard cells, draw missing "
+             "ones (e.g. Ki67-negative nuclei), move I₀ fields, leave notes for discussion (N, not exported) "
+             "and mark images as reviewed. Only confirmed cells enter summary.csv; cells.csv lists all kept "
+             "cells with a confirmed column. The export writes cells.csv (one row per cell), summary.csv, "
              "settings.json, overlay PNGs and an Excel file.",
      "params": [("cells.csv", "subject, group, od, i0, status …"), ("summary.csv", "n, OD mean/SD/median, share positive"),
                 ("Exported", "reviewed images (default)")],
@@ -139,15 +145,17 @@ TARGETS = {
     },
     "nuc": {
         "label": "Nucleus · C2C12",
-        "seg": {"s": "Cellpose on the DAB map",
-                "body": "Pale Ki67 nuclei are much clearer on the DAB map than on the colour image (27 instead of "
-                        "8 nuclei on the pilot), so Cellpose looks at the DAB map and its contour is used as is. "
-                        "Tiny objects are dropped; debris is flagged by its high H channel. Unstained nuclei are "
-                        "invisible without a counterstain – draw them by hand (tool 2).",
-                "params": [("Cellpose sees", "DAB map (OD 0–0.2)"), ("Min. area", "500 px"), ("Debris flag", "H OD ≥ 0.04")],
+        "seg": {"s": "InstanSeg on the colour image",
+                "body": "InstanSeg's brightfield_nuclei model is trained on nuclei only and finds pale and dark "
+                        "nuclei in one run; its contour is used as is. (Cellpose-SAM outlined the whole cell on "
+                        "the pilot, whatever image it was given.) The magnification preset sets the pixel size "
+                        "and the area range: smaller specks and whole cells are dropped. Debris is flagged by its "
+                        "high H channel; a missed nucleus can be drawn by hand (tool 2).",
+                "params": [("Model", "InstanSeg brightfield_nuclei"), ("Magnification", "high 0.25 · low 0.45 µm/px"),
+                           ("Area", "200–4000 · 100–1500 px"), ("Debris flag", "H OD ≥ 0.04")],
                 "f": ["minarea", "debris"]},
         "i0": [("Fields", "3 × (9 × 9 px)"), ("Ring", "40–90 px"), ("Valid", "± 3 % of free background")],
-        "od": [("Ī", "mean grey value in C"), ("Rule", "relative ± 3 %"), ("Positive", "OD > 0.01")],
+        "od": [("Ī", "mean grey value in C"), ("Rule", "local: fields agree ± 3 %"), ("Positive", "OD > 0.01")],
         "od_f": ["valRel", "pos"],
     },
 }

@@ -11,29 +11,51 @@ from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSpinBox,
+    QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSlider,
+    QSpinBox,
     QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
-from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD
-from ..state import GRAY_MEAN, GRAY_WEIGHTED, I0_ABSOLUTE, I0_RELATIVE, IMG_EXTS, Settings, list_images
+from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, MODEL_INSTANSEG
+from ..state import (
+    GRAY_MEAN, GRAY_WEIGHTED, I0_ABSOLUTE, I0_LOCAL, I0_PER_CELL, I0_PER_IMAGE, I0_RELATIVE, IMG_EXTS, Settings,
+    list_images,
+)
 from ..study import (
     CANDIDATE_DELIMS, META_ROLES, ROLE_GROUP, ROLE_IGNORE, ROLE_LABELS, ROLE_PROBAND, ROLE_TIMEPOINT,
-    ROLES, TARGET_CELL, TARGET_LABELS, TARGET_NUCLEUS, Study, Template, detect_delimiters,
+    MAG_LABELS, MAGNIFICATIONS, ROLES, TARGET_CELL, TARGET_LABELS, TARGET_NUCLEUS, Study, Template,
+    detect_delimiters,
     guess_roles, list_studies, list_templates, parse_name, progress, proband_progress,
     template_file_for, tokenize,
 )
 
 DELIM_LABELS = {" ": "space", "_": "_", "-": "-", ".": "."}
-METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD edge)", METHOD_CELLPOSE: "Cellpose only",
+METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD edge)", METHOD_CELLPOSE: "Model contour only",
                  METHOD_THRESHOLD: "OD threshold only"}
+MODEL_LABELS = {"cpsam": "Cellpose-SAM (cells)", MODEL_INSTANSEG: "InstanSeg (nuclei)"}
+MAG_CUSTOM = ""
 TREE_MAX_FILES = 300            # per folder in the folder tree; the rest is summarised
+
+
+def segmentation_text(s: Settings) -> str:
+    """'InstanSeg (nuclei), high magnification' / 'Cellpose-SAM (cells) on the DAB map'."""
+    if s.cellpose.model == MODEL_INSTANSEG:
+        return f"{MODEL_LABELS[MODEL_INSTANSEG]}, {MAG_LABELS.get(magnification_of(s), f'{s.cellpose.pixel_size:g} µm/px')}"
+    return f"{MODEL_LABELS.get(s.cellpose.model, s.cellpose.model)} on {'the DAB map' if s.cellpose.input == 'dab' else 'RGB'}"
+
+
+def magnification_of(s: Settings) -> str:
+    """The preset the settings match, MAG_CUSTOM if none."""
+    now = {"pixel_size": s.cellpose.pixel_size, "min_cell_area": s.min_cell_area, "max_cell_area": s.max_cell_area}
+    return next((k for k, v in MAGNIFICATIONS.items() if v == now), MAG_CUSTOM)
 
 
 def i0_rule(s: Settings) -> str:
     if s.i0_check == I0_RELATIVE:
         return f"± {s.i0_rel_pct:g} % of the image's free background"
+    if s.i0_check == I0_LOCAL:
+        return f"fields agree within ± {s.i0_rel_pct:g} %"
     return f"valid {s.i0_min:g}–{s.i0_max:g}"
 
 
@@ -149,7 +171,7 @@ class _StudyCard(QFrame):
         v.addWidget(self.dots)
         v.addStretch(1)
         s = st.settings
-        meas = QLabel(f"Grey OD · I₀ {i0_rule(s)} · {METHOD_LABELS.get(s.method, s.method)}")
+        meas = QLabel(f"Grey OD · I₀ {i0_rule(s)} · {segmentation_text(s)}")
         meas.setObjectName("caption"); meas.setWordWrap(True)
         v.addWidget(meas)
         self.counted = False
@@ -440,8 +462,8 @@ class StudyForm:
 
     def _target_box(self) -> QWidget:
         w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(0, 0, 0, 0); l.setSpacing(4)
-        self.r_cell = QRadioButton("Whole cell (e.g. NK) – Cellpose sees the colour image")
-        self.r_nuc = QRadioButton("Nucleus (e.g. C2C12 Ki67) – Cellpose sees the DAB map, debris flag on")
+        self.r_cell = QRadioButton("Whole cell (e.g. NK) – Cellpose-SAM on the colour image")
+        self.r_nuc = QRadioButton("Nucleus (e.g. C2C12 Ki67) – InstanSeg finds pale and dark nuclei, debris flag on")
         g = QButtonGroup(w); g.addButton(self.r_cell); g.addButton(self.r_nuc)
         (self.r_nuc if self.study.target == TARGET_NUCLEUS else self.r_cell).setChecked(True)
         self.r_nuc.toggled.connect(lambda _: self._target_toggled())
@@ -588,12 +610,21 @@ class StudyForm:
     def _build_measure_widgets(self) -> None:
         self.m_gray = QComboBox(); self.m_gray.addItem("(R+G+B)/3 – ImageJ default", GRAY_MEAN)
         self.m_gray.addItem("weighted 0.299/0.587/0.114", GRAY_WEIGHTED)
+        self.m_scope = QComboBox()
+        self.m_scope.addItem("per cell – fields next to each cell", I0_PER_CELL)
+        self.m_scope.addItem("per image – one set of fields for all cells", I0_PER_IMAGE)
+        self.m_scope.currentIndexChanged.connect(lambda _: self._scope_mode())
+        self.m_scope_hint = QLabel("Only for evenly lit or flat-field corrected images. With vignetting the "
+                                   "OD of a cell can be off by 10–25 % (pilot images); use “per cell” there.",
+                                   objectName="banner")
+        self.m_scope_hint.setWordWrap(True)
         self.m_fields = QSpinBox(); self.m_fields.setRange(1, 10)
         self.m_fsize = QSpinBox(); self.m_fsize.setRange(3, 31); self.m_fsize.setSingleStep(2); self.m_fsize.setSuffix(" px side")
         self.m_rin = QSpinBox(); self.m_rin.setRange(1, 200); self.m_rin.setSuffix(" px")
         self.m_rout = QSpinBox(); self.m_rout.setRange(2, 400); self.m_rout.setSuffix(" px")
         self.m_check = QComboBox(); self.m_check.addItem("fixed range", I0_ABSOLUTE)
         self.m_check.addItem("relative to the image's free background", I0_RELATIVE)
+        self.m_check.addItem("fields agree with each other (local, for uneven illumination)", I0_LOCAL)
         self.m_rel = QDoubleSpinBox(); self.m_rel.setRange(0.1, 50); self.m_rel.setSuffix(" %")
         self.m_imin = QDoubleSpinBox(); self.m_imin.setRange(0, 255)
         self.m_imax = QDoubleSpinBox(); self.m_imax.setRange(0, 255)
@@ -606,6 +637,18 @@ class StudyForm:
         self.m_debris.setSpecialValueText("off")
         self.m_minarea = QSpinBox(); self.m_minarea.setRange(0, 100000); self.m_minarea.setSuffix(" px")
         self.m_minarea.setSpecialValueText("off")
+        self.m_maxarea = QSpinBox(); self.m_maxarea.setRange(0, 1000000); self.m_maxarea.setSuffix(" px")
+        self.m_maxarea.setSpecialValueText("off")
+        self.m_model = QComboBox()
+        for k, v in MODEL_LABELS.items():
+            self.m_model.addItem(v, k)
+        self.m_mag = QComboBox()
+        for k, v in MAG_LABELS.items():
+            p = MAGNIFICATIONS[k]
+            self.m_mag.addItem(f"{v} – {p['pixel_size']:g} µm/px, {p['min_cell_area']}–{p['max_cell_area']} px", k)
+        self.m_mag.addItem("custom", MAG_CUSTOM)
+        self.m_px = QDoubleSpinBox(); self.m_px.setDecimals(3); self.m_px.setRange(0, 2); self.m_px.setSingleStep(0.01)
+        self.m_px.setSuffix(" µm/px"); self.m_px.setSpecialValueText("unknown")
         self.m_pos = QDoubleSpinBox(); self.m_pos.setDecimals(3); self.m_pos.setRange(0, 2); self.m_pos.setSingleStep(0.005)
         self.m_pos.setSpecialValueText("off")
         self.m_high = QDoubleSpinBox(); self.m_high.setDecimals(2); self.m_high.setRange(0.01, 3); self.m_high.setSingleStep(0.05)
@@ -613,11 +656,15 @@ class StudyForm:
         self.m_flow = QDoubleSpinBox(); self.m_flow.setRange(0, 3); self.m_flow.setSingleStep(0.05)
         self.m_prob = QDoubleSpinBox(); self.m_prob.setRange(-6, 6); self.m_prob.setSingleStep(0.25)
         self.m_check.currentIndexChanged.connect(self._check_mode)
-        for w in (self.m_gray, self.m_check, self.m_method, self.m_input):
+        self.m_model.currentIndexChanged.connect(lambda _: self._model_mode())
+        self.m_mag.activated.connect(lambda _: self._mag_chosen())
+        for w in (self.m_minarea, self.m_maxarea, self.m_px):
+            w.valueChanged.connect(lambda _: self._sync_mag())
+        for w in (self.m_gray, self.m_check, self.m_method, self.m_input, self.m_model, self.m_scope):
             w.currentIndexChanged.connect(lambda _: self._form_changed())
         for w in (self.m_fields, self.m_fsize, self.m_rin, self.m_rout, self.m_rel, self.m_imin, self.m_imax,
-                  self.m_thr, self.m_debris, self.m_minarea, self.m_pos, self.m_high, self.m_diam,
-                  self.m_flow, self.m_prob):
+                  self.m_thr, self.m_debris, self.m_minarea, self.m_maxarea, self.m_px, self.m_pos, self.m_high,
+                  self.m_diam, self.m_flow, self.m_prob):
             w.valueChanged.connect(lambda _: self._form_changed())
         self._fill_measure(self.study.settings)
 
@@ -632,20 +679,49 @@ class StudyForm:
         return w
 
     def _form_grey_i0(self) -> QWidget:
-        return self._form(["Grey value", ("RGB → grey:", self.m_gray), "Background I₀ per cell",
+        w = self._form(["Grey value", ("RGB → grey:", self.m_gray), "Background I₀",
+                           ("I₀ from:", self.m_scope), ("", self.m_scope_hint),
                            ("Fields:", self.m_fields), ("Field size:", self.m_fsize),
                            ("Distance from contour:", self.m_rin), ("… up to:", self.m_rout),
                            ("I₀ check:", self.m_check), ("Allowed deviation:", self.m_rel),
                            ("I₀ valid from:", self.m_imin), ("… to:", self.m_imax)])
+        self._scope_mode()
+        return w
 
     def _form_contour(self) -> QWidget:
-        return self._form(["Contour", ("Method:", self.m_method), ("OD threshold:", self.m_thr),
+        return self._form(["Contour", ("Model:", self.m_model), ("Magnification:", self.m_mag),
+                           ("Pixel size:", self.m_px), ("Method:", self.m_method), ("OD threshold:", self.m_thr),
                            ("Cellpose sees:", self.m_input), ("Min. area:", self.m_minarea),
-                           ("Debris flag from H OD:", self.m_debris)])
+                           ("Max. area:", self.m_maxarea), ("Debris flag from H OD:", self.m_debris)])
 
     def _form_cellpose(self) -> QWidget:
-        return self._form(["Cellpose (advanced)", ("Diameter:", self.m_diam), ("Flow threshold:", self.m_flow),
-                           ("Cell probability:", self.m_prob)])
+        self.cp_box = self._form(["Cellpose (advanced)", ("Diameter:", self.m_diam), ("Flow threshold:", self.m_flow),
+                                  ("Cell probability:", self.m_prob)])
+        self._model_mode()
+        return self.cp_box
+
+    def _model_mode(self) -> None:
+        """Magnification and pixel size belong to InstanSeg; input and the advanced fields to Cellpose."""
+        inst = self.m_model.currentData() == MODEL_INSTANSEG
+        self.m_mag.setEnabled(inst); self.m_px.setEnabled(inst); self.m_input.setEnabled(not inst)
+        if hasattr(self, "cp_box"):
+            self.cp_box.setEnabled(not inst)
+
+    def _mag_chosen(self) -> None:
+        if self.m_mag.currentData() == MAG_CUSTOM:
+            return
+        p = MAGNIFICATIONS[self.m_mag.currentData()]
+        self.m_px.setValue(p["pixel_size"]); self.m_minarea.setValue(p["min_cell_area"])
+        self.m_maxarea.setValue(p["max_cell_area"])
+
+    def _sync_mag(self) -> None:
+        """Show the preset the three fields match, or 'custom'."""
+        s = Settings()
+        s.cellpose.pixel_size = round(self.m_px.value(), 3)
+        s.min_cell_area, s.max_cell_area = self.m_minarea.value(), self.m_maxarea.value()
+        self.m_mag.blockSignals(True)
+        self.m_mag.setCurrentIndex(self.m_mag.findData(magnification_of(s)))
+        self.m_mag.blockSignals(False)
 
     def _form_analysis(self) -> QWidget:
         return self._form(["Analysis", ("Positive above OD:", self.m_pos), ("Share of pixels above OD:", self.m_high)])
@@ -661,12 +737,23 @@ class StudyForm:
         gl.addWidget(self.g_table)
         return gw
 
+    def _scope_mode(self) -> None:
+        """Per image the fields lie in the free background, not in a ring around the contour."""
+        ring = self.m_scope.currentData() != I0_PER_IMAGE
+        for w, show in ((self.m_rin, ring), (self.m_rout, ring), (self.m_scope_hint, not ring)):
+            w.setEnabled(show)
+            form = w.parentWidget().layout() if w.parentWidget() else None
+            if isinstance(form, QFormLayout):
+                form.setRowVisible(w, show)
+
     def _check_mode(self) -> None:
-        rel = self.m_check.currentData() == I0_RELATIVE
-        self.m_rel.setEnabled(rel); self.m_imin.setEnabled(not rel); self.m_imax.setEnabled(not rel)
+        mode = self.m_check.currentData()
+        self.m_rel.setEnabled(mode != I0_ABSOLUTE)
+        self.m_imin.setEnabled(mode == I0_ABSOLUTE); self.m_imax.setEnabled(mode == I0_ABSOLUTE)
 
     def _fill_measure(self, s: Settings) -> None:
         self.m_gray.setCurrentIndex(0 if s.gray_mode == GRAY_MEAN else 1)
+        self.m_scope.setCurrentIndex(max(0, self.m_scope.findData(s.i0_scope)))
         self.m_fields.setValue(s.i0_fields); self.m_fsize.setValue(s.i0_field_size)
         self.m_rin.setValue(s.i0_ring_inner); self.m_rout.setValue(s.i0_ring_outer)
         self.m_check.setCurrentIndex(self.m_check.findData(s.i0_check))
@@ -674,6 +761,12 @@ class StudyForm:
         self.m_method.setCurrentIndex(self.m_method.findData(s.method)); self.m_thr.setValue(s.threshold)
         self.m_input.setCurrentIndex(self.m_input.findData(s.cellpose.input))
         self.m_debris.setValue(s.debris_h); self.m_minarea.setValue(s.min_cell_area)
+        self.m_maxarea.setValue(s.max_cell_area); self.m_px.setValue(s.cellpose.pixel_size)
+        idx = self.m_model.findData(s.cellpose.model)
+        if idx < 0:                              # a model name from a hand-edited file: show it as it is
+            self.m_model.addItem(s.cellpose.model, s.cellpose.model); idx = self.m_model.count() - 1
+        self.m_model.setCurrentIndex(idx)
+        self._sync_mag()
         self.m_pos.setValue(s.pos_threshold); self.m_high.setValue(s.od_high)
         self.m_diam.setValue(s.cellpose.diameter); self.m_flow.setValue(s.cellpose.flow_threshold)
         self.m_prob.setValue(s.cellpose.cellprob_threshold)
@@ -702,15 +795,23 @@ class StudyForm:
     def _collect(self, st: Study) -> None:
         st.name = self.e_name.text().strip()
         st.folders = [self.f_list.item(i).text() for i in range(self.f_list.count())]
-        st.target = TARGET_NUCLEUS if self.r_nuc.isChecked() else TARGET_CELL
+        target = TARGET_NUCLEUS if self.r_nuc.isChecked() else TARGET_CELL
+        if target != st.target:
+            # model, magnification preset, max area: target defaults the form does not show
+            st.target = target
+            st.apply_target()
         st.delimiters, st.roles = self._delims(), self._roles()
         s = st.settings
         s.gray_mode = self.m_gray.currentData()
+        s.i0_scope = self.m_scope.currentData()
         s.i0_fields, s.i0_field_size = self.m_fields.value(), self.m_fsize.value()
         s.i0_ring_inner, s.i0_ring_outer = self.m_rin.value(), self.m_rout.value()
         s.i0_min, s.i0_max = self.m_imin.value(), self.m_imax.value()
         s.method, s.threshold = self.m_method.currentData(), round(self.m_thr.value(), 4)
         s.cellpose.input = self.m_input.currentData()
+        s.cellpose.model = self.m_model.currentData()
+        s.cellpose.pixel_size = round(self.m_px.value(), 3)
+        s.max_cell_area = self.m_maxarea.value()
         s.cellpose.diameter = float(self.m_diam.value())
         s.cellpose.flow_threshold = round(self.m_flow.value(), 3)
         s.cellpose.cellprob_threshold = round(self.m_prob.value(), 3)
@@ -829,10 +930,12 @@ class StudyWizard(StudyForm, QDialog):
             f"<p>{len(st.folders)} folder(s) · {len(imgs)} images · {len({i.proband for i in imgs})} subjects · "
             f"markers: {', '.join(st.markers(imgs)) or '–'}</p>"
             f"<p>Measured: <b>{TARGET_LABELS[st.target]}</b>, OD = −log₁₀(Ī / I₀) from the grey value.<br>"
-            f"I₀: {s.i0_fields} fields of {s.i0_field_size}×{s.i0_field_size} px, {s.i0_ring_inner}–{s.i0_ring_outer} px "
-            f"from the contour, {i0_rule(s)}.<br>"
-            f"Contour: {METHOD_LABELS[s.method]}, Cellpose on {'DAB map' if s.cellpose.input == 'dab' else 'RGB'}.</p>"
-            "<p>Cellpose starts in the background as soon as the review is open.</p>")
+            + (f"I₀: {s.i0_fields} fields of {s.i0_field_size}×{s.i0_field_size} px per image, in its free background, "
+               f"{i0_rule(s)}.<br>" if s.i0_scope == I0_PER_IMAGE else
+               f"I₀: {s.i0_fields} fields of {s.i0_field_size}×{s.i0_field_size} px, {s.i0_ring_inner}–{s.i0_ring_outer} px "
+               f"from the contour, {i0_rule(s)}.<br>") +
+            f"Contour: {METHOD_LABELS[s.method]}, {segmentation_text(s)}.</p>"
+            "<p>Segmentation starts in the background as soon as the review is open.</p>")
 
     def _go(self, step: int) -> None:
         i = self.stack.currentIndex()
@@ -869,9 +972,10 @@ class StudyWizard(StudyForm, QDialog):
 SETTINGS_PAGES = [
     ("images", "Images & names", "Name, image folders, how file names are read and the group of each subject."),
     ("seg", "Segmentation", "What is measured and how cells or nuclei are found."),
-    ("i0", "Background I₀", "Grey value and the background fields next to each cell."),
+    ("i0", "Background I₀", "Grey value and the background fields – next to each cell, or one set per image."),
     ("analysis", "Analysis", "Cut-offs used in the tables."),
     ("templates", "Templates", "Save this study's scheme and settings for the next experiment."),
+    ("display", "Display", "How contours look in the image. For every study, saved right away; no value changes."),
 ]
 
 
@@ -898,7 +1002,8 @@ class StudySettings(StudyForm, QDialog):
         self._build_measure_widgets()
         self._pages: dict[str, int] = {}
         builders = {"images": self._page_images, "seg": self._page_seg, "i0": self._page_i0,
-                    "analysis": self._page_analysis, "templates": self._page_templates}
+                    "analysis": self._page_analysis, "templates": self._page_templates,
+                    "display": self._page_display}
         for key, title, sub in SETTINGS_PAGES:
             page = QWidget(); v = QVBoxLayout(page); v.setContentsMargins(28, 22, 28, 22); v.setSpacing(12)
             t = QLabel(title); t.setStyleSheet("font-size: 21px; font-weight: 700;")
@@ -972,7 +1077,8 @@ class StudySettings(StudyForm, QDialog):
         self._card(v, QLabel("<b>What is measured?</b>"), self._target_box())
         self._card(v, self._form_contour())
         self._card(v, self._form_cellpose(),
-                   QLabel("Changing the Cellpose settings, its input or the target re-runs Cellpose for every image.",
+                   QLabel("Changing the model, magnification, Cellpose settings or the target re-runs the "
+                          "segmentation for every image.",
                           objectName="caption"))
 
     def _page_i0(self, v: QVBoxLayout) -> None:
@@ -980,6 +1086,20 @@ class StudySettings(StudyForm, QDialog):
 
     def _page_analysis(self, v: QVBoxLayout) -> None:
         self._card(v, self._form_analysis())
+
+    def _page_display(self, v: QVBoxLayout) -> None:
+        from .app import _recall, _remember
+        on = _recall("fill_kept")
+        fill = QCheckBox("Fill kept cells / nuclei in green"); fill.setChecked(True if on is None else bool(on))
+        alpha = QSlider(Qt.Horizontal); alpha.setRange(10, 80); alpha.setSingleStep(5)
+        alpha.setValue(round(float(_recall("fill_alpha") or 0.35) * 100))
+        pct = QLabel(f"{alpha.value()} %")
+        fill.toggled.connect(lambda c: (_remember(fill_kept=c), alpha.setEnabled(c)))
+        alpha.valueChanged.connect(lambda x: (_remember(fill_alpha=x / 100), pct.setText(f"{x} %")))
+        alpha.setEnabled(fill.isChecked())
+        row = QHBoxLayout(); row.addWidget(QLabel("Opacity:")); row.addWidget(alpha, 1); row.addWidget(pct)
+        box = QWidget(); box.setLayout(row)
+        self._card(v, fill, box)
 
     def _page_templates(self, v: QVBoxLayout) -> None:
         b = QPushButton("Save as template …"); b.clicked.connect(self._save_template)
@@ -1006,13 +1126,18 @@ class StudySettings(StudyForm, QDialog):
 
     # ── changes ──────────────────────────────────────────
     def _target_toggled(self) -> None:
-        if self._ready:      # a new target brings its defaults (Cellpose input, contour, debris flag)
+        if self._ready:      # a new target brings its defaults (model, preset, contour, debris flag)
             tmp = copy.deepcopy(self.study)
             tmp.target = TARGET_NUCLEUS if self.r_nuc.isChecked() else TARGET_CELL
             tmp.apply_target()
-            self.m_input.setCurrentIndex(self.m_input.findData(tmp.settings.cellpose.input))
-            self.m_method.setCurrentIndex(self.m_method.findData(tmp.settings.method))
-            self.m_debris.setValue(tmp.settings.debris_h)
+            t = tmp.settings
+            self.m_input.setCurrentIndex(self.m_input.findData(t.cellpose.input))
+            self.m_method.setCurrentIndex(self.m_method.findData(t.method))
+            self.m_debris.setValue(t.debris_h)
+            self.m_model.setCurrentIndex(self.m_model.findData(t.cellpose.model))
+            self.m_px.setValue(t.cellpose.pixel_size)
+            self.m_minarea.setValue(t.min_cell_area); self.m_maxarea.setValue(t.max_cell_area)
+            self.m_check.setCurrentIndex(self.m_check.findData(t.i0_check)); self.m_rel.setValue(t.i0_rel_pct)
         self._form_changed()
 
     def _folders_changed(self) -> None:
@@ -1063,7 +1188,7 @@ class StudySettings(StudyForm, QDialog):
             QMessageBox.information(self, "Settings", "Add at least one image folder."); return
         changes = self._changes()
         if any(c.startswith("cellpose.") for c in changes) and QMessageBox.question(
-                self, "Save", "The Cellpose settings changed – Cellpose will run again for every image. Save?") != QMessageBox.Yes:
+                self, "Save", "The segmentation settings changed – it will run again for every image. Save?") != QMessageBox.Yes:
             return
         w = self._work()
         w.save()

@@ -2,7 +2,7 @@
 measurement settings. One JSON file per study in the app's support folder.
 
 File names are read without regex, as in ErysReview: pick delimiter
-characters and give each resulting part a role. NKReview's roles go beyond
+characters and give each resulting part a role. ODReview's roles go beyond
 ErysReview's proband/timepoint/image number: group, cell type and marker,
 because 5mC and 5hmC are quantified separately and groups are compared.
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 from . import __version__
 from .paths import app_support_dir
-from .state import IMG_EXTS, Review, Settings, list_images
+from .state import I0_ABSOLUTE, I0_LOCAL, IMG_EXTS, Review, Settings, list_images
 
 ROLE_PROBAND = "proband"
 ROLE_GROUP = "gruppe"
@@ -57,6 +57,23 @@ CANDIDATE_DELIMS = [" ", "_", "-", "."]
 TARGET_CELL = "zelle"          # stored value (kept German); whole cell (NK): Cellpose on RGB
 TARGET_NUCLEUS = "kern"         # nucleus (C2C12 Ki67): Cellpose on the DAB map
 TARGET_LABELS = {TARGET_CELL: "whole cell", TARGET_NUCLEUS: "nucleus"}
+
+# Nucleus presets per magnification (stored values kept German). Pixel size is
+# InstanSeg's input, estimated from the nucleus size on the pilot images
+# (median ~37 / ~22 px across, ~10 µm nuclei); replace it once the microscope
+# calibration is known. Areas in px: nuclei kept, specks and cells dropped.
+MAG_HIGH = "hoch"
+MAG_LOW = "niedrig"
+MAG_LABELS = {MAG_HIGH: "high magnification", MAG_LOW: "low magnification"}
+MAGNIFICATIONS = {MAG_HIGH: {"pixel_size": 0.25, "min_cell_area": 200, "max_cell_area": 4000},
+                  MAG_LOW: {"pixel_size": 0.45, "min_cell_area": 100, "max_cell_area": 1500}}
+
+
+def apply_magnification(settings: Settings, magnification: str) -> None:
+    preset = MAGNIFICATIONS[magnification]
+    settings.cellpose.pixel_size = preset["pixel_size"]
+    settings.min_cell_area = preset["min_cell_area"]
+    settings.max_cell_area = preset["max_cell_area"]
 
 NO_TIMEPOINT = "no timepoint"
 NO_PROBAND = "no subject"
@@ -267,15 +284,25 @@ class Study:
     def load(cls, path: Path) -> "Study":
         return cls.from_dict(json.loads(Path(path).read_text("utf-8")), Path(path).name)
 
-    def apply_target(self) -> None:
+    def apply_target(self, magnification: str = MAG_HIGH) -> None:
         """Defaults that follow from what is measured."""
-        from .segment import METHOD_CELLPOSE, METHOD_HYBRID
+        from .segment import METHOD_CELLPOSE, METHOD_HYBRID, MODEL_INSTANSEG, CellposeParams
         nucleus = self.target == TARGET_NUCLEUS
+        self.settings.cellpose.model = MODEL_INSTANSEG if nucleus else CellposeParams.model
         self.settings.cellpose.input = "dab" if nucleus else "rgb"
         self.settings.debris_h = 0.04 if nucleus else 0.0
-        # Pale nuclei: an OD-threshold edge grows into neighbouring debris, so
-        # the contour is Cellpose's own (on the DAB map).
+        # Nuclei: the contour is the model's own; an OD-threshold edge grows
+        # into neighbouring debris.
         self.settings.method = METHOD_CELLPOSE if nucleus else METHOD_HYBRID
+        # I₀ validity: the fields of a nucleus must agree (± 3 %) – the pilot images are
+        # vignetted, so a fixed 210–220 excluded 98 of 147 nuclei, the local check 23.
+        self.settings.i0_check = I0_LOCAL if nucleus else I0_ABSOLUTE
+        if nucleus:
+            self.settings.i0_rel_pct = 3.0
+            apply_magnification(self.settings, magnification)
+        else:
+            self.settings.cellpose.pixel_size = 0.0
+            self.settings.max_cell_area = 0
 
     # ── images ───────────────────────────────────────────
     def images(self) -> list[ImageInfo]:

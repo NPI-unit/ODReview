@@ -6,7 +6,8 @@
     places next to the cell — inside a ring `i0_ring_inner`…`i0_ring_outer` px
     from the contour, touching no cell and no stained debris. The draw is
     seeded per image, cell and re-draw count, so it is reproducible; fields
-    set by hand replace it;
+    set by hand replace it. Or, with `i0_scope` "bild", one set of fields per
+    image in its free background (≥ 40 px from every cell), shared by all cells;
   * OD = −log₁₀(Ī / I₀) with Ī the mean grey value inside the contour (the OD
     of the mean, as Fiji's macro computes it, not the mean of pixel ODs);
   * a cell whose I₀ is outside [i0_min, i0_max] is excluded, not deleted.
@@ -71,8 +72,18 @@ def place_fields(labels: np.ndarray, cid: int, sl, background_ok: np.ndarray,
     ring = ndi.binary_dilation(cell, iterations=s.i0_ring_outer)
     ring &= ~ndi.binary_dilation(sub > 0, iterations=s.i0_ring_inner)
     ring &= background_ok[y0:y1, x0:x1]
-    # a centre is valid when its whole field lies in the ring
-    ok = ndi.binary_erosion(ring, structure=np.ones((s.i0_field_size, s.i0_field_size)),
+    return [[x + x0, y + y0] for x, y in _pick(ring, s, seed)]
+
+
+def place_image_fields(free: np.ndarray, s: Settings, seed: int) -> list:
+    """I₀ per image: field centres anywhere in the image's free background."""
+    return [[x, y] for x, y in _pick(free, s, seed)]
+
+
+def _pick(area: np.ndarray, s: Settings, seed: int) -> list:
+    """`i0_fields` random centres whose whole field lies in `area`, 2 sides apart."""
+    # a centre is valid when its whole field lies in the area
+    ok = ndi.binary_erosion(area, structure=np.ones((s.i0_field_size, s.i0_field_size)),
                             border_value=0)
     ys, xs = np.nonzero(ok)
     if not len(ys):
@@ -87,7 +98,7 @@ def place_fields(labels: np.ndarray, cid: int, sl, background_ok: np.ndarray,
             chosen.append((x, y))
             if len(chosen) == s.i0_fields:
                 break
-    return [[x + x0, y + y0] for x, y in chosen]
+    return chosen
 
 
 def field_means(gray: np.ndarray, fields: list, size: int) -> list:
@@ -119,12 +130,17 @@ def radial_profile(mask: np.ndarray, values: np.ndarray, rings: int = PROFILE_RI
 
 def measure_cell(gray: np.ndarray, labels: np.ndarray, cid: int, sl,
                  background_ok: np.ndarray, s: Settings, image_key: str,
-                 manual_fields: list | None = None, redraw: int = 0) -> CellMeasure:
+                 manual_fields: list | None = None, redraw: int = 0,
+                 image_fields: list | None = None) -> CellMeasure:
+    """`image_fields` (I₀ per image) replace the cell's own fields, even when empty."""
     sub_mask = labels[sl] == cid
     g = gray[sl][sub_mask]
     mean_gray = float(g.mean())
-    fields = manual_fields if manual_fields else place_fields(
-        labels, cid, sl, background_ok, s, _seed(image_key, cid, redraw))
+    if image_fields is not None:
+        fields = image_fields
+    else:
+        fields = manual_fields if manual_fields else place_fields(
+            labels, cid, sl, background_ok, s, _seed(image_key, cid, redraw))
     means = field_means(gray, fields, s.i0_field_size)
     i0 = float(np.mean(means)) if means else None
     if not i0:

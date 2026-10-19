@@ -175,13 +175,14 @@ def ndi_distance_to(mask):
     return ndi.distance_transform_edt(~mask)
 
 
-def test_i0_out_of_range_excludes_but_keeps_the_cell():
+def test_i0_out_of_range_warns_and_keeps_the_cell():
     img = _gray_scene(bg=205, cell_gray=140)
     with tempfile.TemporaryDirectory() as d:
         folder = Path(d); image = folder / "a.tif"; image.touch()
         res = analyze(folder, image, img, Settings(method="threshold"), Review())
         [row] = res.rows
-        assert row["status"] == "excluded" and not row["i0_ok"] and row["od"] is not None
+        # a failed I₀ check warns; the cell stays and counts once confirmed
+        assert row["status"] == "kept" and row["i0_warning"] and not row["i0_ok"] and row["od"] is not None
 
 
 def test_i0_fields_reproducible_redraw_and_manual():
@@ -243,16 +244,17 @@ def test_study_images_groups_and_summary():
         st.settings.method = "threshold"
         imgs = st.images()
         assert {i.meta["gruppe"] for i in imgs if i.proband == "A"} == {"Intervention"}
-        for i in imgs:
-            Review(reviewed=True).save(i.folder, i.path)
+        for i in imgs:      # subject B's cell stays unconfirmed: in cells.csv, not in summary.csv
+            Review(reviewed=True, confirmed=[1] if i.proband == "A" else []).save(i.folder, i.path)
         info = export_study(st, images=imgs)
-        assert info["n_cells"] == 3 and (info["folder"] / "cells.csv").exists()
+        assert info["n_cells"] == 3 and info["n_confirmed"] == 2 and (info["folder"] / "cells.csv").exists()
         import pandas as pd
         summ = pd.read_csv(info["folder"] / "summary.csv")
         cells = pd.read_csv(info["folder"] / "cells.csv")
         a = summ[summ.subject == "A"].iloc[0]
         expect = cells[cells.subject == "A"].od.mean()
         assert a.n_cells == 2 and abs(a.od_mean - expect) < 1e-3 and a.group == "Intervention"
+        assert list(summ.subject) == ["A"] and sorted(cells.confirmed) == [False, True, True]
 
 
 def test_relative_i0_check_follows_each_image():
@@ -265,7 +267,7 @@ def test_relative_i0_check_follows_each_image():
         img = _gray_scene(bg=216, cell_gray=150)
         img[10:30, 10:30] = 200                             # a field on "cytoplasm": -7 %
         [row] = analyze(folder, image, img, s, Review(i0_fields={"1": [[20, 20]]})).rows
-        assert row["status"] == "excluded" and row["i0_dev_pct"] < -3
+        assert row["status"] == "kept" and row["i0_warning"] and row["i0_dev_pct"] < -3
 
 
 def test_min_area_and_positive_call():
@@ -283,6 +285,207 @@ def test_min_area_and_positive_call():
         assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positive"] is False
         s.pos_threshold = 0
         assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["positive"] is None
+
+
+def test_max_area_drops_whole_cells():
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        img = _gray_scene(bg=216, cell_gray=150)
+        cp = np.zeros(img.shape[:2], np.int32)
+        cp[100:130, 100:130] = 1                           # 900 px nucleus
+        cp[150:250, 200:300] = 2                           # 10000 px whole cell
+        s = Settings(method="cellpose", min_cell_area=200, max_cell_area=4000)
+        assert [r["cell"] for r in analyze(folder, image, img, s, Review(), cp=cp).rows] == [1]
+
+
+def test_nucleus_target_uses_instanseg_with_magnification_preset():
+    from nkreview.study import MAG_LOW, Study, TARGET_CELL, TARGET_NUCLEUS
+    st = Study(name="x", target=TARGET_NUCLEUS)
+    st.apply_target(MAG_LOW)
+    s = st.settings
+    assert s.cellpose.model == segment.MODEL_INSTANSEG and s.method == segment.METHOD_CELLPOSE
+    assert (s.cellpose.pixel_size, s.min_cell_area, s.max_cell_area) == (0.45, 100, 1500)
+    assert (s.i0_check, s.i0_rel_pct) == ("lokal", 3.0)
+    st.target = TARGET_CELL
+    st.apply_target()
+    assert s.cellpose.model == "cpsam" and s.cellpose.pixel_size == 0 and s.max_cell_area == 0
+    assert s.i0_check == "absolut"
+
+
+def test_run_cellpose_hands_nuclei_to_instanseg():
+    calls = []
+
+    class Fake:
+        small_image_threshold = 10 ** 9
+
+        def eval_small_image(self, img, pixel_size, target, return_image_tensor):
+            import torch
+            calls.append((img.shape, pixel_size, target))
+            return torch.ones((1, 1) + img.shape[:2], dtype=torch.int32)
+
+    orig = segment._get_instanseg
+    segment._get_instanseg = lambda: Fake()
+    try:
+        out = segment.run_cellpose(np.zeros((40, 60, 3), np.uint8),
+                                   CellposeParams(model=segment.MODEL_INSTANSEG, pixel_size=0.25))
+    finally:
+        segment._get_instanseg = orig
+    assert calls == [((40, 60, 3), 0.25, "nuclei")] and out.shape == (40, 60) and out.dtype == np.int32
+
+
+def test_cache_from_before_a_new_param_stays_valid():
+    import json
+    from dataclasses import asdict
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        npz, meta = segment._cp_paths(folder, image)
+        np.savez_compressed(npz, masks=np.ones((4, 4), np.uint16))
+        old = {k: v for k, v in asdict(CellposeParams()).items() if k != "pixel_size"}
+        meta.write_text(json.dumps(old), "utf-8")
+        assert segment.has_cellpose_cache(folder, image, CellposeParams())
+        assert segment.cached_cellpose(folder, image, CellposeParams()) is not None
+        assert not segment.has_cellpose_cache(folder, image, CellposeParams(pixel_size=0.25))
+
+
+def test_closed_dialog_is_destroyed_on_the_gui_thread():
+    """A dialog kept alive only by a reference cycle must not be collected by
+    the segmentation thread (Qt widgets deleted off the GUI thread crash).
+    Without gc_on_gui_thread this collects it in the worker."""
+    import gc
+    import os
+    import threading
+    import weakref
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QThread, QTimer
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+    from nkreview.qt.app import gc_on_gui_thread
+
+    class Dialog(QDialog):
+        def __init__(self):
+            super().__init__()
+            self.b = QPushButton(self)
+            self.me = self                                # a cycle only the GC can free
+
+    class Busy(QThread):
+        def run(self):
+            junk = [{"i": i} for i in range(2_000_000)]   # enough to trigger automatic GC
+            del junk
+
+    app = QApplication.instance() or QApplication(["test"])
+    gc_on_gui_thread(app)
+    try:
+        main, where = threading.get_ident(), []
+        dlg = Dialog()
+        ref = weakref.ref(dlg, lambda _: where.append(threading.get_ident() == main))
+        del dlg
+        t = Busy(); t.start(); t.wait()
+        assert where == [] and ref() is not None
+        gc.collect()
+        assert where == [True]
+    finally:
+        gc.enable()
+        for timer in app.findChildren(QTimer):
+            timer.stop()
+
+
+def test_i0_per_image_one_set_of_fields_for_all_cells():
+    from nkreview.analysis import IMAGE_KEY
+    from nkreview.state import I0_PER_IMAGE
+    img = _scene(h=400, w=600, cells=((100, 120, 25, 0.3), (300, 450, 25, 0.2)))
+    cp = np.zeros(img.shape[:2], np.int32)
+    yy, xx = np.mgrid[:400, :600]
+    cp[(yy - 100) ** 2 + (xx - 120) ** 2 <= 25 ** 2] = 1
+    cp[(yy - 300) ** 2 + (xx - 450) ** 2 <= 25 ** 2] = 2
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        s = Settings(method="cellpose", i0_scope=I0_PER_IMAGE, i0_min=0, i0_max=255)
+        res = analyze(folder, image, img, s, Review(), cp=cp)
+        assert len(res.image_fields) == 3
+        assert res.cells[1].fields == res.cells[2].fields and res.cells[1].i0 == res.cells[2].i0
+        assert analyze(folder, image, img, s, Review(), cp=cp).image_fields == res.image_fields   # seeded
+        again = analyze(folder, image, img, s, Review(i0_seed={IMAGE_KEY: 1}), cp=cp).image_fields
+        assert again != res.image_fields                                                        # R redraws
+        hand = [[300.0, 50.0], [500.0, 60.0], [550.0, 150.0]]
+        res = analyze(folder, image, img, s, Review(i0_fields={IMAGE_KEY: hand}), cp=cp)
+        assert res.cells[1].fields == hand and res.cells[2].fields == hand
+        assert Settings(method="cellpose").i0_scope == "zelle"                             # default unchanged
+
+
+def test_local_i0_check_needs_agreeing_fields_not_a_fixed_range():
+    from nkreview.analysis import field_spread
+    from nkreview.state import I0_LOCAL
+    assert field_spread([200.0]) is None
+    assert round(field_spread([200.0, 210.0, 220.0]), 2) == 4.76      # 220 vs mean 210
+    img = _gray_scene(bg=240, cell_gray=150)                         # bright, outside 210–220
+    cp = np.zeros(img.shape[:2], np.int32)
+    yy, xx = np.mgrid[:300, :400]
+    cp[(yy - 150) ** 2 + (xx - 200) ** 2 <= 40 ** 2] = 1
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        s = Settings(method="cellpose", i0_check=I0_LOCAL, i0_rel_pct=3.0)
+        [r] = analyze(folder, image, img, s, Review(), cp=cp).rows
+        assert r["status"] == "kept" and not r["i0_warning"] and r["i0_field_spread_pct"] < 3
+        fields = analyze(folder, image, img, s, Review(), cp=cp).cells[1].fields
+        on_dark = [[200.0, 150.0]] + fields[1:]                          # field 1 moved onto a dark spot
+        [r] = analyze(folder, image, img, s, Review(i0_fields={"1": on_dark}), cp=cp).rows
+        assert r["i0_warning"] and "disagree" in r["reason"]
+        s.i0_check = "absolut"
+        assert analyze(folder, image, img, s, Review(), cp=cp).rows[0]["i0_warning"]  # 240 > 220
+
+
+def test_confirmed_only_for_kept_cells_and_notes_marked():
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"; image.touch()
+        img = _gray_scene(bg=216, cell_gray=150)
+        cp = np.zeros(img.shape[:2], np.int32)
+        cp[100:140, 100:140] = 1; cp[200:240, 300:340] = 2
+        s = Settings(method="cellpose", i0_min=0, i0_max=255)
+        rv = Review(confirmed=[1, 2], discarded=[2], notes={"1": "check field 2"})
+        rows = {r["cell"]: r for r in analyze(folder, image, img, s, rv, cp=cp).rows}
+        assert rows[1]["confirmed"] and rows[1]["has_note"]
+        assert not rows[2]["confirmed"] and not rows[2]["has_note"]        # discarded is never confirmed
+        assert Review(**{**Review().__dict__, "note": "x"}).note == "x"
+
+
+def test_comment_circles_hit_test_and_roundtrip():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from nkreview.qt.view import ImageView
+    QApplication.instance() or QApplication(["test"])
+    marks = [{"x": 50, "y": 50, "r": 40, "text": "big"}, {"x": 60, "y": 50, "r": 10, "text": "small"}]
+    v = ImageView(); v.set_pixmap(np.zeros((200, 200, 3), np.uint8)); v.set_marks(marks)
+    assert v.mark_at(60, 52) == 1 and v.mark_at(20, 50) == 0 and v.mark_at(150, 150) == -1
+    assert len(v._mark_items) == 6                      # rim, line, badge per circle
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d); image = folder / "a.tif"
+        Review(marks=marks).save(folder, image)
+        assert Review.load(folder, image).marks == marks
+
+
+def test_view_fills_kept_cells_only_and_numbers_the_fields():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from nkreview.qt.view import ImageView
+    QApplication.instance() or QApplication(["test"])
+    labels = np.zeros((60, 60), np.int32); labels[5:20, 5:20] = 1; labels[30:50, 30:50] = 2
+    rows = [{"cell": 1, "status": "kept", "confirmed": True}, {"cell": 2, "status": "excluded"}]
+    v = ImageView(); v.set_pixmap(np.zeros((60, 60, 3), np.uint8))
+    v.set_cells(labels, rows)
+    kept, excl = v._cell_items[1][1], v._cell_items[2][1]
+    assert kept.brush().style() != Qt.NoBrush and excl.brush().style() == Qt.NoBrush
+    v.set_fill(False, 0.35)
+    assert kept.brush().style() == Qt.NoBrush
+    v.set_cells(labels, [{"cell": 1, "status": "kept"}, {"cell": 2, "status": "excluded", "has_note": True}])
+    halo, line = v._cell_items[1][:2]
+    assert line.pen().color().name() == "#ffffff" and halo.isVisible()       # open: white with a dark rim
+    assert v._cell_items[2][1].pen().style() == Qt.SolidLine and v._cell_items[2][1].pen().widthF() == 3.0
+    assert len(v._cell_items[2]) == 3                                          # note dot
+    v.set_fields([[10, 40], [50, 10], [40, 5]], 9)
+    assert len(v._field_items) == 6                      # a box and its number per field
+    assert [it.text() for it in v._field_items if hasattr(it, "text")] == ["1", "2", "3"]
 
 
 def test_template_roundtrip_keeps_scheme_not_folders():

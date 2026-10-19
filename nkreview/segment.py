@@ -26,6 +26,11 @@ METHOD_CELLPOSE = "cellpose"
 METHOD_THRESHOLD = "threshold"
 METHODS = (METHOD_HYBRID, METHOD_CELLPOSE, METHOD_THRESHOLD)
 
+# Nuclei: InstanSeg's brightfield_nuclei model instead of Cellpose. Tested on the
+# pilot images (Oct 2026): cpsam outlines the whole cell whatever it is fed;
+# InstanSeg finds pale and dark nuclei in one run, ~1 s per image, Apache-2.0.
+MODEL_INSTANSEG = "instanseg"
+
 
 @dataclass
 class CellposeParams:
@@ -45,6 +50,8 @@ class CellposeParams:
     # as a grey image (nuclei: pale Ki67 nuclei that Cellpose misses on RGB
     # stand out clearly; C2C12 test image 27 instead of 8 objects).
     input: str = "rgb"
+    # InstanSeg only: µm per pixel (set by the magnification preset). 0 = unknown.
+    pixel_size: float = 0.0
 
 
 # ─────────────────────────────────────────────
@@ -156,8 +163,31 @@ def dab_input_image(img: np.ndarray, stain_vectors: list | None = None) -> np.nd
     return np.stack([g, g, g], axis=-1)
 
 
+def _get_instanseg():
+    if MODEL_INSTANSEG not in _MODEL_CACHE:
+        import os
+        from .paths import app_support_dir
+        # The model (16 MB) is downloaded on first use; keep it out of the venv,
+        # which a reinstall replaces.
+        os.environ.setdefault("INSTANSEG_BIOIMAGEIO_PATH", str(app_support_dir() / "models" / "instanseg"))
+        from instanseg import InstanSeg
+        _MODEL_CACHE[MODEL_INSTANSEG] = InstanSeg("brightfield_nuclei", verbosity=0)
+    return _MODEL_CACHE[MODEL_INSTANSEG]
+
+
+def run_instanseg(img: np.ndarray, p: CellposeParams) -> np.ndarray:
+    """Nuclei on the RGB image. Fast enough for the whole image, so no ROI crops."""
+    m = _get_instanseg()
+    rgb = np.ascontiguousarray(img[..., :3])
+    run = m.eval_small_image if rgb.size < m.small_image_threshold else m.eval_medium_image
+    lab = run(rgb, pixel_size=p.pixel_size or None, target="nuclei", return_image_tensor=False)
+    return np.asarray(lab.squeeze().cpu().numpy(), dtype=np.int32)
+
+
 def run_cellpose(img: np.ndarray, p: CellposeParams,
                  stain_vectors: list | None = None) -> np.ndarray:
+    if p.model == MODEL_INSTANSEG:
+        return run_instanseg(img, p)
     src = dab_input_image(img, stain_vectors) if p.input == "dab" else img
     if p.roi_mode != "dab":
         return _eval(src, p)
@@ -193,11 +223,18 @@ def _cp_paths(folder: Path, image: Path) -> tuple[Path, Path]:
     return d / f"{stem}_cellpose.npz", d / f"{stem}_cellpose.json"
 
 
+def _same_params(info: dict, p: CellposeParams) -> bool:
+    """A field missing from an older cache counts as its default, so adding a
+    field does not throw away every cached segmentation."""
+    default = CellposeParams()
+    return all(info.get(k, getattr(default, k)) == v for k, v in asdict(p).items())
+
+
 def cached_cellpose(folder: Path, image: Path, p: CellposeParams) -> np.ndarray | None:
     npz, meta = _cp_paths(folder, image)
     try:
         info = json.loads(meta.read_text("utf-8"))
-        if any(info.get(k) != v for k, v in asdict(p).items()):
+        if not _same_params(info, p):
             return None
         with np.load(npz) as z:
             return z["masks"].astype(np.int32)
@@ -216,11 +253,15 @@ def cellpose_for_image(folder: Path, image: Path, img: np.ndarray,
     npz, meta = _cp_paths(folder, image)
     np.savez_compressed(npz, masks=masks.astype(np.uint16))
     try:
-        import cellpose
-        ver = getattr(cellpose, "version", "unknown")
+        if p.model == MODEL_INSTANSEG:
+            from importlib.metadata import version
+            ver = version("instanseg-torch")
+        else:
+            import cellpose
+            ver = getattr(cellpose, "version", "unknown")
     except Exception:
         ver = "unknown"
-    meta.write_text(json.dumps({**asdict(p), "cellpose_version": ver,
+    meta.write_text(json.dumps({**asdict(p), "model_version": ver,
                                 "created_at": _dt.datetime.now().isoformat(timespec="seconds")},
                                indent=2), "utf-8")
     return masks
@@ -234,7 +275,7 @@ def has_cellpose_cache(folder: Path, image: Path, p: CellposeParams) -> bool:
         info = json.loads(meta.read_text("utf-8"))
     except (OSError, ValueError):
         return False
-    return all(info.get(k) == v for k, v in asdict(p).items())
+    return _same_params(info, p)
 
 
 # ─────────────────────────────────────────────

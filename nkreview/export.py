@@ -1,7 +1,8 @@
 """Study export into outputs/nkreview_<time>/ next to the study's first folder:
 
   cells.csv         one row per cell, long format for R
-  summary.csv       one row per subject × group × timepoint × cell type × marker (kept cells)
+  summary.csv       one row per subject × group × timepoint × cell type × marker (kept cells
+                    the reviewer confirmed; cells.csv lists unconfirmed ones with confirmed = False)
   settings.json     the study incl. every parameter + app version
   overlays/*.png    contours, I₀ fields and the OD per image
   nk_export.xlsx    the two tables as sheets
@@ -26,10 +27,13 @@ def overlay_png(img: np.ndarray, res: ImageResult, path: Path, field_size: int) 
     from PIL import Image, ImageDraw
     from skimage.segmentation import find_boundaries
     rgb = img[..., :3].astype(np.uint8).copy()
-    colors = {"kept": (33, 97, 217), "excluded": (151, 94, 12), "discarded": (150, 150, 150)}
+    colors = {"confirmed": (27, 122, 77), "kept": (255, 255, 255), "excluded": (199, 122, 18),
+              "discarded": (150, 150, 150)}
+    def col(r):
+        return colors["confirmed" if r.get("confirmed") else r["status"]]
     for r in res.rows:
         m = res.labels == r["cell"]
-        rgb[find_boundaries(m, mode="outer")] = colors[r["status"]]
+        rgb[find_boundaries(m, mode="outer")] = col(r)
     im = Image.fromarray(rgb)
     d = ImageDraw.Draw(im)
     half = field_size // 2
@@ -39,15 +43,17 @@ def overlay_png(img: np.ndarray, res: ImageResult, path: Path, field_size: int) 
             for x, y in cm.fields:
                 d.rectangle([x - half, y - half, x + half, y + half], outline=(151, 94, 12), width=1)
         od = "–" if r["od"] is None else f'{r["od"]:.3f}'
-        d.text((r["x"] + 30, r["y"] - 30), f'#{r["cell"]} {od} {r["status"]}', fill=colors[r["status"]])
+        state = "confirmed" if r.get("confirmed") else r["status"]
+        d.text((r["x"] + 30, r["y"] - 30), f'#{r["cell"]} {od} {state}', fill=col(r))
     im.save(path)
 
 
 def summarize(cells: list[dict]) -> list[dict]:
-    """Per subject × group × timepoint × cell type × marker over the kept cells."""
+    """Per subject × group × timepoint × cell type × marker over the kept cells the
+    reviewer confirmed – an unchecked cell never enters a mean."""
     groups: dict = {}
     for c in cells:
-        if c["status"] != STATUS_KEPT or c["od"] is None:
+        if c["status"] != STATUS_KEPT or not c.get("confirmed") or c["od"] is None:
             continue
         k = (c["subject"], c["group"], c["timepoint"], c["cell_type"], c["marker"])
         groups.setdefault(k, []).append(c)
@@ -116,5 +122,7 @@ def export_study(study: Study, only_reviewed: bool = True, with_excluded: bool =
                  "with_excluded": with_excluded})
     (out / "settings.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), "utf-8")
     kept = sum(c["status"] == STATUS_KEPT for c in cells)
-    return {"folder": out, "n_cells": kept, "n_rows": len(cells), "n_images": len(images) - skipped,
+    confirmed = sum(bool(c.get("confirmed")) for c in cells)
+    return {"folder": out, "n_cells": kept, "n_confirmed": confirmed, "n_rows": len(cells),
+            "n_images": len(images) - skipped,
             "skipped": skipped, "notes": notes}

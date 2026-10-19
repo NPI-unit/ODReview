@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>               <string>NKReview installieren</string>
-    <key>CFBundleDisplayName</key>        <string>NKReview installieren</string>
+    <key>CFBundleName</key>               <string>ODReview installieren</string>
+    <key>CFBundleDisplayName</key>        <string>ODReview installieren</string>
     <key>CFBundleExecutable</key>         <string>installer</string>
     <key>CFBundleIdentifier</key>         <string>de.nkreview.installer</string>
     <key>CFBundleIconFile</key>           <string>icon</string>

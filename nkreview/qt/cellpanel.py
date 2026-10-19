@@ -6,7 +6,9 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
+)
 
 OD_SCALE = 0.4            # colour scale of map and histogram: 0 … 0.4 OD
 
@@ -18,6 +20,71 @@ def _magma(v: np.ndarray) -> np.ndarray:
 
 def _fmt(v, n=3) -> str:
     return "–" if v is None else f"{v:.{n}f}"
+
+
+STATUS_TEXT = {"kept": "counted · open", "confirmed": "confirmed", "warn": "I₀ warning · open",
+               "excluded": "excluded",
+               "discarded": "discarded"}
+CONTOUR_TEXT = {"cellpose": "from the model", "hybrid": "hybrid (model + OD edge)",
+                "threshold": "OD threshold", "manual": "drawn by hand"}
+STATUS_COLORS = {"kept": ("#3D4450", "#EDEFF2"), "confirmed": ("#1B7A4D", "#E4F2EA"),
+                 "warn": ("#975E0C", "#F8EFDF"), "excluded": ("#975E0C", "#F8EFDF"),
+                 "discarded": ("#5A6577", "#EEF0F4")}
+
+
+def chip(text: str, status: str) -> str:
+    """Rich-text pill in the status colours (same as the contours)."""
+    fg, bg = STATUS_COLORS[status]
+    return f'<span style="color:{fg};background:{bg};">&nbsp;{text}&nbsp;</span>'
+
+
+def state_of(row: dict) -> str:
+    """'confirmed' (reviewer said yes), 'warn' (kept, I₀ check failed, still open), else the status."""
+    if row.get("confirmed"):
+        return "confirmed"
+    return "warn" if row.get("i0_warning") else row["status"]
+
+
+def edit_note(parent, title: str, text: str) -> str | None:
+    """Remark editor as in ErysReview: returns the new text ('' deletes), None = cancelled.
+    Keys typed here stay in the text field, so '1' or 'X' never trigger a shortcut."""
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit, QPushButton
+    dlg = QDialog(parent); dlg.setWindowTitle(title); dlg.resize(440, 300)
+    v = QVBoxLayout(dlg)
+    edit = QPlainTextEdit(text); edit.setPlaceholderText("Remark for discussion – stays in the review, not in the export.")
+    v.addWidget(edit, 1)
+    box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+    result = {"text": None}
+    if text:
+        delete = QPushButton("Delete"); delete.setStyleSheet("color: #B83A3A;")
+        box.addButton(delete, QDialogButtonBox.DestructiveRole)
+        delete.clicked.connect(lambda: (result.update(text=""), dlg.accept()))
+    box.accepted.connect(lambda: (result.update(text=edit.toPlainText().strip()), dlg.accept()))
+    box.rejected.connect(dlg.reject)
+    v.addWidget(box)
+    edit.setFocus()
+    dlg.exec()
+    return result["text"]
+
+
+class Fold(QWidget):
+    """A section with a title that opens and closes its body."""
+    def __init__(self, title: str, body: QWidget, opened: bool = False, on_toggle=None, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(4)
+        self.btn = QToolButton(text=title); self.btn.setCheckable(True)
+        self.btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.btn.setStyleSheet("QToolButton { border: none; font-weight: 600; padding: 0; }")
+        self.body = body
+        lay.addWidget(self.btn); lay.addWidget(body)
+        self.btn.setChecked(opened); self._show(opened)
+        self.btn.toggled.connect(self._show)
+        if on_toggle:
+            self.btn.toggled.connect(on_toggle)
+
+    def _show(self, on: bool) -> None:
+        self.btn.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+        self.body.setVisible(on)
 
 
 class Card(QFrame):
@@ -163,23 +230,35 @@ class Histogram(QWidget):
 
 
 class CellPanel(QWidget):
-    def __init__(self, parent=None):
+    """The selected cell: result first (OD as exported), then why (I₀ check),
+    then details on demand, then the distribution plots."""
+    def __init__(self, parent=None, more_open: bool = False, on_more=None):
         super().__init__(parent)
+        self.noun = "Cell"
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
         head = QHBoxLayout()
         self.title = QLabel(""); f = self.title.font(); f.setBold(True); f.setPointSizeF(f.pointSizeF() * 1.2); self.title.setFont(f)
-        self.sub = QLabel("", objectName="caption")
         self.badge = QLabel("")
-        head.addWidget(self.title); head.addWidget(self.sub); head.addStretch(1); head.addWidget(self.badge)
+        head.addWidget(self.title); head.addStretch(1); head.addWidget(self.badge)
         lay.addLayout(head)
-        grid = QGridLayout(); grid.setSpacing(6)
-        self.c_od = Card("OD (method)"); self.c_pix = Card("pixel OD mean ± SD")
-        self.c_i0 = Card("I₀ (fields)"); self.c_dab = Card("DAB OD (extra)")
-        for i, c in enumerate((self.c_od, self.c_pix, self.c_i0, self.c_dab)):
-            grid.addWidget(c, i // 2, i % 2)
-        lay.addLayout(grid)
+        res = QHBoxLayout(); res.setSpacing(8)
+        self.od = QLabel("–"); f = self.od.font(); f.setPointSizeF(f.pointSizeF() * 2.2); f.setBold(True); self.od.setFont(f)
+        self.od_cap = QLabel("OD – the value in the export")
+        res.addWidget(self.od); res.addWidget(self.od_cap, 0, Qt.AlignBottom); res.addStretch(1)
+        lay.addLayout(res)
+        self.sub = QLabel("", objectName="caption"); self.sub.setWordWrap(True)
+        lay.addWidget(self.sub)
         self.i0_state = QLabel(""); self.i0_state.setWordWrap(True); self.i0_state.setObjectName("i0state")
         lay.addWidget(self.i0_state)
+        self.note = QLabel(""); self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        more = QWidget(); grid = QGridLayout(more); grid.setContentsMargins(0, 0, 0, 0); grid.setSpacing(6)
+        self.c_i0 = Card("Background I₀"); self.c_pix = Card("Pixel OD inside")
+        self.c_dab = Card("DAB OD (extra)")
+        for i, c in enumerate((self.c_i0, self.c_pix, self.c_dab)):
+            grid.addWidget(c, 0, i)
+        self.more = Fold("More values", more, more_open, on_more)
+        lay.addWidget(self.more)
         row = QHBoxLayout(); row.setSpacing(8)
         lm = QVBoxLayout(); lm.addWidget(QLabel("<b>OD map</b>")); self.map = ODMap(); lm.addWidget(self.map, 1)
         lp = QVBoxLayout(); lp.addWidget(QLabel("<b>Radial profile</b>")); self.prof = Profile(); lp.addWidget(self.prof, 1)
@@ -192,25 +271,28 @@ class CellPanel(QWidget):
         self.hist = Histogram(); lay.addWidget(self.hist)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
-    def show_cell(self, row: dict | None, cm=None, gray=None, labels=None, s=None) -> None:
+    def show_cell(self, row: dict | None, cm=None, gray=None, labels=None, s=None, note: str = "") -> None:
         if row is None:
-            self.title.setText("No cell selected"); self.sub.setText("Click a cell")
-            self.badge.setText("")
-            for c in (self.c_od, self.c_pix, self.c_i0, self.c_dab):
+            self.title.setText(f"No {self.noun.lower()} selected")
+            self.sub.setText(f"Click a {self.noun.lower()} in the image or in the list.")
+            self.badge.setText(""); self.badge.setStyleSheet(""); self.od.setText("–")
+            for c in (self.c_pix, self.c_i0, self.c_dab):
                 c.set("–")
-            self.i0_state.setText("")
+            self.i0_state.setText(""); self.i0_state.setStyleSheet(""); self.note.setText("")
             self.map.set_data(None, None); self.prof.set_data([]); self.hist.set_data(None, []); self.hist_sub.setText("")
             return
-        self.title.setText(f"Cell #{row['cell']}")
-        self.sub.setText(f"{row['contour']} · {row['area_px']} px")
-        colors = {"kept": ("#1B7A4D", "#E4F2EA"), "excluded": ("#975E0C", "#F8EFDF"),
-                  "discarded": ("#5A6577", "#EEF0F4")}
-        fg, bg = colors[row["status"]]
-        self.badge.setText(row["status"])
+        self.title.setText(f"{self.noun} #{row['cell']}")
+        fg, bg = STATUS_COLORS[state_of(row)]
+        self.badge.setText(STATUS_TEXT[state_of(row)])
+        self.note.setText(f"❝  {note}" if note else "No note · N or tool 4 adds one")
+        self.note.setStyleSheet("color:#6A4FC4;" if note else "color: gray;")
         self.badge.setStyleSheet(f"color:{fg};background:{bg};border-radius:9px;padding:2px 10px;font-weight:600;")
-        self.c_od.set(_fmt(row["od"]), "−log₁₀(Ī / I₀), grey")
+        self.od.setText(_fmt(row["od"]))
+        contour = CONTOUR_TEXT.get(row["contour"], row["contour"])
+        self.sub.setText(f"−log₁₀(mean grey value / I₀) · {row['area_px']} px · contour: {contour}")
         self.c_pix.set(_fmt(row["pixel_od_mean"]), f"± {_fmt(row['pixel_od_sd'])} · median {_fmt(row['pixel_od_median'])}")
-        fields = " · ".join(_fmt(row.get(f"i0_field{k + 1}"), 1) for k in range(s.i0_fields) if row.get(f"i0_field{k + 1}") is not None)
+        fields = " · ".join(f"{k + 1}: {_fmt(row.get(f'i0_field{k + 1}'), 1)}" for k in range(s.i0_fields)
+                            if row.get(f"i0_field{k + 1}") is not None)
         self.c_i0.set(_fmt(row["i0"], 1), fields or "no background found")
         self.c_dab.set(_fmt(row["dab_od_mean"]), "deconvolution H-DAB")
         if row["i0"] is None:
@@ -218,21 +300,37 @@ class CellPanel(QWidget):
         elif s.i0_check == "relativ":
             ref, dev = row.get("i0_background"), row.get("i0_dev_pct")
             if dev is None:
-                msg, fg, bg = "⚠  No free background in the image – I₀ cannot be checked → excluded", "#975E0C", "#F8EFDF"
+                msg, fg, bg = "⚠  No free background in the image – I₀ cannot be checked – check the fields, then confirm (C) if they look right", "#975E0C", "#F8EFDF"
             else:
                 txt = (f"I₀ {_fmt(row['i0'], 1)} · free background {_fmt(ref, 1)} "
                        f"({dev:+.1f} %, allowed ± {s.i0_rel_pct:g} %)")
                 ok = row["i0_ok"]
-                msg = ("✓  " if ok else "⚠  ") + txt + ("" if ok else " → excluded")
+                msg = ("✓  " if ok else "⚠  ") + txt + ("" if ok else " – check the fields, then confirm (C) if they look right")
                 fg, bg = ("#1B7A4D", "#E4F2EA") if ok else ("#975E0C", "#F8EFDF")
+        elif s.i0_check == "lokal":
+            spread = row.get("i0_field_spread_pct")
+            agree = ("only one field – nothing to compare" if spread is None
+                     else f"agree within {spread:.1f} % (allowed ± {s.i0_rel_pct:g} %)")
+            if row["i0_ok"]:
+                msg, fg, bg = f"✓  Background I₀ {_fmt(row['i0'], 1)} – fields {fields} {agree}", "#1B7A4D", "#E4F2EA"
+            else:
+                msg, fg, bg = (f"⚠  Background I₀ fields {fields} disagree by {spread:.1f} % (allowed ± "
+                               f"{s.i0_rel_pct:g} %) – one may lie on debris. "
+                               "Move it (tool 3), draw new ones (R), or confirm (C) if they look right."), "#975E0C", "#F8EFDF"
         elif row["i0_ok"]:
-            msg, fg, bg = f"✓  I₀ {_fmt(row['i0'], 1)} is within {s.i0_min:g}–{s.i0_max:g}", "#1B7A4D", "#E4F2EA"
+            whose = "this image's fields" if s.i0_scope == "bild" else "the fields"
+            msg, fg, bg = (f"✓  Background I₀ {_fmt(row['i0'], 1)} (mean of {whose} {fields}) "
+                           f"is within {s.i0_min:g}–{s.i0_max:g}"), "#1B7A4D", "#E4F2EA"
         else:
-            msg, fg, bg = f"⚠  I₀ {_fmt(row['i0'], 1)} is outside {s.i0_min:g}–{s.i0_max:g} → excluded", "#975E0C", "#F8EFDF"
+            msg, fg, bg = (f"⚠  Background I₀ {_fmt(row['i0'], 1)} (fields {fields}) is outside "
+                           f"{s.i0_min:g}–{s.i0_max:g} – check the fields, then confirm (C) if they look right"), "#975E0C", "#F8EFDF"
         if row.get("positive") is not None:
             msg += f"  ·  {'positive' if row['positive'] else 'negative'} (cut-off OD {_fmt(s.pos_threshold)})"
         if row.get("debris_suspect"):
             msg += "  ·  debris suspected (high H channel)"
+        if row["status"] == "discarded":
+            fg, bg = STATUS_COLORS["discarded"]
+            msg = f"Discarded by you – not counted (X restores it).  {msg}"
         self.i0_state.setText(msg)
         self.i0_state.setStyleSheet(f"color:{fg};background:{bg};border-radius:8px;padding:6px 10px;")
         # map + histogram need the per-pixel OD

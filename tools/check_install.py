@@ -1,4 +1,4 @@
-"""Self-test after installing: does everything NKReview needs work here?
+"""Self-test after installing: does everything ODReview needs work here?
 
     ./.venv/bin/python tools/check_install.py
 
@@ -41,7 +41,7 @@ def check_python() -> None:
 
 PACKAGES = [("numpy", "numpy"), ("scipy", "scipy"), ("pandas", "pandas"), ("skimage", "scikit-image"),
             ("PIL", "pillow"), ("tifffile", "tifffile"), ("matplotlib", "matplotlib"), ("openpyxl", "openpyxl"),
-            ("torch", "torch"), ("cellpose", "cellpose"), ("PySide6", "PySide6-Essentials")]
+            ("torch", "torch"), ("cellpose", "cellpose"), ("instanseg", "instanseg-torch"), ("PySide6", "PySide6-Essentials")]
 
 
 def check_packages() -> bool:
@@ -101,7 +101,7 @@ def check_app() -> None:
     try:
         import nkreview
         importlib.import_module("nkreview.qt.app")
-        report("ok", "app", f"NKReview {nkreview.__version__}")
+        report("ok", "app", f"ODReview {nkreview.__version__}")
     except Exception as e:  # noqa: BLE001
         report("fail", "app", f"{type(e).__name__}: {e}")
 

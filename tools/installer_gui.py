@@ -1,6 +1,6 @@
 """The installer window (mockup v7): start → running → done / error.
 
-Started by "NKReview installieren.app" once Python 3.12 and PySide6 are
+Started by "ODReview installieren.app" once Python 3.12 and PySide6 are
 there (the app's launcher takes care of that) — and ONLY those: nothing here
 may import numpy, cellpose or the app's Qt modules (test_installer_gui checks). All the work is done by
 install.command --yes; this window only shows it: "[n/6] …" lines move the
@@ -35,8 +35,8 @@ HOME_MODEL = Path.home() / ".cellpose" / "models" / "cpsam"
 WHEELS_MB = 330          # what vendor/wheels holds when complete (measured: 321 MB)
 
 STEPS = ["Python 3.12 suchen", "Eigene Python-Umgebung (.venv)", "Pakete laden", "Pakete installieren",
-         "Cellpose-Modell (1,2 GB)", "Selbsttest & NKReview.app"]
-CHECK_NAMES = {"python": "Python", "qt": "Oberfläche (Qt)", "gpu": "Grafikkarte", "app": "NKReview",
+         "Cellpose-Modell (1,2 GB)", "Selbsttest & ODReview.app"]
+CHECK_NAMES = {"python": "Python", "qt": "Oberfläche (Qt)", "gpu": "Grafikkarte", "app": "ODReview",
                "model:cpsam": "Cellpose-Modell"}
 SYM = {"ok": ("✓", "#1B7A4D"), "warn": ("!", "#975E0C"), "fail": ("✕", "#B83A3A"), "run": ("◌", "#2161D9"),
        "todo": ("·", "#9AA4B2")}
@@ -117,7 +117,7 @@ def card() -> tuple[QFrame, QVBoxLayout]:
 class Installer(QWidget):
     def __init__(self, command: list[str] | None = None):
         super().__init__()
-        self.setWindowTitle("NKReview installieren")
+        self.setWindowTitle("ODReview installieren")
         self.setFixedSize(760, 600)
         icon = ROOT / "assets" / "icon.png"
         self._icon = QPixmap(str(icon)) if icon.is_file() else QPixmap()
@@ -160,7 +160,7 @@ class Installer(QWidget):
     def _page_start(self) -> QWidget:
         w, v = self._page()
         from nkreview import __version__
-        self._head(v, "NKReview installieren", f"Version {__version__} · macOS · Ordner: {ROOT}")
+        self._head(v, "ODReview installieren", f"Version {__version__} · macOS · Ordner: {ROOT}")
         c, cv = card()
         cap = QLabel("<b>Schon geprüft</b>"); cap.setContentsMargins(0, 0, 0, 4); cv.addWidget(cap)
         self.pre = {k: Row(t, "run", "…") for k, t in (("python", "Python 3.12"), ("vendor", "Pakete im Ordner (vendor/)"),
@@ -168,13 +168,13 @@ class Installer(QWidget):
         for r in self.pre.values():
             cv.addWidget(r)
         v.addWidget(c)
-        self.opt_app = QCheckBox("NKReview auf den Schreibtisch legen"); self.opt_app.setChecked(True)
+        self.opt_app = QCheckBox("ODReview auf den Schreibtisch legen"); self.opt_app.setChecked(True)
         self.opt_keep = QCheckBox("Pakete im Ordner behalten — für weitere Macs ohne Internet (~1,5 GB)")
         self.opt_keep.setChecked(True)
         v.addWidget(self.opt_app); v.addWidget(self.opt_keep)
         gk = QLabel("ⓘ <b>Falls macOS beim ersten Öffnen warnt</b> („Entwickler nicht verifiziert“): im Finder "
                     "<b>Rechtsklick › Öffnen</b> und noch einmal <b>Öffnen</b>. Die Installation nimmt danach die Warnung "
-                    "vom ganzen Ordner, auch von NKReview.app.")
+                    "vom ganzen Ordner, auch von ODReview.app.")
         gk.setWordWrap(True); gk.setObjectName("checkLine"); gk.setTextFormat(Qt.RichText)
         v.addWidget(gk)
         v.addStretch(1)
@@ -318,7 +318,7 @@ class Installer(QWidget):
     # ── 3 · done ──
     def _page_done(self) -> QWidget:
         w, v = self._page()
-        self.done_sub = self._head(v, "Fertig — NKReview ist installiert", "Selbsttest bestanden")
+        self.done_sub = self._head(v, "Fertig — ODReview ist installiert", "Selbsttest bestanden")
         c, self.done_list = card()
         v.addWidget(c)
         self.done_note = QLabel(""); self.done_note.setObjectName("checkLine"); self.done_note.setWordWrap(True)
@@ -327,7 +327,7 @@ class Installer(QWidget):
         foot = QHBoxLayout()
         lg = QLabel("Protokoll: install.log"); lg.setStyleSheet("color: #5A6577; font-size: 12px;")
         folder = QPushButton("Ordner zeigen"); folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(ROOT))))
-        self.open_btn = QPushButton("NKReview öffnen"); self.open_btn.setProperty("class", "primary")
+        self.open_btn = QPushButton("ODReview öffnen"); self.open_btn.setProperty("class", "primary")
         self.open_btn.clicked.connect(self.open_app)
         foot.addWidget(lg, 1); foot.addWidget(folder); foot.addWidget(self.open_btn)
         v.addLayout(foot)
@@ -341,16 +341,16 @@ class Installer(QWidget):
             if n in names:
                 self.done_list.addWidget(Row(names[n], s, d[:60]))
         if self.opt_app.isChecked():
-            self.done_list.addWidget(Row("NKReview.app", "ok", "auf dem Schreibtisch"))
+            self.done_list.addWidget(Row("ODReview.app", "ok", "auf dem Schreibtisch"))
         warns = [d for s, n, d in self.checks if s == "warn"]
         self.done_sub.setText("Selbsttest bestanden" + (" — mit Hinweisen" if warns else ""))
         self.done_note.setText("✓ Der Ordner enthält jetzt alles für weitere Macs: mitsamt vendor/ kopieren und dort "
-                               "„NKReview installieren“ öffnen — ohne Internet." if self.opt_keep.isChecked()
+                               "„ODReview installieren“ öffnen — ohne Internet." if self.opt_keep.isChecked()
                                else "✓ Installiert. Die Pakete im Ordner wurden wie gewählt wieder entfernt.")
         self.stack.setCurrentIndex(2)
 
     def open_app(self) -> None:
-        app = Path.home() / "Desktop" / "NKReview.app"
+        app = Path.home() / "Desktop" / "ODReview.app"
         if self.opt_app.isChecked() and app.exists():
             QProcess.startDetached("open", [str(app)])
         else:

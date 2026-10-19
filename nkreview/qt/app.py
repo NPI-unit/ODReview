@@ -8,6 +8,7 @@ I₀ fields, discard or draw cells → Export writes the study's tables.
 from __future__ import annotations
 
 import copy
+import gc
 import json
 import sys
 from pathlib import Path
@@ -16,26 +17,28 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
+    QAbstractItemView, QApplication, QGridLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
     QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
     QProgressDialog, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
-from ..analysis import STATUS_KEPT, ImageResult, analyze
+from ..analysis import IMAGE_KEY, STATUS_KEPT, ImageResult, analyze
 from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, has_cellpose_cache
-from ..state import MANUAL_ID_BASE, Review, app_support_dir, load_image
-from ..study import META_ROLES, ROLE_LABELS, ImageInfo, Study, list_studies, proband_progress
-from .cellpanel import CellPanel
+from ..state import I0_PER_IMAGE, MANUAL_ID_BASE, Review, app_support_dir, load_image
+from ..study import (
+    META_ROLES, ROLE_LABELS, TARGET_NUCLEUS, ImageInfo, Study, list_studies, proband_progress,
+)
+from .cellpanel import CellPanel, Fold, chip, edit_note, state_of
 from .style import apply_look
 from .studies import StudyPicker, _clear_layout
-from .view import TOOL_DRAW, TOOL_I0, TOOL_SELECT, ImageView
+from .view import LEGEND, TOOL_DRAW, TOOL_I0, TOOL_NOTE, TOOL_SELECT, ImageView, legend_icon
 from .splitter import PaneSplitter
 from .worker import CellposeWorker
 
 METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD edge)",
-                 METHOD_CELLPOSE: "Cellpose only",
+                 METHOD_CELLPOSE: "Model contour only",
                  METHOD_THRESHOLD: "OD threshold only (backup)"}
 VIEWS = (("rgb", "Original"), ("gray", "Grey OD"), ("dab", "DAB channel"))
 OD_DISPLAY_MAX = 0.4          # fixed scale so images stay comparable
@@ -44,6 +47,8 @@ COLUMNS = [("cell", "#"), ("status", "Status"), ("od", "OD"), ("i0", "I₀"),
            ("area_px", "Area"), ("note", "")]
 
 ST_WAIT, ST_RUN, ST_SEG, ST_DONE, ST_ERR = "○", "◐", "●", "✔", "✕"
+FILTERS = {"all": "All", "unsegmented": "○ Not segmented", "in_progress": "● In progress",
+           "finished": "✔ Finished", "with_notes": "❝ With notes"}
 ALL_MARKERS = ""
 
 
@@ -119,9 +124,9 @@ class MainWindow(QMainWindow):
         sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
         self.tool_group = QButtonGroup(self)
         for i, (tool, text) in enumerate(((TOOL_SELECT, "1  Select"), (TOOL_DRAW, "2  Draw contour"),
-                                          (TOOL_I0, "3  Set I₀ field"))):
+                                          (TOOL_I0, "3  Set I₀ field"), (TOOL_NOTE, "4  Note"))):
             b = QPushButton(text); b.setCheckable(True)
-            b.setProperty("first", i == 0); b.setProperty("last", i == 2)
+            b.setProperty("first", i == 0); b.setProperty("last", i == 3)
             b.setProperty("tool", tool)
             b.clicked.connect(lambda _=False, t=tool: self.set_tool(t))
             self.tool_group.addButton(b); sl.addWidget(b)
@@ -158,6 +163,10 @@ class MainWindow(QMainWindow):
         self.chip_row = QHBoxLayout(); self.chip_row.setSpacing(6)
         chips = QWidget(); chips.setLayout(self.chip_row)
         ll.addWidget(chips)
+        frow = QHBoxLayout(); frow.addWidget(QLabel("Show:"))
+        self.filter_combo = QComboBox()      # status filter as in ErysReview; counts follow the name
+        self.filter_combo.activated.connect(lambda _: self._build_tree())
+        frow.addWidget(self.filter_combo, 1); ll.addLayout(frow)
         self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.setColumnCount(2)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -165,23 +174,74 @@ class MainWindow(QMainWindow):
         self.tree.setFocusPolicy(Qt.NoFocus)
         self.tree.currentItemChanged.connect(self._tree_changed)
         ll.addWidget(self.tree, 1)
-        legend = QLabel("○ waiting · ◐ Cellpose · ● segmented · ✔ reviewed", objectName="caption")
+        legend = QLabel("○ waiting · ◐ segmenting · ● segmented · ✔ reviewed", objectName="caption")
         ll.addWidget(legend)
 
         # centre
         self.view = ImageView()
         self.view.cellClicked.connect(self.select_cell)
+        self.view.noteClicked.connect(self.edit_note)
+        self.view.markDrawn.connect(self.add_mark)
+        self.view.markClicked.connect(self.edit_mark)
         self.view.polygonDrawn.connect(self.add_manual)
         self.view.i0Clicked.connect(self.place_i0_field)
         self.view.menuRequested.connect(self._image_menu)
         self.banner = QLabel("", objectName="banner"); self.banner.setWordWrap(True)
         self.footer = QLabel("", objectName="caption")
         centre = QWidget(); cl = QVBoxLayout(centre); cl.setContentsMargins(0, 0, 0, 0)
-        cl.addWidget(self.view, 1); cl.addWidget(self.banner); cl.addWidget(self.footer)
+        cl.addWidget(self.view, 1); cl.addWidget(self._build_legend())
+        cl.addWidget(self.banner); cl.addWidget(self.footer)
 
-        # right: contour settings, cells, cell panel
-        right_inner = QWidget(); rl = QVBoxLayout(right_inner); rl.setContentsMargins(10, 8, 10, 8); rl.setSpacing(8)
-        form = QFormLayout()
+        # right: what is in the image, the selected cell (result, why, details), actions
+        right_inner = QWidget(); rl = QVBoxLayout(right_inner); rl.setContentsMargins(10, 8, 10, 8); rl.setSpacing(10)
+        self.summary = QLabel(""); self.summary.setWordWrap(True)
+        rl.addWidget(self.summary)
+        self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setHorizontalHeaderLabels([c[1] for c in COLUMNS])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.setMaximumHeight(170)
+        self.table.itemSelectionChanged.connect(self._table_selection)
+        self.table_fold = Fold("List", self.table, bool(_recall("table_open")),
+                               lambda on: _remember(table_open=on))
+        rl.addWidget(self.table_fold)
+        self.comments = QWidget(); self.comments_l = QVBoxLayout(self.comments)
+        self.comments_l.setContentsMargins(0, 0, 0, 0); self.comments_l.setSpacing(2)
+        self.comments_fold = Fold("Comments", self.comments, True)
+        rl.addWidget(self.comments_fold)
+        line = QFrame(); line.setFrameShape(QFrame.HLine); line.setObjectName("rule"); rl.addWidget(line)
+        self.panel = CellPanel(more_open=bool(_recall("more_open")), on_more=lambda on: _remember(more_open=on))
+        rl.addWidget(self.panel)
+        self.cell_caption = QLabel("This cell", objectName="caption"); rl.addWidget(self.cell_caption)
+        row1 = QHBoxLayout()
+        self.b_confirm = QPushButton("✔ Confirm (C)"); self.b_confirm.clicked.connect(self.toggle_confirm)
+        self.b_confirm.setToolTip("Confirm this counted cell and jump to the next open one. C again undoes it.")
+        self.b_confirm.setStyleSheet("QPushButton { border: 2px solid #1B7A4D; color: #1B7A4D; font-weight: 600; }")
+        self.b_discard = QPushButton("Discard (X)"); self.b_discard.clicked.connect(self.toggle_discard)
+        row1.addWidget(self.b_confirm, 3); row1.addWidget(self.b_discard, 2)
+        rl.addLayout(row1)
+        row2 = QHBoxLayout()
+        self.b_note = QPushButton("Note (N)"); self.b_note.clicked.connect(lambda: self.edit_note(self.selected))
+        self.b_redraw = QPushButton("New I₀ fields (R)"); self.b_redraw.clicked.connect(self.redraw_fields)
+        self.b_delete = QPushButton("Delete drawn"); self.b_delete.clicked.connect(self.delete_manual)
+        row2.addWidget(self.b_note); row2.addWidget(self.b_redraw); row2.addWidget(self.b_delete)
+        rl.addLayout(row2)
+        rl.addWidget(QLabel("This image", objectName="caption"))
+        row3 = QHBoxLayout()
+        self.b_confirm_all = QPushButton("Confirm all open"); self.b_confirm_all.clicked.connect(self.confirm_all_open)
+        self.b_image_note = QPushButton("Image note"); self.b_image_note.clicked.connect(lambda: self.edit_note(0))
+        self.b_rerun = QPushButton("Rerun segmentation"); self.b_rerun.clicked.connect(self.rerun_cellpose)
+        row3.addWidget(self.b_confirm_all); row3.addWidget(self.b_image_note); row3.addWidget(self.b_rerun)
+        rl.addLayout(row3)
+        self.b_done = QPushButton("✔ Image reviewed (Enter)"); self.b_done.setProperty("class", "primary")
+        self.b_done.clicked.connect(self.toggle_reviewed)
+        rl.addWidget(self.b_done)
+        form_w = QWidget(); form = QFormLayout(form_w); form.setContentsMargins(0, 0, 0, 0)
         self.method_combo = QComboBox()
         for k, v in METHOD_LABELS.items():
             self.method_combo.addItem(v, k)
@@ -195,32 +255,8 @@ class MainWindow(QMainWindow):
         thr_row = QHBoxLayout(); thr_row.addWidget(self.thr_spin); thr_row.addWidget(self.cb_only_this)
         form.addRow("Contour:", self.method_combo)
         form.addRow("OD threshold:", thr_row)
-        rl.addLayout(form)
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels([c[1] for c in COLUMNS])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setFocusPolicy(Qt.NoFocus)
-        self.table.setMaximumHeight(170)
-        self.table.itemSelectionChanged.connect(self._table_selection)
-        rl.addWidget(self.table)
-        self.panel = CellPanel(); rl.addWidget(self.panel)
-        row2 = QHBoxLayout()
-        self.b_discard = QPushButton("Discard (X)"); self.b_discard.clicked.connect(self.toggle_discard)
-        self.b_redraw = QPushButton("Redraw I₀ fields (R)"); self.b_redraw.clicked.connect(self.redraw_fields)
-        self.b_delete = QPushButton("Delete drawn"); self.b_delete.clicked.connect(self.delete_manual)
-        row2.addWidget(self.b_discard); row2.addWidget(self.b_redraw); row2.addWidget(self.b_delete)
-        rl.addLayout(row2)
-        row3 = QHBoxLayout()
-        self.b_rerun = QPushButton("Rerun Cellpose"); self.b_rerun.clicked.connect(self.rerun_cellpose)
-        self.b_done = QPushButton("✔ Image reviewed (Enter)"); self.b_done.setProperty("class", "primary")
-        self.b_done.clicked.connect(self.toggle_reviewed)
-        row3.addWidget(self.b_rerun); row3.addWidget(self.b_done, 1)
-        rl.addLayout(row3)
+        rl.addWidget(Fold("Contour method (advanced)", form_w, bool(_recall("contour_open")),
+                          lambda on: _remember(contour_open=on)))
         rl.addStretch(1)
         right = QScrollArea(); right.setWidgetResizable(True); right.setWidget(right_inner)
         right.setFrameShape(QFrame.NoFrame); right.setMinimumWidth(430)
@@ -238,11 +274,37 @@ class MainWindow(QMainWindow):
         self._set_enabled(False)
         self.panel.show_cell(None)
 
+    def _build_legend(self) -> QWidget:
+        """What the contour colours mean – always under the image."""
+        w = QWidget(); g = QGridLayout(w); g.setContentsMargins(4, 4, 4, 0)
+        g.setHorizontalSpacing(4); g.setVerticalSpacing(2)
+        self._legend_icons = {}
+        for i, (kind, text) in enumerate(LEGEND):             # two rows, so nothing is cut off
+            ic = QLabel(); self._legend_icons[kind] = ic
+            t = QLabel(text, objectName="caption")
+            if kind == "field":
+                self._legend_field = t
+            row, col = divmod(i, 4)
+            g.addWidget(ic, row, 2 * col); g.addWidget(t, row, 2 * col + 1)
+        g.setColumnStretch(8, 1)
+        self.apply_display_prefs()
+        return w
+
+    def apply_display_prefs(self) -> None:
+        """Fill of the kept cells: an app-wide display choice (app.json), not a study setting."""
+        on = _recall("fill_kept")
+        on = True if on is None else bool(on)
+        alpha = float(_recall("fill_alpha") or 0.35)
+        self.view.set_fill(on, alpha)
+        for kind, ic in self._legend_icons.items():
+            ic.setPixmap(legend_icon(kind, alpha if (kind == "keep" and on) else 0.0))
+
     def _build_shortcuts(self) -> None:
         keys = {
             Qt.Key_Right: lambda: self.go(+1), Qt.Key_Left: lambda: self.go(-1),
             Qt.Key_1: lambda: self.set_tool(TOOL_SELECT), Qt.Key_2: lambda: self.set_tool(TOOL_DRAW),
-            Qt.Key_3: lambda: self.set_tool(TOOL_I0),
+            Qt.Key_3: lambda: self.set_tool(TOOL_I0), Qt.Key_4: lambda: self.set_tool(TOOL_NOTE),
+            Qt.Key_C: self.toggle_confirm, Qt.Key_N: lambda: self.edit_note(self.selected),
             Qt.Key_X: self.toggle_discard, Qt.Key_Delete: self.toggle_discard,
             Qt.Key_Backspace: self.toggle_discard, Qt.Key_R: self.redraw_fields,
             Qt.Key_D: self.cycle_view, Qt.Key_O: lambda: self.cb_contours.toggle(),
@@ -259,7 +321,8 @@ class MainWindow(QMainWindow):
 
     def _set_enabled(self, on: bool) -> None:
         for w in (self.method_combo, self.thr_spin, self.cb_only_this, self.b_rerun,
-                  self.b_discard, self.b_redraw, self.b_delete, self.b_done):
+                  self.b_discard, self.b_redraw, self.b_delete, self.b_done, self.b_confirm,
+                  self.b_confirm_all, self.b_note, self.b_image_note):
             w.setEnabled(on)
 
     # ── study ───────────────────────────────────────────────
@@ -275,11 +338,15 @@ class MainWindow(QMainWindow):
 
     def open_study(self, study: Study) -> None:
         self.study = study
+        self.panel.noun = "Nucleus" if study.target == TARGET_NUCLEUS else "Cell"
+        self.cell_caption.setText(f"This {self.panel.noun.lower()}")
+        self._legend_field.setText("I₀ fields 1–3 of this image" if study.settings.i0_scope == I0_PER_IMAGE
+                                   else "I₀ fields 1–3 of the selected")
         self.images = study.images()
         self.failed.clear(); self.running.clear()
         self.idx = -1
         _remember(study=study.file)
-        self.setWindowTitle(f"NKReview {__version__} — {study.name}")
+        self.setWindowTitle(f"ODReview {__version__} — {study.name}")
         self._build_chips()
         self._build_tree()
         self.worker.stain_vectors = study.settings.stain_vectors
@@ -317,14 +384,36 @@ class MainWindow(QMainWindow):
         if self.visible and self.idx not in self.visible:
             self.go_to(self.visible[0])
 
+    def _filter_state(self, i: int) -> tuple[str, bool]:
+        """('unsegmented' | 'in_progress' | 'finished', has a note or comment) of image i."""
+        st = self._status_of(i)
+        info = self.images[i]
+        rv = Review.load(info.folder, info.path)
+        noted = bool(rv.note or rv.notes or rv.marks)
+        if st == ST_DONE:
+            return "finished", noted
+        return ("in_progress" if st == ST_SEG else "unsegmented"), noted
+
     def _build_tree(self) -> None:
         self.tree.blockSignals(True)
         self.tree.clear(); self._items.clear(); self.visible = []
+        mode = self.filter_combo.currentData() or "all"
+        counts = dict.fromkeys(FILTERS, 0)
         groups: dict = {}
         for i, info in enumerate(self.images):
             if self.marker and info.marker != self.marker:
                 continue
+            state, noted = self._filter_state(i)
+            counts["all"] += 1; counts[state] += 1; counts["with_notes"] += noted
+            if mode != "all" and not (noted if mode == "with_notes" else state == mode):
+                continue
             groups.setdefault((info.timepoint, info.proband), []).append(i)
+        self.filter_combo.blockSignals(True)
+        self.filter_combo.clear()
+        for key, label in FILTERS.items():
+            self.filter_combo.addItem(f"{label} ({counts[key]})", key)
+        self.filter_combo.setCurrentIndex(list(FILTERS).index(mode))
+        self.filter_combo.blockSignals(False)
         for (tp, prob), idxs in sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower())):
             grp = self.images[idxs[0]].meta.get("gruppe", "")
             head = QTreeWidgetItem([f"{tp}  ·  subject {prob}" + (f"  ·  {grp}" if grp else ""), ""])
@@ -359,8 +448,10 @@ class MainWindow(QMainWindow):
             return
         info = self.images[i]
         st = self._status_of(i)
-        sun = "  ☀︎" if Review.load(info.folder, info.path).display else ""
-        it.setText(0, f"{st}  {info.path.name}{sun}")
+        rv = Review.load(info.folder, info.path)
+        sun = "  ☀︎" if rv.display else ""
+        noted = "  ❝" if rv.note or rv.notes or rv.marks else ""
+        it.setText(0, f"{st}  {info.path.name}{sun}{noted}")
         it.setToolTip(0, self.failed.get(str(info.path), str(info.path)))
         it.setText(1, info.marker)
 
@@ -413,6 +504,8 @@ class MainWindow(QMainWindow):
             self.selected = self.result.rows[0]["cell"]
         self._render_base(fit)
         self.view.set_cells(self.result.labels, self.result.rows, self.selected)
+        self.view.set_marks(self.review.marks)
+        self._fill_comments()
         self._draw_fields()
         self._sync_controls()
         self._fill_table()
@@ -420,9 +513,13 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _draw_fields(self) -> None:
-        fields = {cid: cm.fields for cid, cm in self.result.cells.items()
-                  if self._row(cid) and self._row(cid)["status"] != "discarded"}
-        self.view.set_fields(fields, self.study.settings.i0_field_size, self.selected)
+        cm = self.result.cells.get(self.selected)
+        r = self._row(self.selected)
+        if self._per_image():                      # one set for the whole image: always shown
+            pts = self.result.image_fields or []
+        else:
+            pts = cm.fields if cm is not None and r and r["status"] != "discarded" else []
+        self.view.set_fields(pts, self.study.settings.i0_field_size)
 
     def _render_base(self, fit: bool = False) -> None:
         if self.view_mode == "rgb" or self.result is None:
@@ -459,17 +556,31 @@ class MainWindow(QMainWindow):
 
     def _fill_table(self) -> None:
         rows = self.result.rows
+        n = {k: 0 for k in ("confirmed", "kept", "warn", "excluded", "discarded")}
+        for r in rows:
+            n[state_of(r)] += 1
+        nouns = "nuclei" if self.study.target == TARGET_NUCLEUS else "cells"
+        label = {"confirmed": "confirmed", "kept": "open", "warn": "I₀ warning", "excluded": "no background",
+                 "discarded": "discarded"}
+        chips = "  ".join(chip(f"{n[k]} {label[k]}", k) for k in n if n[k])
+        todo = n["confirmed"] + n["kept"] + n["warn"]
+        done = f" · {n['confirmed']}/{todo} confirmed" if todo else ""
+        self.summary.setText(f"<b>{len(rows)} {nouns} in this image</b>{done}<br>{chips}")
+        self.b_confirm_all.setEnabled(n["kept"] > 0)
+        self.table_fold.btn.setText(f"List of {nouns}")
         self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
-        colors = {"discarded": QColor("#8A8F99"), "excluded": QColor("#975E0C")}
+        colors = {"discarded": QColor("#8A8F99"), "excluded": QColor("#975E0C"), "warn": QColor("#975E0C"),
+                  "confirmed": QColor("#1B7A4D")}
         for i, r in enumerate(rows):
             hint = []
             if r["manual"]: hint.append("drawn")
             if r["edge_cell"]: hint.append("image edge")
             if r["debris_suspect"]: hint.append("Debris?")
             if r.get("positive") is not None: hint.append("pos" if r["positive"] else "neg")
-            if r["reason"] and r["status"] == "excluded": hint.append(r["reason"])
-            vals = {**r, "note": ", ".join(hint)}
+            if r["reason"] and r["status"] != "discarded": hint.append(r["reason"])
+            if r.get("has_note"): hint.insert(0, "❝")
+            vals = {**r, "note": ", ".join(hint), "status": state_of(r)}
             for c, (key, _) in enumerate(COLUMNS):
                 v = vals[key]
                 if v is None:
@@ -482,8 +593,8 @@ class MainWindow(QMainWindow):
                     text = str(v)
                 it = QTableWidgetItem(text)
                 it.setData(Qt.UserRole, r["cell"])
-                if r["status"] in colors:
-                    it.setForeground(colors[r["status"]])
+                if state_of(r) in colors:
+                    it.setForeground(colors[state_of(r)])
                 self.table.setItem(i, c, it)
             if r["cell"] == self.selected:
                 self.table.selectRow(i)
@@ -497,24 +608,32 @@ class MainWindow(QMainWindow):
     def _update_detail(self) -> None:
         r = self._row(self.selected)
         self.b_discard.setEnabled(r is not None)
-        self.b_redraw.setEnabled(r is not None)
+        self.b_confirm.setEnabled(bool(r and r["status"] == STATUS_KEPT))
+        self.b_confirm.setText("Undo confirm (C)" if r and r.get("confirmed") else "✔ Confirm (C)")
+        self.b_note.setEnabled(r is not None)
+        self.b_redraw.setEnabled(r is not None or self._per_image())
+        self.b_redraw.setText("New image I₀ fields (R)" if self._per_image() else "New I₀ fields (R)")
         self.b_delete.setEnabled(bool(r and r["manual"]))
         if r is None:
             self.panel.show_cell(None)
             return
         self.b_discard.setText("Restore (X)" if r["status"] == "discarded" else "Discard (X)")
         self.panel.show_cell(r, self.result.cells.get(r["cell"]), self.result.gray,
-                             self.result.labels, self.study.settings)
+                             self.result.labels, self.study.settings,
+                             note=self.review.notes.get(str(r["cell"]), ""))
 
     def _update_status(self) -> None:
         if not self.images:
             self.status.setText("")
             return
         pend = self.worker.pending() + len(self.running)
-        cp = f"Cellpose: {pend} to go" if pend else "Cellpose: done"
+        cp = f"Segmentation: {pend} to go" if pend else "Segmentation: done"
         pos = self.visible.index(self.idx) + 1 if self.idx in self.visible else 0
-        kept = sum(r["status"] == STATUS_KEPT for r in self.result.rows) if self.result else 0
-        self.status.setText(f"Image {pos}/{len(self.visible)} · {kept} cell(s) kept · {cp}")
+        rows = self.result.rows if self.result else []
+        kept = sum(r["status"] == STATUS_KEPT for r in rows)
+        conf = sum(bool(r.get("confirmed")) for r in rows)
+        nouns = "nuclei" if self.study and self.study.target == TARGET_NUCLEUS else "cells"
+        self.status.setText(f"Image {pos}/{len(self.visible)} · {conf}/{kept} {nouns} confirmed · {cp}")
 
     # ── review edits ────────────────────────────────────────
     def _edit(self, fn) -> None:
@@ -559,33 +678,132 @@ class MainWindow(QMainWindow):
                 rv.discarded.remove(r["cell"])
             else:
                 rv.discarded.append(r["cell"])
+                if r["cell"] in rv.confirmed:
+                    rv.confirmed.remove(r["cell"])
         self._edit(fn)
+
+    def toggle_confirm(self) -> None:
+        """C: confirm the selected counted cell (green) and go to the next open one; C again undoes."""
+        r = self._row(self.selected)
+        if not r or r["status"] != STATUS_KEPT:
+            return
+        cid, undo = r["cell"], bool(r.get("confirmed"))
+        def fn(rv: Review):
+            if undo:
+                rv.confirmed.remove(cid)
+            else:
+                rv.confirmed.append(cid)
+        self._edit(fn)
+        if not undo:
+            rows = self.result.rows
+            i = next((k for k, x in enumerate(rows) if x["cell"] == cid), -1)
+            nxt = next((x for x in rows[i + 1:] + rows[:i] if x["status"] == STATUS_KEPT and not x.get("confirmed")), None)
+            if nxt:
+                self.select_cell(nxt["cell"])
+                self.view.centerOn(nxt["x"], nxt["y"])
+
+    def _open_cells(self, with_warning: bool = True) -> list[int]:
+        return [r["cell"] for r in self.result.rows if r["status"] == STATUS_KEPT and not r.get("confirmed")
+                and (with_warning or not r.get("i0_warning"))]
+
+    def confirm_all_open(self) -> None:
+        """Every open cell without an I₀ warning – those need a look, one by one."""
+        open_ = self._open_cells(with_warning=False) if self.result else []
+        if open_:
+            self._edit(lambda rv: rv.confirmed.extend(c for c in open_ if c not in rv.confirmed))
+
+    def add_mark(self, x: float, y: float, r: float) -> None:
+        """Tool 4 next to the cells: a comment circle anywhere in the image."""
+        if self.result is None:
+            return
+        text = edit_note(self, f"Comment {len(self.review.marks) + 1}", "")
+        if text:
+            mark = {"x": round(x, 1), "y": round(y, 1), "r": round(r, 1), "text": text}
+            self._edit(lambda rv: rv.marks.append(mark))
+
+    def edit_mark(self, k: int) -> None:
+        old = self.review.marks[k]["text"]
+        text = edit_note(self, f"Comment {k + 1}", old)
+        if text is None or text == old:
+            return
+        def fn(rv: Review):
+            if text:
+                rv.marks[k] = {**rv.marks[k], "text": text}
+            else:
+                del rv.marks[k]                     # empty or Delete: the circle goes too
+        self._edit(fn)
+
+    def _fill_comments(self) -> None:
+        """The image's comment circles (and its note) as a list; a click shows the circle."""
+        lay = self.comments_l
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        marks, note = self.review.marks, self.review.note
+        for k, m in enumerate(marks):
+            first = m["text"].splitlines()[0] if m["text"] else ""
+            b = QPushButton(f"{k + 1} · {first[:60]}"); b.setFlat(True)
+            b.setStyleSheet("text-align: left; padding: 2px 4px;"); b.setToolTip(m["text"])
+            b.clicked.connect(lambda _=False, m=m: (self.view.zoom_to(m["x"], m["y"], 4 * m["r"] + 80)))
+            lay.addWidget(b)
+        if note:
+            t = QLabel(f"❝ Image: {note}"); t.setWordWrap(True); lay.addWidget(t)
+        if not marks and not note:
+            lay.addWidget(QLabel("None · tool 4: drag a circle next to the cells", objectName="caption"))
+        self.comments_fold.btn.setText(f"Comments ({len(marks) + bool(note)})")
+
+    def edit_note(self, cid: int) -> None:
+        """N / tool 4: the remark of a cell, or of the whole image when no cell is hit."""
+        if self.result is None:
+            return
+        r = self._row(cid) if cid else None
+        title = f"Note · {self.panel.noun} #{cid}" if r else "Note · this image"
+        old = self.review.notes.get(str(cid), "") if r else self.review.note
+        text = edit_note(self, title, old)
+        if text is None or text == old:
+            return
+        def fn(rv: Review):
+            if not r:
+                rv.note = text
+            elif text:
+                rv.notes[str(cid)] = text
+            else:
+                rv.notes.pop(str(cid), None)
+        if r:
+            self.selected = cid
+        self._edit(fn)
+
+    def _per_image(self) -> bool:
+        return self.study is not None and self.study.settings.i0_scope == I0_PER_IMAGE
 
     def redraw_fields(self) -> None:
         r = self._row(self.selected)
-        if not r:
+        if not r and not self._per_image():
             return
-        key = str(r["cell"])
+        key = IMAGE_KEY if self._per_image() else str(r["cell"])
         def fn(rv: Review):
             rv.i0_fields.pop(key, None)
             rv.i0_seed[key] = int(rv.i0_seed.get(key, 0)) + 1
         self._edit(fn)
 
     def place_i0_field(self, x: float, y: float) -> None:
-        """Tool 3: move the selected cell's nearest I₀ field to the click."""
-        r = self._row(self.selected)
-        if not r:
-            QMessageBox.information(self, "I₀ field", "Select a cell first (tool 1), then set its fields.")
-            return
-        cm = self.result.cells.get(r["cell"])
-        fields = [list(p) for p in (cm.fields if cm else [])]
+        """Tool 3: move the nearest I₀ field (the selected cell's, or the image's) to the click."""
+        if self._per_image():
+            fields, key = [list(p) for p in (self.result.image_fields or [])], IMAGE_KEY
+        else:
+            r = self._row(self.selected)
+            if not r:
+                QMessageBox.information(self, "I₀ field", "Select a cell first (tool 1), then set its fields.")
+                return
+            cm = self.result.cells.get(r["cell"])
+            fields, key = [list(p) for p in (cm.fields if cm else [])], str(r["cell"])
         n = self.study.settings.i0_fields
         if len(fields) < n:
             fields.append([round(x, 1), round(y, 1)])
         else:
             k = min(range(len(fields)), key=lambda j: (fields[j][0] - x) ** 2 + (fields[j][1] - y) ** 2)
             fields[k] = [round(x, 1), round(y, 1)]
-        key = str(r["cell"])
         self._edit(lambda rv: rv.i0_fields.__setitem__(key, fields))
 
     def add_manual(self, pts: list) -> None:
@@ -619,6 +837,27 @@ class MainWindow(QMainWindow):
     def toggle_reviewed(self) -> None:
         if self.result is None:
             return
+        open_ = self._open_cells(with_warning=False)
+        warned = len(self._open_cells()) - len(open_)
+        if not self.review.reviewed and (open_ or warned):
+            nouns = "nuclei" if self.panel.noun == "Nucleus" else "cells"
+            box = QMessageBox(QMessageBox.Question, "Image reviewed",
+                              f"{len(open_) + warned} counted {nouns} are not confirmed yet"
+                              + (f" ({warned} with an I₀ warning – these stay open unless you confirm them one by one)"
+                                 if warned else "") + ". Only confirmed ones enter summary.csv.", parent=self)
+            b_all = box.addButton("Confirm all and finish", QMessageBox.AcceptRole)
+            b_keep = box.addButton("Finish, leave them open", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() == b_all:
+                def fn(rv: Review):
+                    rv.confirmed.extend(c for c in open_ if c not in rv.confirmed)
+                    rv.reviewed = True
+                self._edit(fn)
+                self._update_study_button()
+                return
+            if box.clickedButton() != b_keep:
+                return
         self._edit(lambda rv: setattr(rv, "reviewed", not rv.reviewed))
         self._update_study_button()
 
@@ -741,6 +980,7 @@ class MainWindow(QMainWindow):
         from .studies import StudySettings
         dlg = StudySettings(self, self.study)
         dlg.exec()
+        self.apply_display_prefs()
         if getattr(dlg, "switch_requested", False):
             self.choose_study()
         elif dlg.saved is not None:
@@ -777,7 +1017,8 @@ class MainWindow(QMainWindow):
         notes = "\n".join(info["notes"][:15])
         QMessageBox.information(
             self, "Export done",
-            f"{info['n_cells']} kept cells from {info['n_images']} images"
+            f"{info['n_cells']} kept cells ({info['n_confirmed']} confirmed – only these enter summary.csv) "
+            f"from {info['n_images']} images"
             + (f" ({info['skipped']} not reviewed, skipped)" if info["skipped"] else "")
             + f".\n\n{info['folder']}" + (f"\n\nNotes:\n{notes}" if notes else ""))
 
@@ -807,7 +1048,7 @@ class ExportDialog(QDialog):
         not_rev = sum(not Review.load(i.folder, i.path).reviewed for i in images)
         warn = []
         if no_cp:
-            warn.append(f"{no_cp} image(s) without Cellpose (would be measured with the OD threshold only)")
+            warn.append(f"{no_cp} image(s) not segmented yet (would be measured with the OD threshold only)")
         if not_rev:
             warn.append(f"{not_rev} image(s) not reviewed yet")
         if warn:
@@ -857,8 +1098,19 @@ def make_app(argv=None) -> QApplication:
     return app
 
 
+def gc_on_gui_thread(app) -> None:
+    """Python's cyclic GC runs in whichever thread happens to allocate. In the
+    segmentation thread it destroyed a closed settings dialog – Qt widgets
+    deleted off the GUI thread, SIGBUS (0.9.0, first InstanSeg import). So
+    automatic collection is off and timers collect here instead."""
+    gc.disable()
+    young = QTimer(app); young.timeout.connect(lambda: gc.collect(1)); young.start(1000)
+    full = QTimer(app); full.timeout.connect(gc.collect); full.start(30000)   # ~50 ms with torch loaded
+
+
 def main() -> int:
     app = make_app()
+    gc_on_gui_thread(app)
     win = MainWindow()
     win.show()
     return app.exec()

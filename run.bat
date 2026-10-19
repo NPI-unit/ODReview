@@ -1,5 +1,5 @@
 @echo off
-REM NKReview - Windows launcher.
+REM ODReview - Windows launcher.
 REM Double-click to start the app. Use install.bat first to set things up.
 REM Keep this file CRLF + pure ASCII, same as install.bat.
 setlocal

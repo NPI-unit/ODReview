@@ -1,5 +1,5 @@
 #!/bin/bash
-# NKReview — macOS launcher. Double-click to start the app (Qt).
+# ODReview — macOS launcher. Double-click to start the app (Qt).
 #
 # Uses the local .venv next to this file. If it is missing, run
 # install.command once (it creates the venv and installs everything).
