@@ -141,6 +141,10 @@ QComboBox {{
     border: 1px solid {T['line']}; border-radius: 6px; padding: 0 8px;
     min-height: 32px; background: {T['panel_bg']}; color: {T['fg']};
 }}
+QPushButton#filterButton {{
+    border: 1px solid {T['line']}; border-radius: 6px; padding: 0 8px; min-height: 32px;
+    background: {T['panel_bg']}; color: {T['fg']}; font-weight: normal; text-align: left;
+}}
 QComboBox QAbstractItemView {{
     background: {T['panel_bg']}; color: {T['fg']}; border: 1px solid {T['border']};
     selection-background-color: {T['accent_primary']}; selection-color: {T['fg_on_accent']};
@@ -187,6 +191,10 @@ QLineEdit, QPlainTextEdit {{
 }}
 
 #sidebar {{ background: {T['sidebar_bg']}; }}
+#paneHead {{ background: {T['panel_bg']}; border-bottom: 1px solid {T['border']}; }}
+#paneFoot {{ background: {T['panel_bg']}; border-top: 1px solid {T['border']}; }}
+#paneHead QProgressBar {{ border: none; border-radius: 3px; background: {T['line']}; }}
+#paneHead QProgressBar::chunk {{ border-radius: 3px; background: #1B7A4D; }}
 #sidebarFilter {{ background: {T['sidebar_bg']}; border-bottom: 1px solid {T['border']}; }}
 #sidebarDetails {{ background: {T['panel_bg']}; border-top: 1px solid {T['border']}; }}
 QTreeWidget {{ background: {T['sidebar_bg']}; border: none; outline: 0; padding: 4px; }}

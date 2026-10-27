@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+from collections import Counter
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -11,19 +12,21 @@ from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSlider,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSlider,
     QSpinBox,
     QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, MODEL_INSTANSEG
+from .cellpanel import Fold
 from ..state import (
     GRAY_MEAN, GRAY_WEIGHTED, I0_ABSOLUTE, I0_LOCAL, I0_PER_CELL, I0_PER_IMAGE, I0_RELATIVE, IMG_EXTS, Settings,
     list_images,
 )
 from ..study import (
-    CANDIDATE_DELIMS, META_ROLES, ROLE_GROUP, ROLE_IGNORE, ROLE_LABELS, ROLE_PROBAND, ROLE_TIMEPOINT,
+    CANDIDATE_DELIMS, ROLE_CELLTYPE, ROLE_DATE, ROLE_GROUP, ROLE_IGNORE, ROLE_IMAGE_NUM, ROLE_LABELS,
+    ROLE_MARKER, ROLE_PROBAND, ROLE_TIMEPOINT,
     MAG_LABELS, MAGNIFICATIONS, ROLES, TARGET_CELL, TARGET_LABELS, TARGET_NUCLEUS, Study, Template,
     detect_delimiters,
     guess_roles, list_studies, list_templates, parse_name, progress, proband_progress,
@@ -31,6 +34,9 @@ from ..study import (
 )
 
 DELIM_LABELS = {" ": "space", "_": "_", "-": "-", ".": "."}
+ROLE_COLORS = {ROLE_PROBAND: "#2F6FD0", ROLE_TIMEPOINT: "#C7700E", ROLE_MARKER: "#7B4BC4",
+               ROLE_IMAGE_NUM: "#1C8A84", ROLE_GROUP: "#3D8B3D", ROLE_CELLTYPE: "#B5487A",
+               ROLE_DATE: "#6B7A8F", ROLE_IGNORE: "#A0A0A0"}
 METHOD_LABELS = {METHOD_HYBRID: "Hybrid (Cellpose + OD edge)", METHOD_CELLPOSE: "Model contour only",
                  METHOD_THRESHOLD: "OD threshold only"}
 MODEL_LABELS = {"cpsam": "Cellpose-SAM (cells)", MODEL_INSTANSEG: "InstanSeg (nuclei)"}
@@ -522,23 +528,26 @@ class StudyForm:
         drow.addWidget(QLabel("  dates (2026-08-27, 27.08.2026) always stay one part", objectName="caption"))
         drow.addStretch(1)
         l.addLayout(drow)
-        self.tok_row = QHBoxLayout(); self.tok_row.setSpacing(6)
-        tok_box = QWidget(); tok_box.setLayout(self.tok_row)
-        tok_scroll = QScrollArea(); tok_scroll.setWidgetResizable(True); tok_scroll.setFrameShape(QFrame.NoFrame)
-        tok_scroll.setWidget(tok_box); tok_scroll.setFixedHeight(86)
-        tok_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        l.addWidget(tok_scroll)
-        self.tok_combos: list[QComboBox] = []
-        self.preview = QTableWidget(0, 1 + len(META_ROLES))
-        self.preview.setHorizontalHeaderLabels(["File"] + [ROLE_LABELS[r] for r in META_ROLES])
+        self.role_hint = QLabel("", objectName="caption")
+        l.addWidget(self.role_hint)
+        self.chip_row = QHBoxLayout(); self.chip_row.setSpacing(8)
+        l.addLayout(self.chip_row)
+        self._role_list: list[str] = []
+        head = QHBoxLayout(); head.addWidget(QLabel("<b>Sample</b>")); head.addStretch(1)
+        self.sample_count = QLabel("", objectName="caption"); head.addWidget(self.sample_count)
+        l.addLayout(head)
+        self.preview = QTableWidget(0, 1)
         self.preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.preview.verticalHeader().setVisible(False)
-        self.preview.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.preview.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.preview.setMinimumHeight(180)
-        l.addWidget(self.preview, 1)
-        self.n_hint = QLabel(""); self.n_hint.setWordWrap(True); self.n_hint.setObjectName("banner")
-        l.addWidget(self.n_hint)
+        self.preview.setFixedHeight(150)
+        l.addWidget(self.preview)
+        row = QHBoxLayout()
+        self.read_line = QLabel(""); self.read_line.setWordWrap(True)
+        row.addWidget(self.read_line, 1)
+        self.fix_btn = QPushButton(""); self.fix_btn.clicked.connect(self._apply_fix); self.fix_btn.hide()
+        row.addWidget(self.fix_btn)
+        l.addLayout(row)
+        l.addStretch(1)
         return w
 
     def _enter_names(self) -> None:
@@ -560,51 +569,94 @@ class StudyForm:
         self._build_tokens(d, guess_roles(self._names, d))
 
     def _build_tokens(self, delims: list[str], roles: list[str]) -> None:
-        _clear_layout(self.tok_row)
-        self.tok_combos = []
-        sample = self._names[0] if self._names else ""
-        for i, t in enumerate(tokenize(sample, delims)):
-            box = QFrame(objectName="metricCard"); bl = QVBoxLayout(box); bl.setContentsMargins(8, 4, 8, 4); bl.setSpacing(2)
-            lab = QLabel(f"<b>{t}</b>"); lab.setTextFormat(Qt.RichText)
-            cb = QComboBox()
+        """One chip per part of a typical name, as in ErysReview: click → menu of roles."""
+        _clear_layout(self.chip_row)
+        widths = Counter(len(tokenize(n, delims)) for n in self._names[:500])
+        common = widths.most_common(1)[0][0] if widths else 0
+        sample = next((n for n in self._names if len(tokenize(n, delims)) == common), "")
+        toks = tokenize(sample, delims) if sample else []
+        self._role_list = (list(roles) + [ROLE_IGNORE] * len(toks))[:len(toks)]
+        self.role_hint.setText(f"Click a part to say what it means – example: {sample}" if sample else "")
+        for i, tok in enumerate(toks):
+            role = self._role_list[i]
+            col = ROLE_COLORS[role]
+            b = QPushButton(f"{tok}\n{ROLE_LABELS[role]}"); b.setObjectName("tokenChip")
+            b.setStyleSheet(f"QPushButton#tokenChip {{ border: 2px solid {col}; border-radius: 10px;"
+                            f" padding: 6px 12px; text-align: left; min-height: 40px; }}")
+            menu = QMenu(b)
             for r in ROLES:
-                cb.addItem(ROLE_LABELS[r], r)
-            cb.setCurrentIndex(ROLES.index(roles[i]) if i < len(roles) and roles[i] in ROLES else ROLES.index(ROLE_IGNORE))
-            cb.currentIndexChanged.connect(self._refresh_preview)
-            bl.addWidget(lab); bl.addWidget(cb)
-            self.tok_row.addWidget(box); self.tok_combos.append(cb)
-        self.tok_row.addStretch(1)
+                menu.addAction(ROLE_LABELS[r]).triggered.connect(lambda _=False, i=i, r=r: self._set_role(i, r))
+            b.setMenu(menu)
+            self.chip_row.addWidget(b)
+        self.chip_row.addStretch(1)
         self._refresh_preview()
 
+    def _set_role(self, i: int, role: str) -> None:
+        roles = [ROLE_IGNORE if (r == role and role != ROLE_IGNORE) else r for r in self._role_list]   # one part per role
+        roles[i] = role
+        self._build_tokens(self._delims(), roles)
+
     def _roles(self) -> list[str]:
-        return [cb.currentData() for cb in self.tok_combos]
+        return list(self._role_list)
+
+    def _unassigned(self, name: str, delims: list[str], roles: list[str]) -> bool:
+        """Read wrong: another number of parts, or no subject where a part is the subject."""
+        return (len(tokenize(name, delims)) != len(roles)
+                or (ROLE_PROBAND in roles and not parse_name(name, delims, roles)[ROLE_PROBAND]))
+
+    def _read_count(self, delims: list[str], roles: list[str]) -> int:
+        return sum(not self._unassigned(n, delims, roles) for n in self._names)
 
     def _refresh_preview(self) -> None:
         delims, roles = self._delims(), self._roles()
-        n = len(roles)
-        rows = sorted(self._names, key=lambda x: len(tokenize(x, delims)) == n)   # odd ones first (False < True)
-        self.preview.setRowCount(min(len(rows), 300))
-        for r, name in enumerate(rows[:300]):
+        shown = [r for r in roles if r != ROLE_IGNORE]
+        good = [n for n in self._names if not self._unassigned(n, delims, roles)]
+        bad = [n for n in self._names if self._unassigned(n, delims, roles)]
+        take_bad = bad[:1] if good else bad[:4]          # the odd ones first, so a problem shows at a glance
+        rows = take_bad + good[:4 - len(take_bad)]
+        self.preview.clear()
+        self.preview.setColumnCount(len(shown) + 2); self.preview.setRowCount(len(rows))
+        self.preview.setHorizontalHeaderLabels(["File"] + [ROLE_LABELS[r] for r in shown] + [""])
+        hh = self.preview.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeToContents); hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        for r, name in enumerate(rows):
+            ok = name in good
             m = parse_name(name, delims, roles)
-            bad = len(tokenize(name, delims)) != n
-            for c, v in enumerate([name] + [m[k] for k in META_ROLES]):
-                it = QTableWidgetItem(v)
-                if bad:
-                    it.setForeground(QColor("#B83A3A"))
-                self.preview.setItem(r, c, it)
-        odd = sum(len(tokenize(x, delims)) != n for x in self._names)
-        hints = []
-        if odd:
-            hints.append(f"{odd} file(s) have a different number of parts (red, at the top) – check the delimiters.")
+            for c, v in enumerate([name] + [m[k] if ok else "—" for k in shown]):
+                self.preview.setItem(r, c, QTableWidgetItem(v))
+            mark = QTableWidgetItem("✓" if ok else "⚠ not assigned")
+            mark.setForeground(QColor("#1B7A4D" if ok else "#975E0C"))
+            self.preview.setItem(r, len(shown) + 1, mark)
+        self.sample_count.setText(f"{len(rows)} of {len(self._names)}")
+        self.fix_btn.hide(); self._fix = None
         if ROLE_PROBAND not in roles:
-            hints.append("No part is “Subject” – all images go under “no subject”.")
-        if ROLE_TIMEPOINT not in roles:
-            hints.append("No part is “Timepoint” – all images go under “no timepoint”.")
-        if ROLE_GROUP not in roles:
-            hints.append("No part is “Group” – groups can be entered per subject.")
-        self.n_hint.setText("\n".join(hints))
+            text, warn = "⚠ Choose a part as “Subject”.", True
+        else:
+            parts = [f"{len(good)} of {len(self._names)} files read"]
+            for role in shown:
+                if role == ROLE_IMAGE_NUM:
+                    continue
+                k = len({parse_name(n, delims, roles)[role] for n in good} - {""})
+                parts.append(f"{k} {ROLE_LABELS[role].lower()}{'s' if k != 1 else ''}")
+            if bad:
+                parts.append(f"{len(bad)} not assigned")
+                base = len(good)
+                gains = {d: self._read_count(delims + [d], roles) - base for d in CANDIDATE_DELIMS if d not in delims}
+                d = max(gains, key=gains.get, default=None)
+                if d is not None and gains[d] > 0:
+                    self._fix = d
+                    self.fix_btn.setText(f"Add delimiter „{DELIM_LABELS[d]}“"); self.fix_btn.show()
+            text, warn = ("⚠ " if bad else "✓ ") + " · ".join(parts), bool(bad)
+        self.read_line.setText(text)
+        self.read_line.setStyleSheet(f"color: {'#975E0C' if warn else '#1B7A4D'};")
         self._fill_groups()
         self._form_changed()
+
+    def _apply_fix(self) -> None:
+        if self._fix:
+            cb = self.d_boxes[self._fix]
+            cb.blockSignals(True); cb.setChecked(True); cb.blockSignals(False)
+            self._build_tokens(self._delims(), self._roles())
 
     # ── measurement ──────────────────────────────────────
     def _build_measure_widgets(self) -> None:
@@ -947,6 +999,9 @@ class StudyWizard(StudyForm, QDialog):
                 if not self.f_list.count():
                     QMessageBox.information(self, self.windowTitle(), "Add at least one image folder.")
                     return
+            if i == 1 and ROLE_PROBAND not in self._roles():
+                QMessageBox.information(self, self.windowTitle(), "Choose a part of the file name as “Subject”.")
+                return
             if i == len(self.STEPS) - 1:
                 self._collect(self.study)
                 self.study.save()
@@ -971,12 +1026,13 @@ class StudyWizard(StudyForm, QDialog):
 # ─────────────────────────────────────────────
 SETTINGS_PAGES = [
     ("images", "Images & names", "Name, image folders, how file names are read and the group of each subject."),
-    ("seg", "Segmentation", "What is measured and how cells or nuclei are found."),
-    ("i0", "Background I₀", "Grey value and the background fields – next to each cell, or one set per image."),
+    ("seg", "Segmentation", "How nuclei or cells are found in the image."),
+    ("i0", "Background I₀", "The brightness next to each cell that its OD is measured against."),
     ("analysis", "Analysis", "Cut-offs used in the tables."),
-    ("templates", "Templates", "Save this study's scheme and settings for the next experiment."),
     ("display", "Display", "How contours look in the image. For every study, saved right away; no value changes."),
+    ("templates", "Templates", "Save this study's scheme and settings for the next experiment."),
 ]
+CHANGES_RESULTS = {"seg", "i0", "analysis"}       # marked ⚠ in the navigation
 
 
 class StudySettings(StudyForm, QDialog):
@@ -1032,12 +1088,13 @@ class StudySettings(StudyForm, QDialog):
         self.nav_group = QButtonGroup(self); self.nav_group.setExclusive(True)
         self.nav_buttons: dict[str, QPushButton] = {}
         for key, title, _ in SETTINGS_PAGES:
-            b = QPushButton(title.replace("&", "&&"), objectName="navItem"); b.setCheckable(True)
+            label = title.replace("&", "&&") + ("  ⚠" if key in CHANGES_RESULTS else "")
+            b = QPushButton(label, objectName="navItem"); b.setCheckable(True)
             b.clicked.connect(lambda _=False, k=key: self.show_page(k))
             self.nav_group.addButton(b); self.nav_buttons[key] = b
             v.addWidget(b)
         v.addStretch(1)
-        v.addWidget(QLabel(f"Saved in\n{self.orig.path.name}", objectName="caption"))
+        v.addWidget(QLabel(f"⚠ changes the results\nSaved in {self.orig.path.name}", objectName="caption"))
         return nav
 
     def show_page(self, key: str) -> None:
@@ -1073,16 +1130,60 @@ class StudySettings(StudyForm, QDialog):
         self._card(v, self._names_box())
         self._card(v, self._groups_box())
 
+    @staticmethod
+    def _help_form(rows: list) -> QWidget:
+        """Form whose rows carry a one-line explanation under the field: (label, widget, help)."""
+        w = QWidget(); f = QFormLayout(w); f.setContentsMargins(0, 0, 0, 0)
+        f.setVerticalSpacing(12); f.setHorizontalSpacing(16)
+        for label, widget, help_ in rows:
+            if help_:
+                box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(3)
+                bl.addWidget(widget)
+                h = QLabel(help_, objectName="caption"); h.setWordWrap(True); bl.addWidget(h)
+                f.addRow(label, box)
+            else:
+                f.addRow(label, widget)
+        return w
+
+    def _summary_label(self) -> QLabel:
+        lab = QLabel(""); lab.setWordWrap(True); lab.setObjectName("settingsSummary")
+        lab.setStyleSheet("background: #E8EFFC; color: #1A3F8F; border-radius: 8px; padding: 9px 12px;")
+        return lab
+
     def _page_seg(self, v: QVBoxLayout) -> None:
-        self._card(v, QLabel("<b>What is measured?</b>"), self._target_box())
-        self._card(v, self._form_contour())
-        self._card(v, self._form_cellpose(),
-                   QLabel("Changing the model, magnification, Cellpose settings or the target re-runs the "
-                          "segmentation for every image.",
-                          objectName="caption"))
+        self.seg_summary = self._summary_label(); v.addWidget(self.seg_summary)
+        area = QWidget(); al = QHBoxLayout(area); al.setContentsMargins(0, 0, 0, 0)
+        al.addWidget(self.m_minarea); al.addWidget(QLabel("to")); al.addWidget(self.m_maxarea); al.addStretch(1)
+        self._card(v, self._help_form([
+            ("What is measured", self._target_box(), ""),
+            ("Magnification", self.m_mag, "Sets the pixel size and the allowed nucleus area."),
+            ("Area", area, "Smaller objects are debris, larger ones whole cells – both are dropped."),
+            ("Debris flag", self.m_debris, "Marks a cell as “debris?” from its H-channel OD – a hint, never an exclusion."),
+        ]))
+        adv = QWidget(); av = QVBoxLayout(adv); av.setContentsMargins(0, 0, 0, 0); av.setSpacing(10)
+        av.addWidget(self._form([("Model:", self.m_model), ("Pixel size:", self.m_px), ("Method:", self.m_method),
+                                 ("OD threshold:", self.m_thr), ("Cellpose sees:", self.m_input)]))
+        av.addWidget(self._form_cellpose())
+        self._card(v, Fold("Advanced – model, pixel size, contour method, OD threshold, Cellpose", adv))
+        v.addWidget(QLabel("Changing these settings runs the segmentation again for every image.",
+                           objectName="banner", wordWrap=True))
 
     def _page_i0(self, v: QVBoxLayout) -> None:
-        self._card(v, self._form_grey_i0())
+        self.i0_summary = self._summary_label(); v.addWidget(self.i0_summary)
+        self._card(v, self._help_form([
+            ("I₀ from", self.m_scope, "“Per cell” measures the light right next to each cell – right for "
+                                      "vignetted images. “Per image” only for evenly lit images."),
+            ("", self.m_scope_hint, ""),
+            ("Fields", self.m_fields, "How many background fields give one I₀ (their mean)."),
+            ("Check", self.m_check, "Fixed range · relative to the image's free background · local: the "
+                                    "fields must agree with each other."),
+            ("Allowed deviation", self.m_rel, "Outside it a cell gets an I₀ warning; you decide and can still confirm it."),
+        ]))
+        adv = self._form([("RGB → grey:", self.m_gray), ("Field size:", self.m_fsize),
+                          ("Distance from contour:", self.m_rin), ("… up to:", self.m_rout),
+                          ("Fixed range from:", self.m_imin), ("… to:", self.m_imax)])
+        self._card(v, Fold("Advanced – grey value, field size and distance, fixed range", adv))
+        self._scope_mode()
 
     def _page_analysis(self, v: QVBoxLayout) -> None:
         self._card(v, self._form_analysis())
@@ -1161,6 +1262,16 @@ class StudySettings(StudyForm, QDialog):
     def _form_changed(self) -> None:
         if not getattr(self, "_ready", False):
             return
+        w = self._work().settings
+        if hasattr(self, "seg_summary"):
+            what = TARGET_LABELS[TARGET_NUCLEUS if self.r_nuc.isChecked() else TARGET_CELL].capitalize()
+            area = (f"{w.min_cell_area}–{w.max_cell_area or '∞'} px" if w.min_cell_area or w.max_cell_area
+                    else "any area")
+            self.seg_summary.setText(f"{what} · {segmentation_text(w)} · {area}"
+                                     + (" · debris flag on" if w.debris_h else ""))
+            per = "image" if w.i0_scope == I0_PER_IMAGE else "cell"
+            self.i0_summary.setText(f"{w.i0_fields} fields of {w.i0_field_size}×{w.i0_field_size} px per {per} · "
+                                    f"{i0_rule(w)}")
         n = len(self._changes())
         self.footer_text.setText(f"{n} unsaved change{'s' if n != 1 else ''} to “{self.orig.name}”" if n
                                  else "No unsaved changes")

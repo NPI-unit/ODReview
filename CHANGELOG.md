@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 — 2026-10-20
+
+- **Review side panel in three tabs** (from the design canvas): a fixed head with the image, “16 / 32 confirmed”, a progress bar and the counts; tabs **Cell/Nucleus · List · Notes**; a fixed foot with “Confirm all open”, ⋯ (rerun segmentation, contour method and OD threshold) and “Image reviewed”. Cell tab: result, why, the cell's buttons, then “More values” and “Distribution” (folds remembered). List tab: filter chips (all / open / I₀ warning / confirmed / discarded) and a table sortable by every column; a click selects and zooms. Notes tab: the image's note, the comment circles and the cells' notes – a click jumps there.
+- **I₀ on an axis** in a foldable “Background (I₀)” section instead of the coloured I₀ banner (a ⚠ line only when the check fails; positive / debris / discarded moved to the grey line under the OD): the three fields as dots, the mean as a bar, the line green where the check passes and red outside – 210–220 (fixed range), background ± % (relative) or mean ± % (local); grey when there is nothing to check against. The axis fits the band and all fields.
+- **File names as in ErysReview:** one chip per part with a role menu (one part per role), a short sample (unread files first, ✓ / ⚠), a line “812 of 812 files read · 24 subjects · …” and a one-click “Add delimiter” fix. Next needs a part as Subject.
+- **One filter button in the sidebar:** marker and status in one menu (one tick each) instead of the marker chips and the Show list.
+- **Settings in plain words:** Segmentation and Background I₀ open with a one-line summary, each field has an explanation, rarely used fields sit under “Advanced”; ⚠ in the navigation marks pages whose changes alter the results.
+
 ## 0.9.0 — 2026-10-19
 
 - **New name: ODReview** – the app measures the optical density of NK cells, Tregs and muscle cells alike. Window title, logo (“OD”), installer, ODReview.app, help and README. Unchanged on purpose: the support folder (`~/Library/Application Support/NKReview`, studies and templates), the `.nk_cache` folders next to the images and the Python package `nkreview` – existing studies open as before. An old NKReview.app on the Desktop can be deleted after installing.

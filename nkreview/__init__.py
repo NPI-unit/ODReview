@@ -5,4 +5,4 @@ layer is new: Cellpose on DAB-ROI crops, hybrid OD contour, Beer–Lambert OD
 with per-image I₀, Ruifrok–Johnston H-DAB deconvolution.
 """
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"

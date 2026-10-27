@@ -229,18 +229,97 @@ class Histogram(QWidget):
             p.drawText(QPointF(x(v) + 3, T + 8 + 12 * k), label)
 
 
+def i0_band(row: dict, s) -> tuple[float, float] | None:
+    """The I₀ range the check uses, so the axis turns red exactly where the check fails;
+    None when there is nothing to check against (grey line)."""
+    p = s.i0_rel_pct / 100
+    if s.i0_check == "relativ":
+        ref = row.get("i0_background")
+        return None if ref is None else (ref * (1 - p), ref * (1 + p))
+    if s.i0_check == "lokal":
+        return None if row.get("i0_field_spread_pct") is None else (row["i0"] * (1 - p), row["i0"] * (1 + p))
+    return (s.i0_min, s.i0_max)
+
+
+class I0Axis(QWidget):
+    """I₀ on a line: green where the check passes, red outside, the fields as dots,
+    the mean as a bar. The range fits band and dots."""
+    GREEN, RED, GREY = QColor("#9FD0B4"), QColor("#E3A29C"), QColor("#C9C9C4")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(70)
+        self._fields: list = []; self._mean = None; self._band = None; self._ref = None; self._fmt_band = "g"
+
+    def set_data(self, fields: list, mean: float, band, ref=None, fmt_band: str = "g") -> None:
+        self._fields, self._mean, self._band, self._ref, self._fmt_band = fields, mean, band, ref, fmt_band
+        self.update()
+
+    def paintEvent(self, _):
+        if self._mean is None:
+            return
+        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        fg = self.palette().text().color(); muted = self.palette().placeholderText().color()
+        f = p.font(); f.setPointSizeF(f.pointSizeF() * 0.8); p.setFont(f)
+        vals = [*self._fields, self._mean, *(self._band or ()), *([self._ref] if self._ref is not None else [])]
+        lo, hi = min(vals), max(vals)
+        pad = max(hi - lo, 1.0) * 0.1
+        lo, hi = lo - pad, hi + pad
+        L, R, y = 14, 14, 38
+        x = lambda v: L + (v - lo) / (hi - lo) * (self.width() - L - R)
+        x0, x1 = x(lo), x(hi)
+        if self._band is None:
+            p.setPen(QPen(self.GREY, 6, Qt.SolidLine, Qt.RoundCap)); p.drawLine(QPointF(x0, y), QPointF(x1, y))
+        else:
+            b0, b1 = x(self._band[0]), x(self._band[1])
+            p.setPen(QPen(self.RED, 6, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(x0, y), QPointF(b0, y)); p.drawLine(QPointF(b1, y), QPointF(x1, y))
+            p.setPen(QPen(self.GREEN, 6, Qt.SolidLine, Qt.FlatCap)); p.drawLine(QPointF(b0, y), QPointF(b1, y))
+        xm = x(self._mean)
+        below = [(xm, f"Ø {self._mean:.1f}", fg, True)]
+        if self._band is not None:
+            below += [(x(v), f"{v:{self._fmt_band}}", muted, False) for v in self._band]
+        if self._ref is not None:
+            xr = x(self._ref)
+            p.setPen(Qt.NoPen); p.setBrush(muted)
+            p.drawPolygon(QPolygonF([QPointF(xr, y + 6), QPointF(xr - 4, y + 12), QPointF(xr + 4, y + 12)]))
+            below.append((xr, f"BG {self._ref:.1f}", muted, False))
+        placed: list = []
+        for bx, text, col, bold in below:        # mean first; skip labels that would overlap one already drawn
+            hw = p.fontMetrics().horizontalAdvance(text) / 2 + 3
+            if any(abs(bx - q) < hw + qw for q, qw in placed):
+                continue
+            placed.append((bx, hw))
+            f.setBold(bold); p.setFont(f); p.setPen(col)
+            p.drawText(QRectF(bx - 30, y + 12, 60, 16), Qt.AlignCenter, text)
+        f.setBold(False); p.setFont(f)
+        last = -1e9; row = 0
+        for v in sorted(self._fields):           # dots, labels above; close labels alternate rows
+            fx = x(v)
+            row = 1 - row if fx - last < 40 else 0
+            last = fx
+            p.setPen(muted); p.drawText(QRectF(fx - 30, y - 22 - 12 * row, 60, 14), Qt.AlignCenter, f"{v:.1f}")
+        p.setPen(QPen(self.palette().base().color(), 1.5)); p.setBrush(fg)
+        for v in self._fields:
+            p.drawEllipse(QPointF(x(v), y), 5, 5)
+        p.setPen(Qt.NoPen); p.drawRoundedRect(QRectF(xm - 1.5, y - 11, 3, 22), 1.5, 1.5)
+
+
 class CellPanel(QWidget):
     """The selected cell: result first (OD as exported), then why (I₀ check),
     then details on demand, then the distribution plots."""
-    def __init__(self, parent=None, more_open: bool = False, on_more=None):
+    def __init__(self, parent=None, more_open: bool = False, on_more=None,
+                 dist_open: bool = True, on_dist=None, i0_open: bool = True, on_i0=None):
         super().__init__(parent)
         self.noun = "Cell"
-        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
-        head = QHBoxLayout()
+        # Two parts, so the window can put the cell's buttons between them:
+        # `head` = result and why, `details` = more values and the distribution.
+        self.head = QWidget(); lay = QVBoxLayout(self.head); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
+        top = QHBoxLayout()
         self.title = QLabel(""); f = self.title.font(); f.setBold(True); f.setPointSizeF(f.pointSizeF() * 1.2); self.title.setFont(f)
         self.badge = QLabel("")
-        head.addWidget(self.title); head.addStretch(1); head.addWidget(self.badge)
-        lay.addLayout(head)
+        top.addWidget(self.title); top.addStretch(1); top.addWidget(self.badge)
+        lay.addLayout(top)
         res = QHBoxLayout(); res.setSpacing(8)
         self.od = QLabel("–"); f = self.od.font(); f.setPointSizeF(f.pointSizeF() * 2.2); f.setBold(True); self.od.setFont(f)
         self.od_cap = QLabel("OD – the value in the export")
@@ -248,27 +327,36 @@ class CellPanel(QWidget):
         lay.addLayout(res)
         self.sub = QLabel("", objectName="caption"); self.sub.setWordWrap(True)
         lay.addWidget(self.sub)
-        self.i0_state = QLabel(""); self.i0_state.setWordWrap(True); self.i0_state.setObjectName("i0state")
-        lay.addWidget(self.i0_state)
+        i0box = QWidget(); il = QVBoxLayout(i0box); il.setContentsMargins(0, 0, 0, 0); il.setSpacing(2)
+        self.i0_axis = I0Axis(); il.addWidget(self.i0_axis)
+        self.i0_state = QLabel(""); self.i0_state.setWordWrap(True); il.addWidget(self.i0_state)   # only a ⚠ shows
+        self.i0_fold = Fold("Background (I₀)", i0box, i0_open, on_i0)
+        lay.addWidget(self.i0_fold)
         self.note = QLabel(""); self.note.setWordWrap(True)
         lay.addWidget(self.note)
+        self.details = QWidget(); dl = QVBoxLayout(self.details); dl.setContentsMargins(0, 0, 0, 0); dl.setSpacing(8)
         more = QWidget(); grid = QGridLayout(more); grid.setContentsMargins(0, 0, 0, 0); grid.setSpacing(6)
         self.c_i0 = Card("Background I₀"); self.c_pix = Card("Pixel OD inside")
         self.c_dab = Card("DAB OD (extra)")
         for i, c in enumerate((self.c_i0, self.c_pix, self.c_dab)):
             grid.addWidget(c, 0, i)
         self.more = Fold("More values", more, more_open, on_more)
-        lay.addWidget(self.more)
+        dl.addWidget(self.more)
+        dist = QWidget(); dv = QVBoxLayout(dist); dv.setContentsMargins(0, 0, 0, 0); dv.setSpacing(8)
         row = QHBoxLayout(); row.setSpacing(8)
         lm = QVBoxLayout(); lm.addWidget(QLabel("<b>OD map</b>")); self.map = ODMap(); lm.addWidget(self.map, 1)
         lp = QVBoxLayout(); lp.addWidget(QLabel("<b>Radial profile</b>")); self.prof = Profile(); lp.addWidget(self.prof, 1)
         row.addLayout(lm, 1); row.addLayout(lp, 1)
-        lay.addLayout(row)
+        dv.addLayout(row)
         self.hist_label = QLabel("<b>Distribution of pixel OD</b>")
         self.hist_sub = QLabel("", objectName="caption")
         hl = QHBoxLayout(); hl.addWidget(self.hist_label); hl.addWidget(self.hist_sub); hl.addStretch(1)
-        lay.addLayout(hl)
-        self.hist = Histogram(); lay.addWidget(self.hist)
+        dv.addLayout(hl)
+        self.hist = Histogram(); dv.addWidget(self.hist)
+        self.dist = Fold("Distribution", dist, dist_open, on_dist)
+        dl.addWidget(self.dist)
+        outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(8)
+        outer.addWidget(self.head); outer.addWidget(self.details)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
     def show_cell(self, row: dict | None, cm=None, gray=None, labels=None, s=None, note: str = "") -> None:
@@ -278,7 +366,8 @@ class CellPanel(QWidget):
             self.badge.setText(""); self.badge.setStyleSheet(""); self.od.setText("–")
             for c in (self.c_pix, self.c_i0, self.c_dab):
                 c.set("–")
-            self.i0_state.setText(""); self.i0_state.setStyleSheet(""); self.note.setText("")
+            self.i0_state.setText(""); self.note.setText("")
+            self.i0_fold.hide()
             self.map.set_data(None, None); self.prof.set_data([]); self.hist.set_data(None, []); self.hist_sub.setText("")
             return
         self.title.setText(f"{self.noun} #{row['cell']}")
@@ -289,7 +378,6 @@ class CellPanel(QWidget):
         self.badge.setStyleSheet(f"color:{fg};background:{bg};border-radius:9px;padding:2px 10px;font-weight:600;")
         self.od.setText(_fmt(row["od"]))
         contour = CONTOUR_TEXT.get(row["contour"], row["contour"])
-        self.sub.setText(f"−log₁₀(mean grey value / I₀) · {row['area_px']} px · contour: {contour}")
         self.c_pix.set(_fmt(row["pixel_od_mean"]), f"± {_fmt(row['pixel_od_sd'])} · median {_fmt(row['pixel_od_median'])}")
         fields = " · ".join(f"{k + 1}: {_fmt(row.get(f'i0_field{k + 1}'), 1)}" for k in range(s.i0_fields)
                             if row.get(f"i0_field{k + 1}") is not None)
@@ -312,27 +400,36 @@ class CellPanel(QWidget):
             agree = ("only one field – nothing to compare" if spread is None
                      else f"agree within {spread:.1f} % (allowed ± {s.i0_rel_pct:g} %)")
             if row["i0_ok"]:
-                msg, fg, bg = f"✓  Background I₀ {_fmt(row['i0'], 1)} – fields {fields} {agree}", "#1B7A4D", "#E4F2EA"
+                msg, fg, bg = f"✓  Background I₀ {_fmt(row['i0'], 1)} – fields {agree}", "#1B7A4D", "#E4F2EA"
             else:
-                msg, fg, bg = (f"⚠  Background I₀ fields {fields} disagree by {spread:.1f} % (allowed ± "
+                msg, fg, bg = (f"⚠  Background I₀ fields disagree by {spread:.1f} % (allowed ± "
                                f"{s.i0_rel_pct:g} %) – one may lie on debris. "
                                "Move it (tool 3), draw new ones (R), or confirm (C) if they look right."), "#975E0C", "#F8EFDF"
         elif row["i0_ok"]:
             whose = "this image's fields" if s.i0_scope == "bild" else "the fields"
-            msg, fg, bg = (f"✓  Background I₀ {_fmt(row['i0'], 1)} (mean of {whose} {fields}) "
+            msg, fg, bg = (f"✓  Background I₀ {_fmt(row['i0'], 1)} (mean of {whose}) "
                            f"is within {s.i0_min:g}–{s.i0_max:g}"), "#1B7A4D", "#E4F2EA"
         else:
-            msg, fg, bg = (f"⚠  Background I₀ {_fmt(row['i0'], 1)} (fields {fields}) is outside "
+            msg, fg, bg = (f"⚠  Background I₀ {_fmt(row['i0'], 1)} is outside "
                            f"{s.i0_min:g}–{s.i0_max:g} – check the fields, then confirm (C) if they look right"), "#975E0C", "#F8EFDF"
+        extra = [f"contour: {contour}"]
         if row.get("positive") is not None:
-            msg += f"  ·  {'positive' if row['positive'] else 'negative'} (cut-off OD {_fmt(s.pos_threshold)})"
+            extra.append(f"{'positive' if row['positive'] else 'negative'} (cut-off OD {_fmt(s.pos_threshold)})")
         if row.get("debris_suspect"):
-            msg += "  ·  debris suspected (high H channel)"
-        if row["status"] == "discarded":
-            fg, bg = STATUS_COLORS["discarded"]
-            msg = f"Discarded by you – not counted (X restores it).  {msg}"
-        self.i0_state.setText(msg)
-        self.i0_state.setStyleSheet(f"color:{fg};background:{bg};border-radius:8px;padding:6px 10px;")
+            extra.append("debris suspected (high H channel)")
+        self.sub.setText(("Discarded by you – not counted (X restores it) · " if row["status"] == "discarded" else "")
+                         + f"−log₁₀(mean grey value / I₀) · {row['area_px']} px · " + " · ".join(extra))
+        warn = fg == "#975E0C"
+        self.i0_state.setText(msg if warn else "")
+        self.i0_state.setStyleSheet(f"color:{fg};")
+        self.i0_state.setVisible(warn)
+        self.i0_fold.show()
+        vals = [row[f"i0_field{k + 1}"] for k in range(s.i0_fields) if row.get(f"i0_field{k + 1}") is not None]
+        self.i0_axis.setVisible(row["i0"] is not None and bool(vals))
+        if row["i0"] is not None:
+            self.i0_axis.set_data(vals, row["i0"], i0_band(row, s),
+                                  row.get("i0_background") if s.i0_check == "relativ" else None,
+                                  "g" if s.i0_check not in ("relativ", "lokal") else ".1f")
         # map + histogram need the per-pixel OD
         from scipy import ndimage as ndi
         sl = ndi.find_objects((labels == row["cell"]).astype(np.uint8))[0] if cm is not None and cm.i0 else None

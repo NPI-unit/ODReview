@@ -17,10 +17,10 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QGridLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
-    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
-    QProgressDialog, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
+    QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMenu, QMessageBox,
+    QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSplitter, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
@@ -47,6 +47,8 @@ COLUMNS = [("cell", "#"), ("status", "Status"), ("od", "OD"), ("i0", "I₀"),
            ("area_px", "Area"), ("note", "")]
 
 ST_WAIT, ST_RUN, ST_SEG, ST_DONE, ST_ERR = "○", "◐", "●", "✔", "✕"
+LIST_FILTERS = {"all": "All", "open": "Open", "warn": "⚠ I₀", "confirmed": "✔ Confirmed",
+                "discarded": "Discarded"}
 FILTERS = {"all": "All", "unsegmented": "○ Not segmented", "in_progress": "● In progress",
            "finished": "✔ Finished", "with_notes": "❝ With notes"}
 ALL_MARKERS = ""
@@ -75,6 +77,16 @@ def _recall(key: str):
         return None
 
 
+class SortItem(QTableWidgetItem):
+    """Table cell that sorts by its key (numbers as numbers), not by its text."""
+    def __lt__(self, other):
+        a, b = self.data(Qt.UserRole + 1), other.data(Qt.UserRole + 1)
+        try:
+            return a < b
+        except TypeError:
+            return str(a) < str(b)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, study: Study | None = None):
         super().__init__()
@@ -83,6 +95,7 @@ class MainWindow(QMainWindow):
         self.images: list[ImageInfo] = []
         self.visible: list[int] = []            # indices into images, in tree order
         self.marker = ALL_MARKERS
+        self.filter_mode = "all"
         self.idx = -1
         self.img: np.ndarray | None = None
         self.review = Review()
@@ -160,13 +173,9 @@ class MainWindow(QMainWindow):
 
         # left: marker filter + image tree
         left = QWidget(objectName="sidebar"); ll = QVBoxLayout(left); ll.setContentsMargins(8, 8, 8, 8)
-        self.chip_row = QHBoxLayout(); self.chip_row.setSpacing(6)
-        chips = QWidget(); chips.setLayout(self.chip_row)
-        ll.addWidget(chips)
-        frow = QHBoxLayout(); frow.addWidget(QLabel("Show:"))
-        self.filter_combo = QComboBox()      # status filter as in ErysReview; counts follow the name
-        self.filter_combo.activated.connect(lambda _: self._build_tree())
-        frow.addWidget(self.filter_combo, 1); ll.addLayout(frow)
+        self.filter_btn = QPushButton(objectName="filterButton")   # marker + status in one menu, one tick each
+        self.filter_btn.setMenu(QMenu(self.filter_btn))
+        ll.addWidget(self.filter_btn)
         self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.setColumnCount(2)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -192,10 +201,68 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.view, 1); cl.addWidget(self._build_legend())
         cl.addWidget(self.banner); cl.addWidget(self.footer)
 
-        # right: what is in the image, the selected cell (result, why, details), actions
-        right_inner = QWidget(); rl = QVBoxLayout(right_inner); rl.setContentsMargins(10, 8, 10, 8); rl.setSpacing(10)
+        # right: fixed head (image, progress, tabs) · Nucleus | List | Notes · fixed foot
+        right = QWidget(objectName="reviewPane")
+        rv = QVBoxLayout(right); rv.setContentsMargins(0, 0, 0, 0); rv.setSpacing(0)
+        head = QFrame(objectName="paneHead"); hv = QVBoxLayout(head)
+        hv.setContentsMargins(14, 12, 14, 10); hv.setSpacing(6)
+        hr = QHBoxLayout()
+        self.img_name = QLabel(""); f = self.img_name.font(); f.setBold(True); self.img_name.setFont(f)
+        self.img_done = QLabel("")
+        hr.addWidget(self.img_name, 1); hr.addWidget(self.img_done)
+        hv.addLayout(hr)
+        self.progress = QProgressBar(); self.progress.setTextVisible(False); self.progress.setFixedHeight(6)
+        hv.addWidget(self.progress)
         self.summary = QLabel(""); self.summary.setWordWrap(True)
-        rl.addWidget(self.summary)
+        hv.addWidget(self.summary)
+        tabw = QFrame(objectName="segment"); tl2 = QHBoxLayout(tabw)
+        tl2.setContentsMargins(0, 0, 0, 0); tl2.setSpacing(0)
+        self.tab_group = QButtonGroup(self); self.tabs: dict[str, QPushButton] = {}
+        for i, (key, text) in enumerate((("cell", "Cell"), ("list", "List"), ("notes", "Notes"))):
+            b = QPushButton(text); b.setCheckable(True)
+            b.setProperty("first", i == 0); b.setProperty("last", i == 2)
+            b.clicked.connect(lambda _=False, k=key: self.show_tab(k))
+            self.tab_group.addButton(b); tl2.addWidget(b, 1); self.tabs[key] = b
+        hv.addWidget(tabw)
+        rv.addWidget(head)
+
+        def page() -> tuple[QScrollArea, QVBoxLayout]:
+            w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(14, 12, 14, 12); lay.setSpacing(10)
+            sc = QScrollArea(); sc.setWidgetResizable(True); sc.setWidget(w); sc.setFrameShape(QFrame.NoFrame)
+            return sc, lay
+
+        self.pages = QStackedWidget()
+        # Cell: result and why, its buttons, then details
+        sc, lay = page()
+        self.panel = CellPanel(more_open=bool(_recall("more_open")), on_more=lambda on: _remember(more_open=on),
+                               dist_open=_recall("dist_open") is not False, on_dist=lambda on: _remember(dist_open=on),
+                               i0_open=_recall("i0_open") is not False, on_i0=lambda on: _remember(i0_open=on))
+        lay.addWidget(self.panel.head)
+        acts = QGridLayout(); acts.setSpacing(8)
+        self.b_confirm = QPushButton("✔ Confirm (C)"); self.b_confirm.clicked.connect(self.toggle_confirm)
+        self.b_confirm.setToolTip("Confirm this counted cell and jump to the next open one. C again undoes it.")
+        self.b_confirm.setStyleSheet("QPushButton { border: 2px solid #1B7A4D; color: #1B7A4D; font-weight: 600; }")
+        self.b_discard = QPushButton("Discard (X)"); self.b_discard.clicked.connect(self.toggle_discard)
+        self.b_note = QPushButton("Note (N)"); self.b_note.clicked.connect(lambda: self.edit_note(self.selected))
+        self.b_redraw = QPushButton("New I₀ fields (R)"); self.b_redraw.clicked.connect(self.redraw_fields)
+        self.b_delete = QPushButton("Delete drawn contour"); self.b_delete.clicked.connect(self.delete_manual)
+        acts.addWidget(self.b_confirm, 0, 0); acts.addWidget(self.b_discard, 0, 1)
+        acts.addWidget(self.b_note, 1, 0); acts.addWidget(self.b_redraw, 1, 1)
+        acts.addWidget(self.b_delete, 2, 0, 1, 2)
+        acts.setColumnStretch(0, 7); acts.setColumnStretch(1, 5)
+        lay.addLayout(acts)
+        lay.addWidget(self.panel.details); lay.addStretch(1)
+        self.pages.addWidget(sc)
+        # List: filter chips, sortable table
+        sc, lay = page()
+        crow = QHBoxLayout(); crow.setSpacing(6)
+        self.list_filter = "all"; self.list_chips: dict[str, QPushButton] = {}
+        for key in LIST_FILTERS:
+            b = QPushButton(); b.setCheckable(True); b.setProperty("class", "chip")
+            b.clicked.connect(lambda _=False, k=key: self._set_list_filter(k))
+            crow.addWidget(b); self.list_chips[key] = b
+        crow.addStretch(1)
+        lay.addLayout(crow)
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels([c[1] for c in COLUMNS])
         self.table.verticalHeader().setVisible(False)
@@ -205,43 +272,48 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setFocusPolicy(Qt.NoFocus)
-        self.table.setMaximumHeight(170)
+        self.table.setMinimumHeight(420)
         self.table.itemSelectionChanged.connect(self._table_selection)
-        self.table_fold = Fold("List", self.table, bool(_recall("table_open")),
-                               lambda on: _remember(table_open=on))
-        rl.addWidget(self.table_fold)
-        self.comments = QWidget(); self.comments_l = QVBoxLayout(self.comments)
-        self.comments_l.setContentsMargins(0, 0, 0, 0); self.comments_l.setSpacing(2)
-        self.comments_fold = Fold("Comments", self.comments, True)
-        rl.addWidget(self.comments_fold)
-        line = QFrame(); line.setFrameShape(QFrame.HLine); line.setObjectName("rule"); rl.addWidget(line)
-        self.panel = CellPanel(more_open=bool(_recall("more_open")), on_more=lambda on: _remember(more_open=on))
-        rl.addWidget(self.panel)
-        self.cell_caption = QLabel("This cell", objectName="caption"); rl.addWidget(self.cell_caption)
-        row1 = QHBoxLayout()
-        self.b_confirm = QPushButton("✔ Confirm (C)"); self.b_confirm.clicked.connect(self.toggle_confirm)
-        self.b_confirm.setToolTip("Confirm this counted cell and jump to the next open one. C again undoes it.")
-        self.b_confirm.setStyleSheet("QPushButton { border: 2px solid #1B7A4D; color: #1B7A4D; font-weight: 600; }")
-        self.b_discard = QPushButton("Discard (X)"); self.b_discard.clicked.connect(self.toggle_discard)
-        row1.addWidget(self.b_confirm, 3); row1.addWidget(self.b_discard, 2)
-        rl.addLayout(row1)
-        row2 = QHBoxLayout()
-        self.b_note = QPushButton("Note (N)"); self.b_note.clicked.connect(lambda: self.edit_note(self.selected))
-        self.b_redraw = QPushButton("New I₀ fields (R)"); self.b_redraw.clicked.connect(self.redraw_fields)
-        self.b_delete = QPushButton("Delete drawn"); self.b_delete.clicked.connect(self.delete_manual)
-        row2.addWidget(self.b_note); row2.addWidget(self.b_redraw); row2.addWidget(self.b_delete)
-        rl.addLayout(row2)
-        rl.addWidget(QLabel("This image", objectName="caption"))
-        row3 = QHBoxLayout()
+        lay.addWidget(self.table, 1)
+        lay.addWidget(QLabel("Click a row: select it and zoom to it. Click a column head to sort.", objectName="caption"))
+        self.pages.addWidget(sc)
+        # Notes: the image's note, its comment circles, the cells' notes
+        sc, lay = page()
+        self.notes_box = QWidget(); self.notes_l = QVBoxLayout(self.notes_box)
+        self.notes_l.setContentsMargins(0, 0, 0, 0); self.notes_l.setSpacing(8)
+        lay.addWidget(self.notes_box)
+        nrow = QHBoxLayout()
+        b_in = QPushButton("+ Image note"); b_in.clicked.connect(lambda: self.edit_note(0))
+        b_circ = QPushButton("◯ Draw circle (4)"); b_circ.clicked.connect(lambda: self.set_tool(TOOL_NOTE))
+        nrow.addWidget(b_in); nrow.addWidget(b_circ)
+        lay.addLayout(nrow)
+        lay.addWidget(QLabel("Click an entry to jump to it. Notes stay in the review file and are not exported.",
+                             objectName="caption", wordWrap=True))
+        lay.addStretch(1)
+        self.pages.addWidget(sc)
+        rv.addWidget(self.pages, 1)
+
+        foot = QFrame(objectName="paneFoot"); fv = QVBoxLayout(foot)
+        fv.setContentsMargins(14, 10, 14, 12); fv.setSpacing(8)
+        frow = QHBoxLayout()
         self.b_confirm_all = QPushButton("Confirm all open"); self.b_confirm_all.clicked.connect(self.confirm_all_open)
-        self.b_image_note = QPushButton("Image note"); self.b_image_note.clicked.connect(lambda: self.edit_note(0))
-        self.b_rerun = QPushButton("Rerun segmentation"); self.b_rerun.clicked.connect(self.rerun_cellpose)
-        row3.addWidget(self.b_confirm_all); row3.addWidget(self.b_image_note); row3.addWidget(self.b_rerun)
-        rl.addLayout(row3)
+        self.b_confirm_all.setToolTip("Confirms every open cell without an I₀ warning – those need a look, one by one.")
+        self.b_more = QToolButton(text="⋯"); self.b_more.setPopupMode(QToolButton.InstantPopup)
+        self.b_more.setToolTip("More for this image")
+        menu = QMenu(self.b_more)
+        menu.addAction("Rerun segmentation", self.rerun_cellpose)
+        menu.addAction("Contour method and OD threshold …", self._contour_dialog)
+        self.b_more.setMenu(menu)
+        frow.addWidget(self.b_confirm_all, 1); frow.addWidget(self.b_more)
+        fv.addLayout(frow)
         self.b_done = QPushButton("✔ Image reviewed (Enter)"); self.b_done.setProperty("class", "primary")
         self.b_done.clicked.connect(self.toggle_reviewed)
-        rl.addWidget(self.b_done)
-        form_w = QWidget(); form = QFormLayout(form_w); form.setContentsMargins(0, 0, 0, 0)
+        fv.addWidget(self.b_done)
+        rv.addWidget(foot)
+
+        # contour method / threshold: rarely changed, so in a small dialog from ⋯
+        self.contour_dlg = QDialog(self); self.contour_dlg.setWindowTitle("Contour method and OD threshold")
+        form = QFormLayout(self.contour_dlg)
         self.method_combo = QComboBox()
         for k, v in METHOD_LABELS.items():
             self.method_combo.addItem(v, k)
@@ -252,18 +324,15 @@ class MainWindow(QMainWindow):
         self.thr_spin.valueChanged.connect(lambda _: self._threshold_changed())
         self.cb_only_this = QCheckBox("this image only")
         self.cb_only_this.setToolTip("Off: method and threshold apply to the whole study.")
-        thr_row = QHBoxLayout(); thr_row.addWidget(self.thr_spin); thr_row.addWidget(self.cb_only_this)
         form.addRow("Contour:", self.method_combo)
-        form.addRow("OD threshold:", thr_row)
-        rl.addWidget(Fold("Contour method (advanced)", form_w, bool(_recall("contour_open")),
-                          lambda on: _remember(contour_open=on)))
-        rl.addStretch(1)
-        right = QScrollArea(); right.setWidgetResizable(True); right.setWidget(right_inner)
-        right.setFrameShape(QFrame.NoFrame); right.setMinimumWidth(430)
+        form.addRow("OD threshold:", self.thr_spin)
+        form.addRow("", self.cb_only_this)
+        right.setMinimumWidth(400)
+        self.show_tab(_recall("tab") or "cell", remember=False)
 
         # Side panels can be dragged shut; the arrow on their divider brings them back.
         split = PaneSplitter(); split.setObjectName("paneSplit")
-        left.setMinimumWidth(200); right.setMinimumWidth(380); centre.setMinimumWidth(320)
+        left.setMinimumWidth(200); centre.setMinimumWidth(320)
         split.addWidget(left); split.addWidget(centre); split.addWidget(right)
         split.setSizes([290, 800, 450])
         split.setStretchFactor(1, 1)
@@ -320,9 +389,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence.Preferences, self, activated=self.open_settings)
 
     def _set_enabled(self, on: bool) -> None:
-        for w in (self.method_combo, self.thr_spin, self.cb_only_this, self.b_rerun,
+        for w in (self.method_combo, self.thr_spin, self.cb_only_this, self.b_more,
                   self.b_discard, self.b_redraw, self.b_delete, self.b_done, self.b_confirm,
-                  self.b_confirm_all, self.b_note, self.b_image_note):
+                  self.b_confirm_all, self.b_note):
             w.setEnabled(on)
 
     # ── study ───────────────────────────────────────────────
@@ -339,7 +408,7 @@ class MainWindow(QMainWindow):
     def open_study(self, study: Study) -> None:
         self.study = study
         self.panel.noun = "Nucleus" if study.target == TARGET_NUCLEUS else "Cell"
-        self.cell_caption.setText(f"This {self.panel.noun.lower()}")
+        self.tabs["cell"].setText(self.panel.noun)
         self._legend_field.setText("I₀ fields 1–3 of this image" if study.settings.i0_scope == I0_PER_IMAGE
                                    else "I₀ fields 1–3 of the selected")
         self.images = study.images()
@@ -347,7 +416,6 @@ class MainWindow(QMainWindow):
         self.idx = -1
         _remember(study=study.file)
         self.setWindowTitle(f"ODReview {__version__} — {study.name}")
-        self._build_chips()
         self._build_tree()
         self.worker.stain_vectors = study.settings.stain_vectors
         self.worker.set_queue([(i.folder, i.path) for i in self.images], study.settings.cellpose)
@@ -365,24 +433,28 @@ class MainWindow(QMainWindow):
         self.b_study.setText(f"{self.study.name}   ▾")
         self.b_study.setToolTip(f"{markers} · {done}/{n} subjects done – click to switch study")
 
-    def _build_chips(self) -> None:
-        _clear_layout(self.chip_row)
-        markers = self.study.markers(self.images)
-        if self.marker not in markers:
-            self.marker = ALL_MARKERS
-        for m in markers + [ALL_MARKERS]:
-            b = QPushButton(m or "all"); b.setCheckable(True); b.setProperty("class", "chip")
-            b.setChecked(m == self.marker)
-            b.clicked.connect(lambda _=False, mk=m: self._set_marker(mk))
-            self.chip_row.addWidget(b)
-        self.chip_row.addStretch(1)
-
-    def _set_marker(self, m: str) -> None:
-        self.marker = m
-        self._build_chips()
+    def _set_filter(self, marker: str | None = None, mode: str | None = None) -> None:
+        if marker is not None:
+            self.marker = marker
+        if mode is not None:
+            self.filter_mode = mode
         self._build_tree()
         if self.visible and self.idx not in self.visible:
             self.go_to(self.visible[0])
+
+    def _build_filter_menu(self, per_marker: dict, counts: dict) -> None:
+        menu = self.filter_btn.menu(); menu.clear()
+        if len(per_marker) > 1:
+            menu.addSection("Marker")
+            for m, n in [(ALL_MARKERS, sum(per_marker.values()))] + sorted(per_marker.items()):
+                a = menu.addAction(f"{m or 'All markers'} ({n})"); a.setCheckable(True); a.setChecked(m == self.marker)
+                a.triggered.connect(lambda _=False, mk=m: self._set_filter(marker=mk))
+        menu.addSection("Show")
+        for key, label in FILTERS.items():
+            a = menu.addAction(f"{label} ({counts[key]})"); a.setCheckable(True); a.setChecked(key == self.filter_mode)
+            a.triggered.connect(lambda _=False, k=key: self._set_filter(mode=k))
+        shown = f"{FILTERS[self.filter_mode]} ({counts[self.filter_mode]})"
+        self.filter_btn.setText(f"{self.marker} · {shown}" if self.marker else shown)
 
     def _filter_state(self, i: int) -> tuple[str, bool]:
         """('unsegmented' | 'in_progress' | 'finished', has a note or comment) of image i."""
@@ -397,7 +469,11 @@ class MainWindow(QMainWindow):
     def _build_tree(self) -> None:
         self.tree.blockSignals(True)
         self.tree.clear(); self._items.clear(); self.visible = []
-        mode = self.filter_combo.currentData() or "all"
+        mode = self.filter_mode
+        markers = self.study.markers(self.images)
+        if self.marker not in markers:
+            self.marker = ALL_MARKERS
+        per_marker = {m: sum(info.marker == m for info in self.images) for m in markers}
         counts = dict.fromkeys(FILTERS, 0)
         groups: dict = {}
         for i, info in enumerate(self.images):
@@ -408,12 +484,7 @@ class MainWindow(QMainWindow):
             if mode != "all" and not (noted if mode == "with_notes" else state == mode):
                 continue
             groups.setdefault((info.timepoint, info.proband), []).append(i)
-        self.filter_combo.blockSignals(True)
-        self.filter_combo.clear()
-        for key, label in FILTERS.items():
-            self.filter_combo.addItem(f"{label} ({counts[key]})", key)
-        self.filter_combo.setCurrentIndex(list(FILTERS).index(mode))
-        self.filter_combo.blockSignals(False)
+        self._build_filter_menu(per_marker, counts)
         for (tp, prob), idxs in sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower())):
             grp = self.images[idxs[0]].meta.get("gruppe", "")
             head = QTreeWidgetItem([f"{tp}  ·  subject {prob}" + (f"  ·  {grp}" if grp else ""), ""])
@@ -559,19 +630,25 @@ class MainWindow(QMainWindow):
         n = {k: 0 for k in ("confirmed", "kept", "warn", "excluded", "discarded")}
         for r in rows:
             n[state_of(r)] += 1
-        nouns = "nuclei" if self.study.target == TARGET_NUCLEUS else "cells"
         label = {"confirmed": "confirmed", "kept": "open", "warn": "I₀ warning", "excluded": "no background",
                  "discarded": "discarded"}
-        chips = "  ".join(chip(f"{n[k]} {label[k]}", k) for k in n if n[k])
         todo = n["confirmed"] + n["kept"] + n["warn"]
-        done = f" · {n['confirmed']}/{todo} confirmed" if todo else ""
-        self.summary.setText(f"<b>{len(rows)} {nouns} in this image</b>{done}<br>{chips}")
+        self.img_name.setText(self.images[self.idx].path.name if self.idx >= 0 else "")
+        self.img_done.setText(f"{n['confirmed']} / {todo} confirmed" if todo else "")
+        self.progress.setRange(0, max(todo, 1)); self.progress.setValue(n["confirmed"])
+        self.summary.setText("  ".join(chip(f"{n[k]} {label[k]}", k) for k in n if n[k]))
         self.b_confirm_all.setEnabled(n["kept"] > 0)
-        self.table_fold.btn.setText(f"List of {nouns}")
+        self.tabs["list"].setText(f"List {len(rows)}")
+        counts = {"all": len(rows), "open": n["kept"], "warn": n["warn"], "confirmed": n["confirmed"],
+                  "discarded": n["discarded"]}
+        for key, b in self.list_chips.items():
+            b.setText(f"{LIST_FILTERS[key]} {counts[key]}"); b.setChecked(key == self.list_filter)
         self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         colors = {"discarded": QColor("#8A8F99"), "excluded": QColor("#975E0C"), "warn": QColor("#975E0C"),
                   "confirmed": QColor("#1B7A4D")}
+        shown = {"open": "kept"}
         for i, r in enumerate(rows):
             hint = []
             if r["manual"]: hint.append("drawn")
@@ -580,7 +657,8 @@ class MainWindow(QMainWindow):
             if r.get("positive") is not None: hint.append("pos" if r["positive"] else "neg")
             if r["reason"] and r["status"] != "discarded": hint.append(r["reason"])
             if r.get("has_note"): hint.insert(0, "❝")
-            vals = {**r, "note": ", ".join(hint), "status": state_of(r)}
+            state = state_of(r)
+            vals = {**r, "note": ", ".join(hint), "status": {"kept": "open", "warn": "I₀ warning"}.get(state, state)}
             for c, (key, _) in enumerate(COLUMNS):
                 v = vals[key]
                 if v is None:
@@ -591,16 +669,36 @@ class MainWindow(QMainWindow):
                     text = f"{v:.1f}"
                 else:
                     text = str(v)
-                it = QTableWidgetItem(text)
+                it = SortItem(text)
                 it.setData(Qt.UserRole, r["cell"])
-                if state_of(r) in colors:
-                    it.setForeground(colors[state_of(r)])
+                it.setData(Qt.UserRole + 1, v if isinstance(v, (int, float)) else text)
+                if state in colors:
+                    it.setForeground(colors[state])
                 self.table.setItem(i, c, it)
-            if r["cell"] == self.selected:
-                self.table.selectRow(i)
-        if not any(r["cell"] == self.selected for r in rows):
-            self.table.clearSelection()
+        self.table.setSortingEnabled(True)
+        want = shown.get(self.list_filter, self.list_filter)
+        self.table.clearSelection()
+        for row in range(self.table.rowCount()):
+            cid = self.table.item(row, 0).data(Qt.UserRole)
+            r = self._row(cid)
+            self.table.setRowHidden(row, want != "all" and state_of(r) != want)
+            if cid == self.selected:
+                self.table.selectRow(row)
         self.table.blockSignals(False)
+
+    def _set_list_filter(self, key: str) -> None:
+        self.list_filter = key
+        if self.result:
+            self._fill_table()
+
+    def show_tab(self, key: str, remember: bool = True) -> None:
+        self.pages.setCurrentIndex(list(self.tabs).index(key))
+        self.tabs[key].setChecked(True)
+        if remember:
+            _remember(tab=key)
+
+    def _contour_dialog(self) -> None:
+        self.contour_dlg.exec()
 
     def _row(self, cid: int) -> dict | None:
         return next((r for r in self.result.rows if r["cell"] == cid), None) if self.result else None
@@ -613,7 +711,7 @@ class MainWindow(QMainWindow):
         self.b_note.setEnabled(r is not None)
         self.b_redraw.setEnabled(r is not None or self._per_image())
         self.b_redraw.setText("New image I₀ fields (R)" if self._per_image() else "New I₀ fields (R)")
-        self.b_delete.setEnabled(bool(r and r["manual"]))
+        self.b_delete.setVisible(bool(r and r["manual"]))      # only a contour drawn by hand
         if r is None:
             self.panel.show_cell(None)
             return
@@ -667,7 +765,7 @@ class MainWindow(QMainWindow):
             self.select_cell(cid)
             r = self._row(cid)
             if r:
-                self.view.centerOn(r["x"], r["y"])
+                self.view.zoom_to(r["x"], r["y"], 300)
 
     def toggle_discard(self) -> None:
         r = self._row(self.selected)
@@ -734,24 +832,40 @@ class MainWindow(QMainWindow):
         self._edit(fn)
 
     def _fill_comments(self) -> None:
-        """The image's comment circles (and its note) as a list; a click shows the circle."""
-        lay = self.comments_l
-        while lay.count():
-            w = lay.takeAt(0).widget()
-            if w is not None:
-                w.deleteLater()
-        marks, note = self.review.marks, self.review.note
-        for k, m in enumerate(marks):
-            first = m["text"].splitlines()[0] if m["text"] else ""
-            b = QPushButton(f"{k + 1} · {first[:60]}"); b.setFlat(True)
-            b.setStyleSheet("text-align: left; padding: 2px 4px;"); b.setToolTip(m["text"])
-            b.clicked.connect(lambda _=False, m=m: (self.view.zoom_to(m["x"], m["y"], 4 * m["r"] + 80)))
-            lay.addWidget(b)
-        if note:
-            t = QLabel(f"❝ Image: {note}"); t.setWordWrap(True); lay.addWidget(t)
-        if not marks and not note:
-            lay.addWidget(QLabel("None · tool 4: drag a circle next to the cells", objectName="caption"))
-        self.comments_fold.btn.setText(f"Comments ({len(marks) + bool(note)})")
+        """Notes tab: the image's note, its comment circles, the cells' notes – a click jumps there."""
+        _clear_layout(self.notes_l)
+        rv = self.review
+        cell_notes = [(int(k), t) for k, t in rv.notes.items() if t.strip()]
+        def section(title: str) -> None:
+            self.notes_l.addWidget(QLabel(f"<b>{title}</b>", objectName="caption"))
+        def entry(text: str, tip: str, on_click) -> None:
+            b = QPushButton(text); b.setToolTip(tip); b.clicked.connect(on_click)
+            b.setStyleSheet("text-align: left; padding: 6px 8px;")
+            self.notes_l.addWidget(b)
+        if rv.note:
+            section("This image")
+            entry(f"❝  {rv.note.splitlines()[0][:70]}", rv.note, lambda: self.edit_note(0))
+        if rv.marks:
+            section("Circles in the image")
+            for k, m in enumerate(rv.marks):
+                first = m["text"].splitlines()[0][:60] if m["text"] else ""
+                entry(f"{k + 1}  ·  {first}", m["text"],
+                      lambda _=False, m=m: self.view.zoom_to(m["x"], m["y"], 4 * m["r"] + 80))
+        if cell_notes:
+            section(f"{self.panel.noun}s" if self.panel.noun == "Cell" else "Nuclei")
+            for cid, t in sorted(cell_notes):
+                entry(f"#{cid}  ·  {t.splitlines()[0][:60]}", t, lambda _=False, c=cid: self._jump_to(c))
+        if not (rv.note or rv.marks or cell_notes):
+            self.notes_l.addWidget(QLabel("No notes yet.", objectName="caption"))
+        n = bool(rv.note) + len(rv.marks) + len(cell_notes)
+        self.tabs["notes"].setText(f"Notes {n}" if n else "Notes")
+
+    def _jump_to(self, cid: int) -> None:
+        r = self._row(cid)
+        if r:
+            self.select_cell(cid)
+            self.view.zoom_to(r["x"], r["y"], 300)
+            self.show_tab("cell")
 
     def edit_note(self, cid: int) -> None:
         """N / tool 4: the remark of a cell, or of the whole image when no cell is hit."""
