@@ -20,7 +20,7 @@ import numpy as np
 from . import __version__
 from .analysis import STATUS_KEPT, ImageResult, analyze
 from .state import Review, load_image
-from .study import META_ROLES, ROLE_COLUMNS, ROLE_IMAGE_NUM, ImageInfo, Study
+from .study import META_ROLES, ROLE_COLUMNS, ROLE_IMAGE_NUM, ImageInfo, Study, is_counted
 
 
 def overlay_png(img: np.ndarray, res: ImageResult, path: Path, field_size: int) -> None:
@@ -87,8 +87,8 @@ def export_study(study: Study, only_reviewed: bool = True, with_excluded: bool =
         if progress:
             progress(i, len(images), info.path.name)
         rv = Review.load(info.folder, info.path)
-        if only_reviewed and not rv.reviewed:
-            skipped += 1
+        if (only_reviewed and not rv.reviewed) or not is_counted(info, rv, study.settings):
+            skipped += 1                                    # ⊘ (E / objective default) never exported
             continue
         img = load_image(info.path)
         res = analyze(info.folder, info.path, img, study.settings, rv)

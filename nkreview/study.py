@@ -203,7 +203,22 @@ def guess_roles(names: list[str], delimiters: list[str]) -> list[str]:
 def studies_dir() -> Path:
     d = app_support_dir() / "studien"
     d.mkdir(parents=True, exist_ok=True)
+    _seed_default_studies(d)
     return d
+
+
+def _seed_default_studies(d: Path) -> None:
+    """Copy the bundled studies (nkreview/default_studies) once; .seeded keeps deleted ones from coming back."""
+    marker = d / ".seeded"
+    seeded = set(marker.read_text("utf-8").split()) if marker.exists() else set()
+    new = []
+    for src in sorted((Path(__file__).parent / "default_studies").glob("*.json")):
+        if src.name not in seeded:
+            if not (d / src.name).exists():
+                (d / src.name).write_bytes(src.read_bytes())
+            new.append(src.name)
+    if new:
+        marker.write_text("\n".join(sorted(seeded | set(new))) + "\n", "utf-8")
 
 
 def _slug(name: str) -> str:
@@ -229,6 +244,34 @@ class ImageInfo:
     def marker(self) -> str:
         return self.meta.get(ROLE_MARKER) or ""
 
+    @property
+    def objective(self) -> str:
+        from .segment import image_objective
+        return image_objective(self.path)
+
+
+LEVEL_OBJECTIVE = "objective"
+LEVELS = (ROLE_TIMEPOINT, ROLE_GROUP, ROLE_PROBAND, LEVEL_OBJECTIVE)
+LEVEL_LABELS = {ROLE_TIMEPOINT: "Timepoint", ROLE_GROUP: "Condition", ROLE_PROBAND: "Subject",
+                LEVEL_OBJECTIVE: "Magnification"}
+
+
+def level_value(study: "Study", info: ImageInfo, level: str) -> str:
+    if level == LEVEL_OBJECTIVE:
+        return info.objective or "unknown"
+    if level == ROLE_GROUP:
+        return info.meta.get(ROLE_GROUP) or study.groups.get(info.proband, "")
+    return info.meta.get(level) or ""
+
+
+def objective_rule(settings: Settings, objective: str) -> dict:
+    return {"count": True, "segment": True, **settings.objectives.get(objective, {})}
+
+
+def is_counted(info: ImageInfo, review, settings: Settings) -> bool:
+    """E toggles it per image; otherwise the objective's default."""
+    return review.counted if review.counted is not None else objective_rule(settings, info.objective)["count"]
+
 
 @dataclass
 class Study:
@@ -240,6 +283,8 @@ class Study:
     target: str = TARGET_CELL
     settings: Settings = field(default_factory=Settings)
     created_at: str = ""
+    # Sidebar tree, top to bottom; a level whose value is empty for every image is skipped
+    level_order: list = field(default_factory=lambda: list(LEVELS))
     file: str = ""                                    # json file name in studies_dir()
 
     # ── persistence ──────────────────────────────────────
@@ -277,6 +322,8 @@ class Study:
             target=d.get("target", TARGET_CELL),
             settings=Settings.from_dict(d.get("settings", {})),
             created_at=d.get("created_at", ""),
+            level_order=[lv for lv in d.get("level_order", LEVELS) if lv in LEVELS]
+            + [lv for lv in LEVELS if lv not in d.get("level_order", LEVELS)],
             file=file,
         )
 

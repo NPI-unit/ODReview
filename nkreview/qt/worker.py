@@ -1,5 +1,5 @@
-"""Cellpose in the background: one thread works through the folder, the image
-on screen first. Results land in the .nk_cache, the window is told per image."""
+"""Cellpose in the background: one thread works through the images chosen in
+File › Segmentation …. Results land in the .nk_cache, the window is told per image."""
 
 from __future__ import annotations
 
@@ -32,10 +32,11 @@ class CellposeWorker(QObject):
         self._thread.start()
 
     # Called from the GUI thread ─────────────────────────────
-    def set_queue(self, items: list[tuple[Path, Path]], params: CellposeParams) -> None:
-        """items: (folder, image) — a study's images span several folders."""
+    def set_queue(self, items: list[tuple[Path, Path]], params: CellposeParams, force: bool = False) -> None:
+        """items: (folder, image) — a study's images span several folders. force: run again
+        even if cached (the Segmentation window's "re-segment")."""
         with self._lock:
-            self._queue = [(folder, p, params, False) for folder, p in items]
+            self._queue = [(folder, p, params, force) for folder, p in items]
         self._wake.set()
 
     def prioritize(self, image: Path) -> None:

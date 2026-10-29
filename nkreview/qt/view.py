@@ -85,7 +85,8 @@ class ImageView(QGraphicsView):
     cellClicked = Signal(int)                 # 0 = background
     polygonDrawn = Signal(list)               # [[x, y], ...] image px
     roiDrawn = Signal(list)                   # [x0, y0, x1, y1]
-    i0Clicked = Signal(float, float)          # image px, tool "I₀-Feld setzen"
+    i0Clicked = Signal(float, float)          # image px, tool "I₀-Feld setzen": click next to the fields
+    i0Moved = Signal(int, float, float)       # tool I₀: field k (0-based) dragged to x, y
     menuRequested = Signal()                  # right click on the image
     noteClicked = Signal(int)                 # tool "Note": the cell clicked
     markDrawn = Signal(float, float, float)   # tool "Note" next to cells: a new comment circle x, y, r
@@ -107,6 +108,10 @@ class ImageView(QGraphicsView):
         self._selected = 0
         self._roi_item: QGraphicsRectItem | None = None
         self._field_items: list = []
+        self._field_pts: list = []
+        self._field_half = 0.0
+        self._field_drag, self._field_from = -1, None   # tool I₀: field being dragged, press point
+        self.setMouseTracking(True)                       # tool I₀: open hand over a field
         self._mark_items: list = []
         self._marks: list = []
         self._mark_start: QPointF | None = None
@@ -209,6 +214,7 @@ class ImageView(QGraphicsView):
         col = QColor(self.colors["field"])
         pen = QPen(col, 2.0); pen.setCosmetic(True)
         f = QFont(); f.setPointSize(11); f.setBold(True)
+        self._field_pts, self._field_half = [tuple(p) for p in pts], half
         for k, (x, y) in enumerate(pts, start=1):
             box = self.scene().addRect(QRectF(x - half, y - half, size, size), pen)
             num = QGraphicsSimpleTextItem(str(k)); num.setFont(f); num.setBrush(QBrush(col))
@@ -277,6 +283,7 @@ class ImageView(QGraphicsView):
         return int(self._labels[y, x]) if 0 <= x < w and 0 <= y < h else 0
 
     def set_tool(self, tool: str) -> None:
+        self.cancel_field_drag()
         self._tool = tool
         self.setDragMode(QGraphicsView.ScrollHandDrag if tool == TOOL_SELECT else QGraphicsView.NoDrag)
         self.viewport().setCursor(Qt.OpenHandCursor if tool == TOOL_SELECT else Qt.CrossCursor)
@@ -294,7 +301,12 @@ class ImageView(QGraphicsView):
             self._draw_item.setZValue(5)
             return
         if e.button() == Qt.LeftButton and self._tool == TOOL_I0:
-            self.i0Clicked.emit(pos.x(), pos.y())
+            k = self.field_at(pos.x(), pos.y())
+            if k >= 0:                              # grab an existing field; it moves on release
+                self._field_drag, self._field_from = k, pos
+                self.viewport().setCursor(Qt.ClosedHandCursor)
+            else:
+                self.i0Clicked.emit(pos.x(), pos.y())
             return
         if e.button() == Qt.LeftButton and self._tool == TOOL_NOTE:
             cid, k = self.cell_at(pos.x(), pos.y()), self.mark_at(pos.x(), pos.y())
@@ -316,8 +328,37 @@ class ImageView(QGraphicsView):
         self._press_pos = e.position()
         super().mousePressEvent(e)
 
+    def field_at(self, x: float, y: float) -> int:
+        """Index of the I₀ field under the point (a few px slack), -1 if none."""
+        slack = self._field_half + 3
+        for k, (fx, fy) in enumerate(self._field_pts):
+            if abs(x - fx) <= slack and abs(y - fy) <= slack:
+                return k
+        return -1
+
+    def _offset_field(self, k: int, dx: float, dy: float) -> None:
+        box, num = self._field_items[2 * k:2 * k + 2]      # set_fields adds them in pairs
+        box.setPos(dx, dy)
+        x, y = self._field_pts[k]
+        num.setPos(x + dx + self._field_half + 1, y + dy - self._field_half - 2)
+
+    def cancel_field_drag(self) -> bool:
+        """Esc while dragging an I₀ field: put it back. True if there was a drag."""
+        if self._field_drag < 0:
+            return False
+        self._offset_field(self._field_drag, 0, 0)
+        self._field_drag = -1
+        self.viewport().setCursor(Qt.CrossCursor)
+        return True
+
     def mouseMoveEvent(self, e):
         pos = self.mapToScene(e.position().toPoint())
+        if self._field_drag >= 0:
+            d = pos - self._field_from
+            self._offset_field(self._field_drag, d.x(), d.y())
+            return
+        if self._tool == TOOL_I0 and not e.buttons():
+            self.viewport().setCursor(Qt.OpenHandCursor if self.field_at(pos.x(), pos.y()) >= 0 else Qt.CrossCursor)
         if self._draw_item is not None:
             self._draw_pts.append(pos)
             path = QPainterPath(self._draw_pts[0])
@@ -336,6 +377,14 @@ class ImageView(QGraphicsView):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._field_drag >= 0:
+            k, self._field_drag = self._field_drag, -1
+            pos = self.mapToScene(e.position().toPoint())
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            if (pos - self._field_from).manhattanLength() >= 1:
+                self.i0Moved.emit(k, pos.x() - self._field_from.x() + self._field_pts[k][0],
+                                  pos.y() - self._field_from.y() + self._field_pts[k][1])
+            return
         if self._mark_temp is not None:
             c = self._mark_start
             r = self._mark_temp.rect().width() / 2

@@ -1,0 +1,97 @@
+{
+  "name": "Pilot C2C12 ICC",
+  "folders": [
+    "/Volumes/INTENSO/ICC_C2C12_Staining_Pictures"
+  ],
+  "delimiters": [
+    "_",
+    "-"
+  ],
+  "roles": [
+    "proband",
+    "ignorieren",
+    "bildnr"
+  ],
+  "groups": {},
+  "target": "kern",
+  "settings": {
+    "gray_mode": "mean",
+    "i0_scope": "zelle",
+    "i0_fields": 3,
+    "i0_field_size": 9,
+    "i0_ring_inner": 14,
+    "i0_ring_outer": 40,
+    "i0_check": "lokal",
+    "i0_min": 210.0,
+    "i0_max": 220.0,
+    "i0_rel_pct": 3.0,
+    "min_cell_area": 200,
+    "max_cell_area": 4000,
+    "pos_threshold": 0.0,
+    "od_high": 0.3,
+    "debris_h": 0.04,
+    "method": "cellpose",
+    "threshold": 0.05,
+    "grow": 10,
+    "min_area": 500,
+    "ring_inner": 15,
+    "ring_outer": 60,
+    "ring_warn_pct": 5.0,
+    "stain_preset": "H DAB",
+    "stain_vectors": [
+      [
+        0.65,
+        0.704,
+        0.286
+      ],
+      [
+        0.268,
+        0.57,
+        0.776
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "cellpose": {
+      "diameter": 30.0,
+      "flow_threshold": 0.4,
+      "cellprob_threshold": 0.0,
+      "model": "instanseg",
+      "roi_mode": "dab",
+      "roi_dab_threshold": 0.04,
+      "roi_min_area": 150,
+      "roi_pad": 48,
+      "input": "dab",
+      "pixel_size": 0.293
+    },
+    "objectives": {
+      "20×": {
+        "count": true,
+        "segment": true,
+        "min_d": 5.0,
+        "max_d": 20.0
+      },
+      "10×": {
+        "count": false,
+        "segment": true,
+        "min_d": 5.0,
+        "max_d": 20.0
+      },
+      "2.5×": {
+        "count": false,
+        "segment": false
+      }
+    }
+  },
+  "created_at": "2026-10-29T12:15:55",
+  "level_order": [
+    "zeitpunkt",
+    "gruppe",
+    "proband",
+    "objective"
+  ],
+  "app_version": "0.10.0"
+}

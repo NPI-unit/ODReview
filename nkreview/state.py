@@ -66,6 +66,9 @@ class Settings:
     stain_preset: str = DEFAULT_PRESET
     stain_vectors: list = field(default_factory=lambda: [list(r) for r in STAIN_PRESETS[DEFAULT_PRESET]])
     cellpose: CellposeParams = field(default_factory=CellposeParams)
+    # Per objective (from the file's XMP, '20×'): {"count": bool, "segment": bool}.
+    # Missing = counted and segmented. Pilot: 20× counts, 10× off, 2.5× is an overview.
+    objectives: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Settings":
@@ -104,6 +107,7 @@ class Review:
     notes: dict = field(default_factory=dict)
     note: str = ""
     marks: list = field(default_factory=list)           # comment circles: {"x", "y", "r", "text"}, image px
+    counted: bool | None = None                         # E: counts toward the results; None = objective default
 
     @staticmethod
     def path(folder: Path, image: Path) -> Path:

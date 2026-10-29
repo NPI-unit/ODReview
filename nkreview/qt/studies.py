@@ -27,7 +27,7 @@ from ..state import (
 from ..study import (
     CANDIDATE_DELIMS, ROLE_CELLTYPE, ROLE_DATE, ROLE_GROUP, ROLE_IGNORE, ROLE_IMAGE_NUM, ROLE_LABELS,
     ROLE_MARKER, ROLE_PROBAND, ROLE_TIMEPOINT,
-    MAG_LABELS, MAGNIFICATIONS, ROLES, TARGET_CELL, TARGET_LABELS, TARGET_NUCLEUS, Study, Template,
+    MAG_LABELS, MAGNIFICATIONS, ROLES, objective_rule, TARGET_CELL, TARGET_LABELS, TARGET_NUCLEUS, Study, Template,
     detect_delimiters,
     guess_roles, list_studies, list_templates, parse_name, progress, proband_progress,
     template_file_for, tokenize,
@@ -871,6 +871,14 @@ class StudyForm:
         s.i0_check, s.i0_rel_pct = self.m_check.currentData(), round(self.m_rel.value(), 2)
         s.min_cell_area, s.pos_threshold = self.m_minarea.value(), round(self.m_pos.value(), 4)
         s.od_high = round(self.m_high.value(), 3)
+        if hasattr(self, "lv_list"):
+            st.level_order = [self.lv_list.item(i).data(Qt.UserRole) for i in range(self.lv_list.count())]
+        for obj, w in getattr(self, "_obj_w", {}).items():
+            rule = {"count": w["count"].isChecked(), "segment": w["segment"].isChecked()}
+            for k in ("min_d", "max_d"):                      # 0 = off: not stored, as an untouched tile
+                if w[k].value():
+                    rule[k] = round(w[k].value(), 1)
+            s.objectives[obj] = rule
         st.groups = {}
         for r in range(self.g_table.rowCount()):
             a, b = self.g_table.item(r, 0), self.g_table.item(r, 1)
@@ -1035,11 +1043,30 @@ SETTINGS_PAGES = [
 CHANGES_RESULTS = {"seg", "i0", "analysis"}       # marked ⚠ in the navigation
 
 
+class _Tile(QFrame):
+    """A settings tile: the whole card is the click target (keyboard: Tab, then Space/Return)."""
+
+    def __init__(self, on_click):
+        super().__init__(objectName="settingsTile")
+        self._on_click = on_click
+        self.setCursor(Qt.PointingHandCursor); self.setFocusPolicy(Qt.StrongFocus)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self._on_click()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            self._on_click()
+        else:
+            super().keyPressEvent(e)
+
+
 class StudySettings(StudyForm, QDialog):
     """The study's settings: navigation on the left, one page per topic, and a
     footer with the number of unsaved changes, Discard and Save."""
 
-    def __init__(self, parent, study: Study, start_page: str = "images"):
+    def __init__(self, parent, study: Study, start_page: str = "home"):
         QDialog.__init__(self, parent)
         self.orig = copy.deepcopy(study)
         self.study = copy.deepcopy(study)
@@ -1050,21 +1077,23 @@ class StudySettings(StudyForm, QDialog):
         self.setWindowTitle("Settings")
         fit_to_screen(self, 1060, 720)
         root = QHBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        root.addWidget(self._build_nav())
         right = QWidget(); rv = QVBoxLayout(right); rv.setContentsMargins(0, 0, 0, 0); rv.setSpacing(0)
         self.stack = QStackedWidget(); rv.addWidget(self.stack, 1)
         rv.addWidget(self._build_footer())
         root.addWidget(right, 1)
         self._build_measure_widgets()
-        self._pages: dict[str, int] = {}
+        self._pages: dict[str, int] = {"home": self.stack.addWidget(_scroll(self._build_home()))}
         builders = {"images": self._page_images, "seg": self._page_seg, "i0": self._page_i0,
                     "analysis": self._page_analysis, "templates": self._page_templates,
                     "display": self._page_display}
         for key, title, sub in SETTINGS_PAGES:
             page = QWidget(); v = QVBoxLayout(page); v.setContentsMargins(28, 22, 28, 22); v.setSpacing(12)
+            head = QHBoxLayout()
+            back = QPushButton("← All settings", objectName="linkButton"); back.setCursor(Qt.PointingHandCursor)
+            back.clicked.connect(lambda: self.show_page("home"))
             t = QLabel(title); t.setStyleSheet("font-size: 21px; font-weight: 700;")
-            sl = QLabel(sub, objectName="caption"); sl.setWordWrap(True)
-            v.addWidget(t); v.addWidget(sl)
+            head.addWidget(back); head.addSpacing(8); head.addWidget(t); head.addStretch(1)
+            v.addLayout(head)
             builders[key](v)
             v.addStretch(1)
             self._pages[key] = self.stack.addWidget(_scroll(page))
@@ -1074,33 +1103,39 @@ class StudySettings(StudyForm, QDialog):
         self._ready = True
         self.show_page(start_page)
         self._form_changed()
+        if getattr(self, "_obj_w", None):
+            self._show_preview(next(iter(self._obj_w)))
 
     # ── frame ────────────────────────────────────────────
-    def _build_nav(self) -> QWidget:
-        nav = QFrame(objectName="settingsNav"); nav.setFixedWidth(250)
-        v = QVBoxLayout(nav); v.setContentsMargins(10, 16, 10, 16); v.setSpacing(2)
-        v.addWidget(QLabel("STUDY", objectName="caption"))
+    def _build_home(self) -> QWidget:
+        """One tile per settings page; a click opens it."""
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(36, 28, 36, 28); v.setSpacing(18)
+        head = QHBoxLayout()
+        t = QLabel("Settings"); t.setStyleSheet("font-size: 26px; font-weight: 700;")
         self.study_btn = QPushButton(f"●  {self.orig.name}   ▾", objectName="studySwitch")
-        self.study_btn.setToolTip("Switch study")
-        self.study_btn.clicked.connect(self._switch_study)
-        v.addWidget(self.study_btn)
-        v.addSpacing(8)
-        self.nav_group = QButtonGroup(self); self.nav_group.setExclusive(True)
-        self.nav_buttons: dict[str, QPushButton] = {}
-        for key, title, _ in SETTINGS_PAGES:
-            label = title.replace("&", "&&") + ("  ⚠" if key in CHANGES_RESULTS else "")
-            b = QPushButton(label, objectName="navItem"); b.setCheckable(True)
-            b.clicked.connect(lambda _=False, k=key: self.show_page(k))
-            self.nav_group.addButton(b); self.nav_buttons[key] = b
-            v.addWidget(b)
+        self.study_btn.setToolTip("Switch study"); self.study_btn.clicked.connect(self._switch_study)
+        head.addWidget(t); head.addStretch(1); head.addWidget(self.study_btn)
+        v.addLayout(head)
+        grid = QGridLayout(); grid.setSpacing(14)
+        self._tile_sub: dict[str, QLabel] = {}
+        for n, (key, title, _) in enumerate(SETTINGS_PAGES):
+            b = _Tile(lambda k=key: self.show_page(k)); b.setMinimumHeight(118)
+            b.setAccessibleName(title)
+            bl = QVBoxLayout(b); bl.setContentsMargins(18, 14, 18, 14); bl.setSpacing(6)
+            tt = QLabel(title + ("   ⚠" if key in CHANGES_RESULTS else ""), objectName="tileTitle")
+            sub = QLabel("", objectName="tileSub"); sub.setWordWrap(True)
+            more = QLabel("Open →", objectName="tileSub")
+            bl.addWidget(tt); bl.addWidget(sub); bl.addStretch(1); bl.addWidget(more)
+            self._tile_sub[key] = sub
+            grid.addWidget(b, n // 3, n % 3)
+        v.addLayout(grid)
+        v.addWidget(QLabel(f"⚠ changes the results · saved in {self.orig.path.name}", objectName="caption"))
         v.addStretch(1)
-        v.addWidget(QLabel(f"⚠ changes the results\nSaved in {self.orig.path.name}", objectName="caption"))
-        return nav
+        return w
 
     def show_page(self, key: str) -> None:
         if key in self._pages:
             self.stack.setCurrentIndex(self._pages[key])
-            self.nav_buttons[key].setChecked(True)
 
     def _build_footer(self) -> QWidget:
         f = QFrame(objectName="settingsFooter")
@@ -1126,9 +1161,93 @@ class StudySettings(StudyForm, QDialog):
     def _page_images(self, v: QVBoxLayout) -> None:
         name = QWidget(); f = QFormLayout(name); f.setContentsMargins(0, 0, 0, 0); f.addRow("Study name:", self._name_edit())
         self._card(v, name)
-        self._card(v, self._folders_box())
+        self._card(v, self._folder_rows_box())
         self._card(v, self._names_box())
-        self._card(v, self._groups_box())
+        self.notread_title = QLabel("", objectName="tileTitle")
+        self.notread_list = QLabel("", objectName="tileSub"); self.notread_list.setWordWrap(True)
+        self.notread_card = QFrame(objectName="settingsCard"); nl = QVBoxLayout(self.notread_card)
+        nl.setContentsMargins(16, 14, 16, 14); nl.addWidget(self.notread_title); nl.addWidget(self.notread_list)
+        v.addWidget(self.notread_card)
+        groups = self._groups_box()
+        self.g_table.setShowGrid(False); self.g_table.setMinimumHeight(0); self.g_table.setMaximumHeight(220)
+        self.g_fold = Fold("Condition per subject", groups)
+        self._card(v, self.g_fold)
+        self._card(v, self._levels_box())
+
+    # ── folders: one row per folder, the file tree on request ──
+    def _folder_rows_box(self) -> QWidget:
+        w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(0, 0, 0, 0); l.setSpacing(6)
+        head = QHBoxLayout(); head.addWidget(QLabel("Folders", objectName="tileTitle")); head.addStretch(1)
+        add = QPushButton("+ Add folder"); add.clicked.connect(self._add_folder); head.addWidget(add)
+        l.addLayout(head)
+        old = self._folders_box()                # f_list and the tree the rest of the form reads, kept hidden
+        old.hide(); l.addWidget(old)
+        self.f_rows = QVBoxLayout(); self.f_rows.setSpacing(0); l.addLayout(self.f_rows)
+        l.addWidget(QLabel("Sub-folders included · .nk_cache skipped", objectName="tileSub"))
+        self.tree.setMinimumHeight(220)
+        l.addWidget(Fold("Files", self.tree))
+        return w
+
+    def _refresh_tree(self) -> None:
+        StudyForm._refresh_tree(self)
+        if not hasattr(self, "f_rows"):
+            return
+        from ..segment import image_objective
+        from .batch import mag_order
+        while self.f_rows.count():
+            it = self.f_rows.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for k in range(self.f_list.count()):
+            path = Path(self.f_list.item(k).text())
+            imgs = list_images(path) if path.is_dir() else []
+            mags = Counter(image_objective(p) or "unknown" for p in imgs)
+            row = QFrame(objectName="folderRow"); h = QHBoxLayout(row); h.setContentsMargins(0, 8, 0, 8)
+            txt = QVBoxLayout(); txt.setSpacing(3)
+            name = QLabel(" › ".join(path.parts[-2:]) if path.is_dir() else f"{path} – not found")
+            name.setToolTip(str(path)); txt.addWidget(name)
+            chips = QHBoxLayout(); chips.setSpacing(6)
+            for t in [f"{len(imgs)} images"] + [f"{m} {n}" for m, n in sorted(mags.items(), key=lambda kv: mag_order(kv[0]))]:
+                chips.addWidget(QLabel(t, objectName="chip"))
+            chips.addStretch(1); txt.addLayout(chips)
+            h.addLayout(txt, 1)
+            rm = QPushButton("✕"); rm.setToolTip("Remove folder"); rm.setAccessibleName("Remove folder")
+            rm.clicked.connect(lambda _=False, i=k: (self.f_list.setCurrentRow(i), self._remove_folder()))
+            h.addWidget(rm)
+            self.f_rows.addWidget(row)
+
+    def _refresh_preview(self) -> None:
+        StudyForm._refresh_preview(self)
+        if not hasattr(self, "notread_card"):
+            return
+        delims, roles = self._delims(), self._roles()
+        bad = [n for n in self._names if self._unassigned(n, delims, roles)]
+        self.notread_card.setVisible(bool(bad))
+        self.notread_title.setText(f"Not read · {len(bad)} file{'s' if len(bad) != 1 else ''}")
+        self.notread_list.setText("These names don't match the scheme – they get no subject:\n"
+                                  + ", ".join(bad[:12]) + (f" … +{len(bad) - 12}" if len(bad) > 12 else ""))
+        if hasattr(self, "g_fold"):
+            n = self.g_table.rowCount()
+            done = sum(bool(self.g_table.item(r, 1) and self.g_table.item(r, 1).text().strip()) for r in range(n))
+            self.g_fold.btn.setText(f"Condition per subject · {done} of {n} set · only if not in the file name")
+
+    # ── sidebar order ──
+    def _levels_box(self) -> QWidget:
+        from ..study import LEVEL_LABELS, level_value
+        w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(0, 0, 0, 0); l.setSpacing(6)
+        l.addWidget(QLabel("Sidebar order", objectName="tileTitle"))
+        self.lv_list = QListWidget(); self.lv_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.lv_list.setSpacing(4); self.lv_list.setFixedHeight(4 * 34 + 8)
+        imgs = self.study.images()
+        for lv in self.study.level_order:
+            empty = not any(level_value(self.study, i, lv) for i in imgs)
+            it = QListWidgetItem(f"⋮⋮  {LEVEL_LABELS[lv]}" + ("  · empty, skipped" if empty else ""))
+            it.setData(Qt.UserRole, lv)
+            self.lv_list.addItem(it)
+        self.lv_list.model().rowsMoved.connect(lambda *_: self._form_changed())
+        l.addWidget(self.lv_list)
+        l.addWidget(QLabel("Drag to reorder · empty levels are skipped", objectName="tileSub"))
+        return w
 
     @staticmethod
     def _help_form(rows: list) -> QWidget:
@@ -1147,26 +1266,100 @@ class StudySettings(StudyForm, QDialog):
 
     def _summary_label(self) -> QLabel:
         lab = QLabel(""); lab.setWordWrap(True); lab.setObjectName("settingsSummary")
-        lab.setStyleSheet("background: #E8EFFC; color: #1A3F8F; border-radius: 8px; padding: 9px 12px;")
         return lab
 
     def _page_seg(self, v: QVBoxLayout) -> None:
         self.seg_summary = self._summary_label(); v.addWidget(self.seg_summary)
+        self._card(v, self._help_form([("What is measured", self._target_box(), "")]))
+        body = QHBoxLayout(); body.setSpacing(16)
+        self.sample_img = QLabel("No sample image", objectName="sampleImage"); self.sample_img.setFixedSize(380, 380)
+        self.sample_img.setAlignment(Qt.AlignCenter)
+        left = QVBoxLayout(); left.addWidget(self.sample_img); self.sample_cap = QLabel("", objectName="caption")
+        left.addWidget(self.sample_cap); left.addStretch(1)
+        body.addLayout(left)
+        tiles = QGridLayout(); tiles.setSpacing(12)
+        self._obj_w: dict[str, dict] = {}
+        for n, (obj, px, count) in enumerate(self._objectives()):
+            rule = objective_rule(self.study.settings, obj)
+            c = QFrame(objectName="settingsCard"); g = QGridLayout(c); g.setContentsMargins(14, 12, 14, 12)
+            head = QPushButton(obj, objectName="objectiveHead"); head.setCursor(Qt.PointingHandCursor)
+            head.setToolTip("Show a sample image"); head.clicked.connect(lambda _=False, o=obj: self._show_preview(o))
+            lo, hi = QDoubleSpinBox(), QDoubleSpinBox()
+            for sb, val in ((lo, rule.get("min_d", 0.0)), (hi, rule.get("max_d", 0.0))):
+                sb.setRange(0, 200); sb.setDecimals(1); sb.setSuffix(" µm"); sb.setSpecialValueText("off"); sb.setValue(val)
+                sb.valueChanged.connect(lambda _=0.0, o=obj: (self._form_changed(), self._show_preview(o)))
+            cnt, seg = QCheckBox("Count by default"), QCheckBox("Segment")
+            cnt.setChecked(rule["count"]); seg.setChecked(rule["segment"])
+            for cb in (cnt, seg):
+                cb.toggled.connect(lambda *_: self._form_changed())
+            dia = QWidget(); dl = QHBoxLayout(dia); dl.setContentsMargins(0, 0, 0, 0)
+            dl.addWidget(lo); dl.addWidget(QLabel("–")); dl.addWidget(hi)
+            g.addWidget(head, 0, 0, 1, 2)
+            g.addWidget(QLabel("Pixel size", objectName="caption"), 1, 0)
+            g.addWidget(QLabel(f"{px:.3f} µm/px · from file" if px else "unknown"), 1, 1)
+            g.addWidget(QLabel("Images", objectName="caption"), 2, 0); g.addWidget(QLabel(str(count)), 2, 1)
+            g.addWidget(QLabel("Nucleus Ø", objectName="caption"), 3, 0); g.addWidget(dia, 3, 1)
+            g.addWidget(cnt, 4, 0, 1, 2); g.addWidget(seg, 5, 0, 1, 2)
+            g.setRowStretch(6, 1); g.setVerticalSpacing(8)
+            self._obj_w[obj] = {"min_d": lo, "max_d": hi, "count": cnt, "segment": seg}
+            tiles.addWidget(c, n, 0)                 # stacked: no sideways scrolling
+        if not self._obj_w:
+            tiles.addWidget(QLabel("No objective in the image files – the study's pixel size and areas apply "
+                                   "(Advanced).", objectName="caption", wordWrap=True), 0, 0)
+        tw = QWidget(); tw.setLayout(tiles); body.addWidget(tw, 1)
+        v.addLayout(body)
         area = QWidget(); al = QHBoxLayout(area); al.setContentsMargins(0, 0, 0, 0)
         al.addWidget(self.m_minarea); al.addWidget(QLabel("to")); al.addWidget(self.m_maxarea); al.addStretch(1)
-        self._card(v, self._help_form([
-            ("What is measured", self._target_box(), ""),
-            ("Magnification", self.m_mag, "Sets the pixel size and the allowed nucleus area."),
-            ("Area", area, "Smaller objects are debris, larger ones whole cells – both are dropped."),
-            ("Debris flag", self.m_debris, "Marks a cell as “debris?” from its H-channel OD – a hint, never an exclusion."),
-        ]))
         adv = QWidget(); av = QVBoxLayout(adv); av.setContentsMargins(0, 0, 0, 0); av.setSpacing(10)
-        av.addWidget(self._form([("Model:", self.m_model), ("Pixel size:", self.m_px), ("Method:", self.m_method),
-                                 ("OD threshold:", self.m_thr), ("Cellpose sees:", self.m_input)]))
+        av.addWidget(self._form([("Debris flag:", self.m_debris), ("Model:", self.m_model),
+                                 ("Pixel size:", self.m_px), ("Area (no objective):", area),
+                                 ("Method:", self.m_method), ("OD threshold:", self.m_thr),
+                                 ("Cellpose sees:", self.m_input)]))
         av.addWidget(self._form_cellpose())
-        self._card(v, Fold("Advanced – model, pixel size, contour method, OD threshold, Cellpose", adv))
-        v.addWidget(QLabel("Changing these settings runs the segmentation again for every image.",
-                           objectName="banner", wordWrap=True))
+        self._card(v, Fold("Advanced – debris flag, model, pixel size, contour method, Cellpose", adv))
+        v.addWidget(QLabel("⚠ Changes need a new run: File › Segmentation …", objectName="banner", wordWrap=True))
+
+    def _objectives(self) -> list[tuple[str, float, int]]:
+        """(objective, µm/px, images) found in the study's files, highest magnification first."""
+        from ..segment import image_pixel_size
+        from .batch import mag_order
+        found: dict = {}
+        for info in self.study.images():
+            if info.objective:
+                px, n = found.get(info.objective, (image_pixel_size(info.path), 0))
+                found[info.objective] = (px, n + 1)
+        return [(o, px, n) for o, (px, n) in sorted(found.items(), key=lambda kv: mag_order(kv[0]))]
+
+    def _show_preview(self, obj: str) -> None:
+        """A sample image of that objective with its contours: kept solid green, outside the size range dashed orange."""
+        import numpy as np
+        from PySide6.QtGui import QImage, QPixmap
+        from skimage.segmentation import find_boundaries
+        from ..analysis import area_limits
+        from ..segment import cached_cellpose
+        from ..state import load_image
+        info = next((i for i in self.study.images() if i.objective == obj), None)
+        if info is None:
+            return
+        work = self._work().settings
+        img = load_image(info.path)[..., :3].astype(np.uint8)
+        h, w = img.shape[:2]; side = min(h, w); x0 = (w - side) // 2
+        rgb = img[:, x0:x0 + side].copy()
+        cp = cached_cellpose(info.folder, info.path, work.cellpose)
+        if cp is not None:
+            cp = cp[:, x0:x0 + side]
+            lo, hi = area_limits(work, info.path)
+            sizes = np.bincount(cp.ravel()); keep = (sizes >= lo) & ((hi <= 0) | (sizes <= hi)); keep[0] = False
+            yy, xx = np.indices(cp.shape)
+            out = find_boundaries(np.where(keep[cp], 0, cp), mode="thick")
+            rgb[out & (((yy + xx) // 8) % 2 == 0)] = (230, 140, 20)
+            rgb[find_boundaries(np.where(keep[cp], cp, 0), mode="thick")] = (40, 200, 90)
+            n_keep, n_out = int(keep.sum()), int((sizes[1:] > 0).sum() - keep.sum())
+            self.sample_cap.setText(f"{info.path.name} · {n_keep} kept · {n_out} outside size range")
+        else:
+            self.sample_cap.setText(f"{info.path.name} · not segmented yet")
+        q = QImage(rgb.data, side, side, 3 * side, QImage.Format_RGB888).copy()
+        self.sample_img.setPixmap(QPixmap.fromImage(q).scaled(380, 380, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _page_i0(self, v: QVBoxLayout) -> None:
         self.i0_summary = self._summary_label(); v.addWidget(self.i0_summary)
@@ -1190,6 +1383,19 @@ class StudySettings(StudyForm, QDialog):
 
     def _page_display(self, v: QVBoxLayout) -> None:
         from .app import _recall, _remember
+        from PySide6.QtWidgets import QApplication
+        from .style import apply_look
+        seg = QFrame(objectName="segment"); sl = QHBoxLayout(seg); sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
+        grp = QButtonGroup(seg); now = _recall("theme") or "system"
+        for i, (key, text) in enumerate((("system", "System"), ("light", "Light"), ("dark", "Dark"))):
+            b = QPushButton(text); b.setCheckable(True); b.setChecked(key == now)
+            b.setProperty("first", i == 0); b.setProperty("last", i == 2)
+            b.clicked.connect(lambda _=False, k=key: (_remember(theme=k), apply_look(QApplication.instance(), k)))
+            grp.addButton(b); sl.addWidget(b)
+        row = QHBoxLayout(); row.addWidget(seg); row.addStretch(1)
+        box = QWidget(); box.setLayout(row)
+        self._card(v, QLabel("Appearance", objectName="tileTitle"), box,
+                   QLabel("For the whole app on this computer · applies right away", objectName="tileSub"))
         on = _recall("fill_kept")
         fill = QCheckBox("Fill kept cells / nuclei in green"); fill.setChecked(True if on is None else bool(on))
         alpha = QSlider(Qt.Horizontal); alpha.setRange(10, 80); alpha.setSingleStep(5)
@@ -1265,13 +1471,29 @@ class StudySettings(StudyForm, QDialog):
         w = self._work().settings
         if hasattr(self, "seg_summary"):
             what = TARGET_LABELS[TARGET_NUCLEUS if self.r_nuc.isChecked() else TARGET_CELL].capitalize()
-            area = (f"{w.min_cell_area}–{w.max_cell_area or '∞'} px" if w.min_cell_area or w.max_cell_area
-                    else "any area")
+            area = (" · ".join(f"{o} Ø {r.get('min_d', 0):g}–{r.get('max_d', 0) or '∞'} µm"
+                               for o, r in w.objectives.items() if r.get("segment", True))
+                    or (f"{w.min_cell_area}–{w.max_cell_area or '∞'} px" if w.min_cell_area or w.max_cell_area
+                        else "any area"))
             self.seg_summary.setText(f"{what} · {segmentation_text(w)} · {area}"
                                      + (" · debris flag on" if w.debris_h else ""))
             per = "image" if w.i0_scope == I0_PER_IMAGE else "cell"
             self.i0_summary.setText(f"{w.i0_fields} fields of {w.i0_field_size}×{w.i0_field_size} px per {per} · "
                                     f"{i0_rule(w)}")
+        if hasattr(self, "_tile_sub"):
+            objs = ", ".join(f"{o} {'counted' if r['count'] else 'off'}" for o, r in w.objectives.items()
+                             if r.get("segment", True))
+            per = "image" if w.i0_scope == I0_PER_IMAGE else "nucleus"
+            for key, text in {
+                "images": f"{len(self._work().folders)} folder(s) · {', '.join(ROLE_LABELS.get(r, r) for r in self._roles() if r != ROLE_IGNORE)}",
+                "seg": objs or segmentation_text(w),
+                "i0": f"{w.i0_fields} fields per {per} · {i0_rule(w)}",
+                "analysis": f"Positive above OD {w.pos_threshold:g}" if w.pos_threshold else "No positive/negative call",
+                "display": "Contour fill and opacity",
+                "templates": "Save as a template for the next study",
+            }.items():
+                if key in self._tile_sub:
+                    self._tile_sub[key].setText(text)
         n = len(self._changes())
         self.footer_text.setText(f"{n} unsaved change{'s' if n != 1 else ''} to “{self.orig.name}”" if n
                                  else "No unsaved changes")
@@ -1287,8 +1509,17 @@ class StudySettings(StudyForm, QDialog):
             self.f_list.addItem(f)
         (self.r_nuc if self.orig.target == TARGET_NUCLEUS else self.r_cell).setChecked(True)
         self._fill_measure(self.orig.settings)
+        for obj, w in getattr(self, "_obj_w", {}).items():
+            rule = objective_rule(self.orig.settings, obj)
+            w["count"].setChecked(rule["count"]); w["segment"].setChecked(rule["segment"])
+            w["min_d"].setValue(rule.get("min_d", 0.0)); w["max_d"].setValue(rule.get("max_d", 0.0))
         self._refresh_tree(); self._enter_names()
         self.g_table.setRowCount(0); self._fill_groups()
+        if hasattr(self, "lv_list"):                 # back to the saved sidebar order
+            items = {self.lv_list.item(i).data(Qt.UserRole): self.lv_list.item(i).text() for i in range(self.lv_list.count())}
+            self.lv_list.clear()
+            for lv in self.orig.level_order:
+                it = QListWidgetItem(items[lv]); it.setData(Qt.UserRole, lv); self.lv_list.addItem(it)
         self._ready = True
         self._form_changed()
 
@@ -1299,7 +1530,7 @@ class StudySettings(StudyForm, QDialog):
             QMessageBox.information(self, "Settings", "Add at least one image folder."); return
         changes = self._changes()
         if any(c.startswith("cellpose.") for c in changes) and QMessageBox.question(
-                self, "Save", "The segmentation settings changed – it will run again for every image. Save?") != QMessageBox.Yes:
+                self, "Save", "The segmentation settings changed – run File › Segmentation … afterwards. Save?") != QMessageBox.Yes:
             return
         w = self._work()
         w.save()

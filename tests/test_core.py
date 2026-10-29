@@ -539,3 +539,123 @@ if __name__ == "__main__":
             except Exception as e:  # noqa: BLE001
                 fails += 1; print(f"FAIL  {name}: {type(e).__name__}: {e}")
     sys.exit(1 if fails else 0)
+
+
+def test_pixel_size_follows_the_objective_in_the_xmp():
+    import tifffile
+    from nkreview.segment import MODEL_INSTANSEG, CellposeParams, params_for_image
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "x.tif"
+        tifffile.imwrite(f, np.zeros((8, 8, 3), np.uint8),
+                         extratags=[(700, 1, None, b"<Custom:UmPerPixX>0.590619</Custom:UmPerPixX>", True)])
+        p = CellposeParams(model=MODEL_INSTANSEG, pixel_size=0.293)
+        assert params_for_image(f, p).pixel_size == 0.5906
+        assert params_for_image(f, CellposeParams(pixel_size=0.293)).pixel_size == 0.293   # Cellpose: unchanged
+        tifffile.imwrite(f, np.zeros((8, 8, 3), np.uint8))
+        assert params_for_image(f, p).pixel_size == 0.293                                  # no XMP: study value
+
+
+def test_i0_field_is_dragged_with_the_left_button_and_esc_puts_it_back():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    from nkreview.qt.view import TOOL_I0, ImageView
+    QApplication.instance() or QApplication(["test"])
+    v = ImageView(); v.resize(400, 400); v.set_pixmap(np.zeros((200, 200, 3), np.uint8))
+    v.set_fields([[50, 50], [150, 150]], 9); v.set_tool(TOOL_I0); v.resetTransform(); v.centerOn(100, 100)
+    moved, clicked = [], []
+    v.i0Moved.connect(lambda k, x, y: moved.append((k, round(x), round(y))))
+    v.i0Clicked.connect(lambda x, y: clicked.append((round(x), round(y))))
+    at = lambda x, y: v.mapFromScene(x, y)
+    QTest.mousePress(v.viewport(), Qt.LeftButton, Qt.NoModifier, at(150, 150))
+    QTest.mouseMove(v.viewport(), at(120, 140))
+    QTest.mouseRelease(v.viewport(), Qt.LeftButton, Qt.NoModifier, at(120, 140))
+    assert moved == [(1, 120, 140)] and not clicked          # field 2 dragged, nothing added
+    QTest.mouseClick(v.viewport(), Qt.LeftButton, Qt.NoModifier, at(100, 20))
+    assert clicked == [(100, 20)]                            # next to the fields: a click, no jump
+    QTest.mousePress(v.viewport(), Qt.LeftButton, Qt.NoModifier, at(50, 50))
+    QTest.mouseMove(v.viewport(), at(80, 80))
+    assert v.cancel_field_drag() and v._field_items[0].pos().x() == 0   # Esc: back in place
+    assert len(moved) == 1
+
+
+def test_objective_tile_sets_area_in_um_and_counted_default():
+    import tifffile
+    from nkreview.analysis import area_limits
+    from nkreview.segment import MODEL_INSTANSEG
+    from nkreview.study import ImageInfo, is_counted
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "x.tif"
+        tifffile.imwrite(f, np.zeros((8, 8, 3), np.uint8), extratags=[(700, 1, None,
+                         b"<aux:Lens>10x</aux:Lens><Custom:UmPerPixX>0.5</Custom:UmPerPixX>", True)])
+        s = Settings(); s.cellpose.model = MODEL_INSTANSEG
+        s.objectives = {"10×": {"count": False, "segment": True, "min_d": 5.0, "max_d": 10.0}}
+        lo, hi = area_limits(s, f)
+        assert round(lo) == round(np.pi * 25 / 4 / 0.25) and round(hi) == round(np.pi * 100 / 4 / 0.25)
+        info = ImageInfo(f, Path(d), {})
+        assert info.objective == "10×" and not is_counted(info, Review(), s)   # tile default: off
+        assert is_counted(info, Review(counted=True), s)                      # E overrides it
+
+
+def test_segmentation_window_start_button_queues_the_selection():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from nkreview.qt.batch import BatchDialog
+    from nkreview.study import Study
+    QApplication.instance() or QApplication(["test"])
+
+    class Worker:                                    # stands in for CellposeWorker
+        def __init__(self): self.queued = None
+        def set_queue(self, items, params, force=False): self.queued = items
+        started = finished = failed = type("S", (), {"connect": lambda *a: None})()
+    with tempfile.TemporaryDirectory() as d:
+        import tifffile
+        tifffile.imwrite(Path(d) / "a_1.tif", np.zeros((8, 8, 3), np.uint8))
+        st = Study(name="t", folders=[d], delimiters=["_"], roles=["proband", "bildnr"])
+        w = Worker(); b = BatchDialog(None, st, st.images(), w)
+        b._select("all"); b.start_btn.click()          # the real click, not _start()
+        assert w.queued and w.queued[0][1].name == "a_1.tif" and b.pages.currentIndex() == 1
+        b._on_finished(str(st.images()[0].path))
+        assert b.close_btn.text() == "Close"
+        b.close_btn.click()                              # closes – a counter once shadowed QDialog.done
+        assert b.result() == 1 and not b.isVisible()
+
+
+def test_unexpected_error_is_logged_and_shown_once(monkeypatch=None):
+    import io
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    import nkreview.qt.app as appmod
+    app = QApplication.instance() or QApplication(["test"])
+    boxes, old_hook, old_err, old_box = [], sys.excepthook, sys.stderr, appmod.QMessageBox.warning
+    appmod.QMessageBox.warning = lambda *a: boxes.append(a[2])
+    sys.stderr = buf = io.StringIO()
+    try:
+        appmod.show_errors(app)
+        for _ in range(3):                                 # the same error three times …
+            try:
+                raise TypeError("'bool' object is not iterable")
+            except TypeError:
+                sys.excepthook(*sys.exc_info())
+    finally:
+        sys.excepthook, sys.stderr, appmod.QMessageBox.warning = old_hook, old_err, old_box
+    assert len(boxes) == 1 and "TypeError" in boxes[0]     # … one box
+    assert buf.getvalue().count("Traceback") == 3          # … three tracebacks in the log
+
+
+def test_default_studies_are_seeded_once():
+    import tempfile
+    from nkreview.study import Study, _seed_default_studies
+    with tempfile.TemporaryDirectory() as t:
+        d = Path(t)
+        _seed_default_studies(d)
+        names = {p.name for p in d.glob("*.json")}
+        assert {"Pilot_C2C12_ICC.json", "Pilot_C2C12_calibration.json"} <= names
+        assert Study.load(d / "Pilot_C2C12_ICC.json").settings.objectives["20×"]["count"] is True
+        (d / "Pilot_C2C12_ICC.json").unlink()               # deleted by the user …
+        _seed_default_studies(d)
+        assert not (d / "Pilot_C2C12_ICC.json").exists()   # … stays deleted

@@ -224,6 +224,24 @@ QLabel#badgeStudy {{ color: {T['accent_primary']}; background: {T['accent_soft']
 QLabel#badgeLocal {{ color: {T['fg_secondary']}; background: {T['sidebar_alt_bg']}; border-radius: 9px;
     padding: 2px 8px; font-size: 11px; margin: 4px 0 8px 0; }}
 QFrame#settingsCard {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 12px; }}
+QLabel#chip {{ color: {T['fg_secondary']}; background: {T['hover']}; border-radius: 6px; padding: 2px 8px; font-size: 11px; }}
+QFrame#folderRow {{ border: none; border-top: 1px solid {T['border']}; background: transparent; }}
+QLabel#runBig {{ color: {T['fg']}; font-size: 24px; font-weight: 700; background: transparent; }}
+QProgressBar#runBar {{ background: {T['hover']}; border: none; border-radius: 5px; }}
+QProgressBar#runBar::chunk {{ background: {T['accent_primary']}; border-radius: 5px; }}
+QListWidget#runList {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 12px; padding: 4px; }}
+QListWidget#runList::item {{ padding: 7px 8px; border-bottom: 1px solid {T['border']}; }}
+QFrame#settingsTile {{ background: {T['panel_bg']}; border: 1px solid {T['border']}; border-radius: 14px; }}
+QFrame#settingsTile:hover {{ border: 1px solid {T['accent_primary']}; }}
+QLabel#tileTitle {{ color: {T['fg']}; font-size: 16px; font-weight: 600; background: transparent; }}
+QLabel#tileSub {{ color: {T['fg_secondary']}; font-size: 12px; background: transparent; }}
+QLabel#settingsSummary {{ color: {T['fg']}; background: {T['accent_soft']}; border-radius: 8px; padding: 9px 12px; }}
+QLabel#sampleImage {{ background: {T['hover']}; border: 1px solid {T['border']}; border-radius: 10px; color: {T['fg_muted']}; }}
+QPushButton#objectiveHead {{ border: none; background: transparent; color: {T['accent_primary']};
+    font-size: 19px; font-weight: 700; text-align: left; padding: 0; min-height: 0; }}
+QPushButton#objectiveHead:hover {{ text-decoration: underline; }}
+QPushButton#linkButton {{ border: none; background: transparent; color: {T['accent_primary']}; padding: 0 4px; }}
+QPushButton#linkButton:hover {{ text-decoration: underline; }}
 QFrame#settingsFooter {{ background: {T['panel_bg']}; border-top: 1px solid {T['border']}; }}
 QLabel#checkLine {{ color: {T['state_finished']}; background: {_mix(T['panel_bg'], T['state_finished'], 0.10)};
     border-radius: 8px; padding: 8px 10px; }}

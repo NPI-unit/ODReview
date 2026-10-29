@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.0 — 2026-10-29
+
+- **Objective from the image file:** µm/px and objective (20×, 10×, 2.5×) are read from the TIFF's XMP (Jenoptik GRYPHAX). InstanSeg runs at each image's own pixel size; the old high/low presets (0.25/0.45 µm/px, 15–30 % off) are only a fallback for files without it.
+- **Nothing segments on its own any more:** opening a study queues nothing; an unsegmented image shows no stand-in contours. **File › Segmentation …** (⌘⇧S) picks the images (subject › magnification › images, "Unsegmented, counted" preselected, re-segment on request) and runs them: progress with time left, a list per image (✓ nuclei found, ◐ running, ✕ failed), Stop after this image, Retry failed, keeps running when closed.
+- **Sidebar:** tree Timepoint › Condition › Subject › Magnification, empty levels skipped, order set per study (Settings › Images & names › Sidebar order). Filter menu has a Magnification section. **E** switches an image between counted and ⊘ not counted; per objective a default (pilot: 20× counted, 10× off, 2.5× overview, never segmented). Export takes counted images only.
+- **Settings open on tiles,** one per page with a one-line summary. Segmentation: one tile per objective found in the files – pixel size from the file, images, nucleus Ø in µm (turned into px per image), count by default, segment – with a sample image and its contours (kept solid green, outside the size range dashed orange). Images & names: one row per folder with magnification chips, a "Not read" list, conditions folded away. Display: **Appearance System · Light · Dark**. All of it checked in light and dark.
+- **I₀ fields are dragged:** tool 3 – press on a field and drag it; Esc puts it back; a click next to the fields only adds one while fewer are set.
+- `tools/calibrate.py`: fits pixel-size factor and nucleus Ø per objective against reviewed images (F1 at IoU ≥ 0.5). Ki-67 grading plan: `docs/ki67-classification-plan.md`.
+- **Pilot studies built in:** "Pilot C2C12 ICC" and "Pilot C2C12 – calibration" ship in `nkreview/default_studies` and are copied into the study list on first start (never over an existing one; a deleted one stays deleted).
+- **No Terminal window:** ODReview.app logs to `~/Library/Application Support/NKReview/odreview.log`; an unexpected error shows one "Something went wrong" box with the path, and the app keeps running.
+- Fix: settings window reported an unsaved change right after opening.
+
 ## 0.10.0 — 2026-10-20
 
 - **Review side panel in three tabs** (from the design canvas): a fixed head with the image, “16 / 32 confirmed”, a progress bar and the counts; tabs **Cell/Nucleus · List · Notes**; a fixed foot with “Confirm all open”, ⋯ (rerun segmentation, contour method and OD threshold) and “Image reviewed”. Cell tab: result, why, the cell's buttons, then “More values” and “Distribution” (folds remembered). List tab: filter chips (all / open / I₀ warning / confirmed / discarded) and a table sortable by every column; a click selects and zooms. Notes tab: the image's note, the comment circles and the cells' notes – a click jumps there.

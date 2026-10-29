@@ -8,13 +8,14 @@ I₀ fields, discard or draw cells → Export writes the study's tables.
 from __future__ import annotations
 
 import copy
+import datetime
 import gc
 import json
 import sys
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QThread, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
@@ -25,11 +26,13 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..analysis import IMAGE_KEY, STATUS_KEPT, ImageResult, analyze
-from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, has_cellpose_cache
+from ..segment import METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, cached_cellpose, has_cellpose_cache
 from ..state import I0_PER_IMAGE, MANUAL_ID_BASE, Review, app_support_dir, load_image
 from ..study import (
-    META_ROLES, ROLE_LABELS, TARGET_NUCLEUS, ImageInfo, Study, list_studies, proband_progress,
+    LEVEL_OBJECTIVE, META_ROLES, ROLE_LABELS, ROLE_PROBAND, TARGET_NUCLEUS, ImageInfo, Study, is_counted,
+    level_value, list_studies, proband_progress,
 )
+from .batch import mag_order
 from .cellpanel import CellPanel, Fold, chip, edit_note, state_of
 from .style import apply_look
 from .studies import StudyPicker, _clear_layout
@@ -96,6 +99,7 @@ class MainWindow(QMainWindow):
         self.visible: list[int] = []            # indices into images, in tree order
         self.marker = ALL_MARKERS
         self.filter_mode = "all"
+        self.mag_filter = ""                    # "" = every magnification
         self.idx = -1
         self.img: np.ndarray | None = None
         self.review = Review()
@@ -108,6 +112,7 @@ class MainWindow(QMainWindow):
         self._items: dict[int, QTreeWidgetItem] = {}
 
         self.worker = CellposeWorker()
+        self.unsegmented = False
         self.worker.started.connect(self._cp_started)
         self.worker.finished.connect(self._cp_finished)
         self.worker.failed.connect(self._cp_failed)
@@ -128,6 +133,11 @@ class MainWindow(QMainWindow):
 
     # ── UI ──────────────────────────────────────────────────
     def _build_ui(self) -> None:
+        m_file = self.menuBar().addMenu("File")
+        m_file.addAction("Choose study …", self.choose_study)
+        m_file.addAction("Segmentation …", self.open_batch, QKeySequence("Ctrl+Shift+S"))
+        m_file.addSeparator()
+        m_file.addAction("Export …", self.export)
         tb = QFrame(objectName="toolbar")
         tl = QHBoxLayout(tb); tl.setContentsMargins(10, 6, 10, 6)
         self.b_study = QPushButton("Choose study"); self.b_study.setObjectName("study")
@@ -137,7 +147,7 @@ class MainWindow(QMainWindow):
         sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(0)
         self.tool_group = QButtonGroup(self)
         for i, (tool, text) in enumerate(((TOOL_SELECT, "1  Select"), (TOOL_DRAW, "2  Draw contour"),
-                                          (TOOL_I0, "3  Set I₀ field"), (TOOL_NOTE, "4  Note"))):
+                                          (TOOL_I0, "3  I₀ fields"), (TOOL_NOTE, "4  Note"))):
             b = QPushButton(text); b.setCheckable(True)
             b.setProperty("first", i == 0); b.setProperty("last", i == 3)
             b.setProperty("tool", tool)
@@ -183,7 +193,7 @@ class MainWindow(QMainWindow):
         self.tree.setFocusPolicy(Qt.NoFocus)
         self.tree.currentItemChanged.connect(self._tree_changed)
         ll.addWidget(self.tree, 1)
-        legend = QLabel("○ waiting · ◐ segmenting · ● segmented · ✔ reviewed", objectName="caption")
+        legend = QLabel("○ not segmented · ◐ running · ● segmented · ✔ reviewed · ⊘ not counted (E)", objectName="caption")
         ll.addWidget(legend)
 
         # centre
@@ -194,6 +204,7 @@ class MainWindow(QMainWindow):
         self.view.markClicked.connect(self.edit_mark)
         self.view.polygonDrawn.connect(self.add_manual)
         self.view.i0Clicked.connect(self.place_i0_field)
+        self.view.i0Moved.connect(self.move_i0_field)
         self.view.menuRequested.connect(self._image_menu)
         self.banner = QLabel("", objectName="banner"); self.banner.setWordWrap(True)
         self.footer = QLabel("", objectName="caption")
@@ -301,7 +312,7 @@ class MainWindow(QMainWindow):
         self.b_more = QToolButton(text="⋯"); self.b_more.setPopupMode(QToolButton.InstantPopup)
         self.b_more.setToolTip("More for this image")
         menu = QMenu(self.b_more)
-        menu.addAction("Rerun segmentation", self.rerun_cellpose)
+        menu.addAction("Segment this image (again)", self.rerun_cellpose)
         menu.addAction("Contour method and OD threshold …", self._contour_dialog)
         self.b_more.setMenu(menu)
         frow.addWidget(self.b_confirm_all, 1); frow.addWidget(self.b_more)
@@ -379,8 +390,8 @@ class MainWindow(QMainWindow):
             Qt.Key_D: self.cycle_view, Qt.Key_O: lambda: self.cb_contours.toggle(),
             Qt.Key_I: lambda: self.cb_fields.toggle(),
             Qt.Key_Return: self.toggle_reviewed, Qt.Key_Enter: self.toggle_reviewed,
-            Qt.Key_F: lambda: self.view.fit(), Qt.Key_Escape: lambda: self.select_cell(0),
-            Qt.Key_B: self.adjust_display,
+            Qt.Key_F: lambda: self.view.fit(), Qt.Key_Escape: lambda: self.view.cancel_field_drag() or self.select_cell(0),
+            Qt.Key_B: self.adjust_display, Qt.Key_E: self.toggle_counted,
         }
         for key, fn in keys.items():
             QShortcut(QKeySequence(key), self, activated=fn)
@@ -418,7 +429,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"ODReview {__version__} — {study.name}")
         self._build_tree()
         self.worker.stain_vectors = study.settings.stain_vectors
-        self.worker.set_queue([(i.folder, i.path) for i in self.images], study.settings.cellpose)
+        self.worker.set_queue([], study.settings.cellpose)   # nothing runs until File › Segmentation …
         self._update_study_button()
         if self.visible:
             self.go_to(self.visible[0])
@@ -433,7 +444,9 @@ class MainWindow(QMainWindow):
         self.b_study.setText(f"{self.study.name}   ▾")
         self.b_study.setToolTip(f"{markers} · {done}/{n} subjects done – click to switch study")
 
-    def _set_filter(self, marker: str | None = None, mode: str | None = None) -> None:
+    def _set_filter(self, marker: str | None = None, mode: str | None = None, mag: str | None = None) -> None:
+        if mag is not None:
+            self.mag_filter = mag
         if marker is not None:
             self.marker = marker
         if mode is not None:
@@ -442,7 +455,18 @@ class MainWindow(QMainWindow):
         if self.visible and self.idx not in self.visible:
             self.go_to(self.visible[0])
 
-    def _build_filter_menu(self, per_marker: dict, counts: dict) -> None:
+    def _counted(self, i: int) -> bool:
+        info = self.images[i]
+        return is_counted(info, Review.load(info.folder, info.path), self.study.settings)
+
+    def toggle_counted(self) -> None:
+        """E: this image counts toward the results – or not (⊘, never exported)."""
+        if self.idx < 0:
+            return
+        now = self._counted(self.idx)
+        self._edit(lambda rv: setattr(rv, "counted", not now))
+
+    def _build_filter_menu(self, per_marker: dict, counts: dict, per_mag: dict) -> None:
         menu = self.filter_btn.menu(); menu.clear()
         if len(per_marker) > 1:
             menu.addSection("Marker")
@@ -453,8 +477,15 @@ class MainWindow(QMainWindow):
         for key, label in FILTERS.items():
             a = menu.addAction(f"{label} ({counts[key]})"); a.setCheckable(True); a.setChecked(key == self.filter_mode)
             a.triggered.connect(lambda _=False, k=key: self._set_filter(mode=k))
+        if len(per_mag) > 1:
+            menu.addSeparator()
+            menu.addSection("Magnification")
+            for m, n in [("", sum(per_mag.values()))] + sorted(per_mag.items(), key=lambda kv: mag_order(kv[0])):
+                a = menu.addAction(f"{m or 'All'} ({n})"); a.setCheckable(True); a.setChecked(m == self.mag_filter)
+                a.triggered.connect(lambda _=False, mg=m: self._set_filter(mag=mg))
         shown = f"{FILTERS[self.filter_mode]} ({counts[self.filter_mode]})"
-        self.filter_btn.setText(f"{self.marker} · {shown}" if self.marker else shown)
+        bits = [b for b in (self.marker, self.mag_filter) if b]
+        self.filter_btn.setText(" · ".join(bits + [shown]))
 
     def _filter_state(self, i: int) -> tuple[str, bool]:
         """('unsegmented' | 'in_progress' | 'finished', has a note or comment) of image i."""
@@ -475,30 +506,47 @@ class MainWindow(QMainWindow):
             self.marker = ALL_MARKERS
         per_marker = {m: sum(info.marker == m for info in self.images) for m in markers}
         counts = dict.fromkeys(FILTERS, 0)
-        groups: dict = {}
+        per_mag: dict = {}
+        levels = [lv for lv in self.study.level_order
+                  if any(level_value(self.study, info, lv) for info in self.images)]   # skip empty levels
+        shown = []
         for i, info in enumerate(self.images):
             if self.marker and info.marker != self.marker:
+                continue
+            obj = info.objective or "unknown"
+            per_mag[obj] = per_mag.get(obj, 0) + 1
+            if self.mag_filter and obj != self.mag_filter:
                 continue
             state, noted = self._filter_state(i)
             counts["all"] += 1; counts[state] += 1; counts["with_notes"] += noted
             if mode != "all" and not (noted if mode == "with_notes" else state == mode):
                 continue
-            groups.setdefault((info.timepoint, info.proband), []).append(i)
-        self._build_filter_menu(per_marker, counts)
-        for (tp, prob), idxs in sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower())):
-            grp = self.images[idxs[0]].meta.get("gruppe", "")
-            head = QTreeWidgetItem([f"{tp}  ·  subject {prob}" + (f"  ·  {grp}" if grp else ""), ""])
-            f = head.font(0); f.setBold(True); head.setFont(0, f)
-            head.setFlags(head.flags() & ~Qt.ItemIsSelectable)
-            self.tree.addTopLevelItem(head)
-            for i in sorted(idxs, key=lambda k: (self.images[k].marker, self.images[k].path.name)):
-                it = QTreeWidgetItem(["", ""])
-                it.setData(0, Qt.UserRole, i)
-                head.addChild(it)
-                self._items[i] = it
-                self.visible.append(i)
-                self._refresh_item(i)
-            head.setExpanded(True)
+            shown.append(i)
+        self._build_filter_menu(per_marker, counts, per_mag)
+        heads: dict = {}
+        key = lambda i: tuple(level_value(self.study, self.images[i], lv) for lv in levels)
+        order = lambda i: tuple(mag_order(v) if lv == LEVEL_OBJECTIVE else v.lower()
+                                for lv, v in zip(levels, key(i)))
+        for i in sorted(shown, key=lambda i: (order(i), not self._counted(i), self.images[i].marker,
+                                              self.images[i].path.name)):
+            parent = None
+            for depth, (lv, v) in enumerate(zip(levels, key(i))):
+                path = key(i)[:depth + 1]
+                if path not in heads:
+                    text = f"Subject {v}" if lv == ROLE_PROBAND else v
+                    h = QTreeWidgetItem([text, ""])
+                    f = h.font(0); f.setBold(depth < len(levels) - 1 or len(levels) == 1); h.setFont(0, f)
+                    h.setFlags(h.flags() & ~Qt.ItemIsSelectable)
+                    (parent.addChild(h) if parent else self.tree.addTopLevelItem(h))
+                    h.setExpanded(True)
+                    heads[path] = h
+                parent = heads[path]
+            it = QTreeWidgetItem(["", ""])
+            it.setData(0, Qt.UserRole, i)
+            (parent.addChild(it) if parent else self.tree.addTopLevelItem(it))
+            self._items[i] = it
+            self.visible.append(i)
+            self._refresh_item(i)
         self.tree.blockSignals(False)
         if self.idx in self._items:
             self.tree.setCurrentItem(self._items[self.idx])
@@ -522,7 +570,9 @@ class MainWindow(QMainWindow):
         rv = Review.load(info.folder, info.path)
         sun = "  ☀︎" if rv.display else ""
         noted = "  ❝" if rv.note or rv.notes or rv.marks else ""
-        it.setText(0, f"{st}  {info.path.name}{sun}{noted}")
+        off = "⊘ " if not is_counted(info, rv, self.study.settings) else ""
+        it.setText(0, f"{off}{st}  {info.path.name}{sun}{noted}")
+        it.setForeground(0, QColor("#8A8F99") if off else QColor(self.palette().text().color()))
         it.setToolTip(0, self.failed.get(str(info.path), str(info.path)))
         it.setText(1, info.marker)
 
@@ -552,7 +602,6 @@ class MainWindow(QMainWindow):
         self.review = Review.load(info.folder, info.path)
         self.undo_stack.clear()
         self.selected = 0
-        self.worker.prioritize(info.path)
         self._set_enabled(True)
         m = info.meta
         bits = [f"{ROLE_LABELS[k].lower()}: {m[k]}" for k in META_ROLES if m.get(k)]
@@ -566,7 +615,12 @@ class MainWindow(QMainWindow):
         info = self.images[self.idx]
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self.result = analyze(info.folder, info.path, self.img, self.study.settings, self.review)
+            cp = cached_cellpose(info.folder, info.path, self.study.settings.cellpose)
+            # not segmented yet: no contours at all (no OD-threshold stand-in)
+            self.unsegmented = cp is None
+            if cp is None:
+                cp = np.zeros(self.img.shape[:2], np.int32)
+            self.result = analyze(info.folder, info.path, self.img, self.study.settings, self.review, cp)
         finally:
             QApplication.restoreOverrideCursor()
         if self.selected and self._row(self.selected) is None:
@@ -622,7 +676,8 @@ class MainWindow(QMainWindow):
                       (self.thr_spin, lambda: self.thr_spin.setValue(r.threshold)),
                       (self.cb_only_this, lambda: self.cb_only_this.setChecked(own))):
             w.blockSignals(True); fn(); w.blockSignals(False)
-        self.banner.setText(r.note)
+        self.banner.setText("Not segmented yet – File › Segmentation …, or ⋯ › Segment this image"
+                            if self.unsegmented else r.note)
         self.b_done.setText("↺ Undo reviewed (Enter)" if self.review.reviewed else "✔ Image reviewed (Enter)")
 
     def _fill_table(self) -> None:
@@ -725,13 +780,13 @@ class MainWindow(QMainWindow):
             self.status.setText("")
             return
         pend = self.worker.pending() + len(self.running)
-        cp = f"Segmentation: {pend} to go" if pend else "Segmentation: done"
+        cp = f"Segmentation: {pend} to go" if pend else ""
         pos = self.visible.index(self.idx) + 1 if self.idx in self.visible else 0
         rows = self.result.rows if self.result else []
         kept = sum(r["status"] == STATUS_KEPT for r in rows)
         conf = sum(bool(r.get("confirmed")) for r in rows)
         nouns = "nuclei" if self.study and self.study.target == TARGET_NUCLEUS else "cells"
-        self.status.setText(f"Image {pos}/{len(self.visible)} · {conf}/{kept} {nouns} confirmed · {cp}")
+        self.status.setText(f"Image {pos}/{len(self.visible)} · {conf}/{kept} {nouns} confirmed" + (f" · {cp}" if cp else ""))
 
     # ── review edits ────────────────────────────────────────
     def _edit(self, fn) -> None:
@@ -901,23 +956,35 @@ class MainWindow(QMainWindow):
             rv.i0_seed[key] = int(rv.i0_seed.get(key, 0)) + 1
         self._edit(fn)
 
-    def place_i0_field(self, x: float, y: float) -> None:
-        """Tool 3: move the nearest I₀ field (the selected cell's, or the image's) to the click."""
+    def _i0_target(self) -> tuple[list, str] | None:
+        """The I₀ fields tool 3 edits: the image's, or the selected cell's (None: no cell selected)."""
         if self._per_image():
-            fields, key = [list(p) for p in (self.result.image_fields or [])], IMAGE_KEY
-        else:
-            r = self._row(self.selected)
-            if not r:
-                QMessageBox.information(self, "I₀ field", "Select a cell first (tool 1), then set its fields.")
-                return
-            cm = self.result.cells.get(r["cell"])
-            fields, key = [list(p) for p in (cm.fields if cm else [])], str(r["cell"])
-        n = self.study.settings.i0_fields
-        if len(fields) < n:
-            fields.append([round(x, 1), round(y, 1)])
-        else:
-            k = min(range(len(fields)), key=lambda j: (fields[j][0] - x) ** 2 + (fields[j][1] - y) ** 2)
-            fields[k] = [round(x, 1), round(y, 1)]
+            return [list(p) for p in (self.result.image_fields or [])], IMAGE_KEY
+        r = self._row(self.selected)
+        if not r:
+            QMessageBox.information(self, "I₀ field", "Select a cell first (tool 1), then set its fields.")
+            return None
+        cm = self.result.cells.get(r["cell"])
+        return [list(p) for p in (cm.fields if cm else [])], str(r["cell"])
+
+    def place_i0_field(self, x: float, y: float) -> None:
+        """Tool 3, click next to the fields: add one while fewer than set. Existing ones are dragged."""
+        t = self._i0_target()
+        if t is None:
+            return
+        fields, key = t
+        if len(fields) >= self.study.settings.i0_fields:
+            return
+        fields.append([round(x, 1), round(y, 1)])
+        self._edit(lambda rv: rv.i0_fields.__setitem__(key, fields))
+
+    def move_i0_field(self, k: int, x: float, y: float) -> None:
+        """Tool 3: field k dragged to x, y."""
+        t = self._i0_target()
+        if t is None or not 0 <= k < len(t[0]):
+            return
+        fields, key = t
+        fields[k] = [round(x, 1), round(y, 1)]
         self._edit(lambda rv: rv.i0_fields.__setitem__(key, fields))
 
     def add_manual(self, pts: list) -> None:
@@ -995,6 +1062,14 @@ class MainWindow(QMainWindow):
             self.study.settings.threshold = t
             self._save_study()
             self._recompute()
+
+    def open_batch(self) -> None:
+        if self.study is None:
+            return
+        from .batch import BatchDialog
+        dlg = BatchDialog(self, self.study, self.images, self.worker)
+        dlg.finished.connect(lambda *_: self._build_tree())
+        dlg.open()
 
     def rerun_cellpose(self) -> None:
         info = self.images[self.idx]
@@ -1208,7 +1283,7 @@ def make_app(argv=None) -> QApplication:
     icon = Path(__file__).resolve().parent.parent.parent / "assets" / "icon.png"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
-    apply_look(app)
+    apply_look(app, _recall("theme") or "system")   # Settings › Display › Appearance
     return app
 
 
@@ -1222,8 +1297,42 @@ def gc_on_gui_thread(app) -> None:
     full = QTimer(app); full.timeout.connect(gc.collect); full.start(30000)   # ~50 ms with torch loaded
 
 
+def log_path() -> Path:
+    return app_support_dir() / "odreview.log"
+
+
+def log_to_file() -> None:
+    """Started from ODReview.app there is no terminal: print and tracebacks go to odreview.log."""
+    if sys.stderr is not None and sys.stderr.isatty():
+        return                                            # run.command: keep them in the terminal
+    path = log_path()
+    if path.exists() and path.stat().st_size > 5_000_000:
+        path.unlink()                                     # start over instead of growing forever
+    f = open(path, "a", buffering=1, encoding="utf-8")
+    f.write(f"\n── ODReview {__version__} started {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ──\n")
+    sys.stdout = sys.stderr = f
+
+
+def show_errors(app) -> None:
+    """An unexpected exception is logged and shown once – not one box per repeat."""
+    import traceback
+    shown: set = set()
+
+    def hook(kind, value, tb):
+        traceback.print_exception(kind, value, tb)        # → odreview.log or the terminal
+        key = f"{kind.__name__}: {value}"
+        if key in shown or app.thread() is not QThread.currentThread():   # a box only from the GUI thread
+            return
+        shown.add(key)
+        QMessageBox.warning(QApplication.activeWindow(), "Something went wrong",
+                            f"{key}\n\nThe app keeps running. Details are in\n{log_path()}")
+    sys.excepthook = hook
+
+
 def main() -> int:
+    log_to_file()
     app = make_app()
+    show_errors(app)
     gc_on_gui_thread(app)
     win = MainWindow()
     win.show()

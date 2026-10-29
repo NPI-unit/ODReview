@@ -14,6 +14,7 @@ the mask evenly, halo included. So the default diameter stays.
 from __future__ import annotations
 
 import datetime as _dt
+import functools
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -230,7 +231,48 @@ def _same_params(info: dict, p: CellposeParams) -> bool:
     return all(info.get(k, getattr(default, k)) == v for k, v in asdict(p).items())
 
 
+@functools.lru_cache(maxsize=4096)
+def _camera_xmp_cached(image: Path, _stamp: tuple) -> tuple[float, str]:
+    """(µm/px, objective) the camera wrote into the TIFF (Jenoptik GRYPHAX XMP:
+    UmPerPixX, aux:Lens); (0.0, "") when the file has none."""
+    import re
+    try:
+        import tifffile
+        with tifffile.TiffFile(image) as t:
+            tag = t.pages[0].tags.get(700)
+            xmp = tag.value.decode("utf-8", "ignore") if tag else ""
+    except Exception:
+        return 0.0, ""
+    px, lens = re.search(r"UmPerPixX>([\d.]+)<", xmp), re.search(r"<aux:Lens>([^<]+)<", xmp)
+    return (float(px[1]) if px else 0.0), (lens[1].strip().replace(",", ".").replace("x", "×") if lens else "")
+
+
+def _camera_xmp(image: Path) -> tuple[float, str]:
+    try:
+        st = image.stat()
+    except OSError:
+        return 0.0, ""
+    return _camera_xmp_cached(image, (st.st_mtime_ns, st.st_size))   # a rewritten file is read again
+
+
+def image_pixel_size(image: Path) -> float:
+    return _camera_xmp(Path(image))[0]
+
+
+def image_objective(image: Path) -> str:
+    """'20×', '10×', '2.5×' … from the file; '' = unknown."""
+    return _camera_xmp(Path(image))[1]
+
+
+def params_for_image(image: Path, p: CellposeParams) -> CellposeParams:
+    """InstanSeg runs at the image's own pixel size (it follows the objective), when the file has one."""
+    from dataclasses import replace
+    px = image_pixel_size(image) if p.model == MODEL_INSTANSEG else 0.0
+    return replace(p, pixel_size=round(px, 4)) if px else p
+
+
 def cached_cellpose(folder: Path, image: Path, p: CellposeParams) -> np.ndarray | None:
+    p = params_for_image(image, p)
     npz, meta = _cp_paths(folder, image)
     try:
         info = json.loads(meta.read_text("utf-8"))
@@ -245,6 +287,7 @@ def cached_cellpose(folder: Path, image: Path, p: CellposeParams) -> np.ndarray 
 def cellpose_for_image(folder: Path, image: Path, img: np.ndarray,
                        p: CellposeParams, force: bool = False,
                        stain_vectors: list | None = None) -> np.ndarray:
+    p = params_for_image(image, p)
     if not force:
         hit = cached_cellpose(folder, image, p)
         if hit is not None:
@@ -268,6 +311,7 @@ def cellpose_for_image(folder: Path, image: Path, img: np.ndarray,
 
 
 def has_cellpose_cache(folder: Path, image: Path, p: CellposeParams) -> bool:
+    p = params_for_image(image, p)
     npz, meta = _cp_paths(folder, image)
     if not (npz.exists() and meta.exists()):
         return False

@@ -20,7 +20,7 @@ from scipy import ndimage as ndi
 from . import od as odm
 from .measure import CellMeasure, PROFILE_RINGS, _seed, gray_image, measure_cell, place_image_fields
 from .segment import (
-    METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, cached_cellpose, polygon_mask,
+    METHOD_CELLPOSE, METHOD_HYBRID, METHOD_THRESHOLD, cached_cellpose, params_for_image, polygon_mask,
     refine_hybrid, threshold_segment,
 )
 from .state import I0_LOCAL, I0_PER_IMAGE, I0_RELATIVE, MANUAL_ID_BASE, Review, Settings
@@ -85,6 +85,20 @@ def _ring_i0(img, labels, cid, sl, inner, outer):
     return np.median(pix.reshape(-1, 3), axis=0)
 
 
+def area_limits(s: Settings, image: Path) -> tuple[float, float]:
+    """Kept object area in px (0 = no limit). The objective's tile gives a nucleus Ø in µm,
+    turned into px with the file's own µm/px; else the study's px areas, scaled when the
+    image has another pixel size than the study."""
+    from .segment import image_objective
+    px = params_for_image(image, s.cellpose).pixel_size
+    rule = s.objectives.get(image_objective(image), {})
+    if px and (rule.get("min_d") or rule.get("max_d")):
+        disc = lambda d: np.pi * (d / 2) ** 2 / px ** 2
+        return disc(rule.get("min_d") or 0), disc(rule.get("max_d") or 0)
+    k = (s.cellpose.pixel_size / px) ** 2 if px and s.cellpose.pixel_size else 1.0
+    return s.min_cell_area * k, s.max_cell_area * k
+
+
 def field_spread(means: list) -> float | None:
     """Largest deviation of one I₀ field from the fields' mean, in % (None below 2 fields)."""
     if len(means) < 2:
@@ -104,10 +118,11 @@ def analyze(folder: Path, image: Path, img: np.ndarray, s: Settings, rv: Review,
     method = rv.method or s.method
     thr = float(rv.threshold if rv.threshold is not None else s.threshold)
     labels, used, bg, tod_s, note = _contours(img, s, rv, cp, method, thr)
-    if (s.min_cell_area > 0 or s.max_cell_area > 0) and labels.max():
+    lo, hi = area_limits(s, image)
+    if (lo > 0 or hi > 0) and labels.max():
         # Cellpose finds specks (debris, noise) far smaller than any nucleus
         sizes = np.bincount(labels.ravel())
-        drop = (sizes < s.min_cell_area) | ((s.max_cell_area > 0) & (sizes > s.max_cell_area))
+        drop = (sizes < lo) | ((hi > 0) & (sizes > hi))
         drop[0] = False
         labels[drop[labels]] = 0
 
